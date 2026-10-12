@@ -1,16 +1,17 @@
-# starter-fullstack-rust
+# Tempox
 
-> A Skilluv starter template — Rust + Axum backend, SvelteKit frontend, PostgreSQL.
+> Business management software in active development — Rust (Axum + sqlx) backend, SvelteKit 5 frontend, PostgreSQL 18.
 
-[![CI](https://github.com/skilluv-community/starter-fullstack-rust/actions/workflows/ci.yml/badge.svg)](https://github.com/skilluv-community/starter-fullstack-rust/actions/workflows/ci.yml)
+[![CI](https://github.com/ematiasm/tempox/actions/workflows/ci.yml/badge.svg)](https://github.com/ematiasm/tempox/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
-[![Skilluv](https://img.shields.io/badge/skilluv-community-emerald)](https://skilluv.io)
 
-## English
+## Status
 
-### What this is
+**v0 — foundations working.** The stack runs end-to-end; the notes CRUD demo proves the full path (SvelteKit → Axum → PostgreSQL).
 
-A production-ready starting point for a fullstack app built with the Skilluv signature stack:
+**Next: v1 — Sales.** Register a simple sale and have stock and cash update automatically. In design.
+
+## What this is
 
 - **Backend**: Rust (Axum, sqlx, PostgreSQL 18)
 - **Frontend**: SvelteKit 5 (runes) + Tailwind
@@ -18,13 +19,13 @@ A production-ready starting point for a fullstack app built with the Skilluv sig
 - **Tests**: `cargo test` + Vitest + Playwright
 - **CI**: GitHub Actions
 
-Clone, `cp .env.example .env`, `docker compose up`. That's it.
+## Quickstart
 
-### Quickstart
+Everything in Docker:
 
 ```bash
-git clone git@github.com:skilluv-community/starter-fullstack-rust.git
-cd starter-fullstack-rust
+git clone https://github.com/ematiasm/tempox.git
+cd tempox
 cp .env.example .env
 docker compose up --build
 ```
@@ -33,16 +34,39 @@ docker compose up --build
 - Backend: <http://localhost:3001/health>
 - Adminer (DB): <http://localhost:8080>
 
-### Structure
+## Development
+
+The backend and database run in Docker; the frontend runs locally for a fast reload loop:
+
+```bash
+docker compose up -d --build postgres adminer backend
+
+cd frontend && npm install && npm run dev
+```
+
+- Frontend: <http://localhost:5173> (local, hot reload)
+- Backend: <http://localhost:3001/health>
+- Adminer (DB): <http://localhost:8080>
+
+After changing backend code, rebuild the container: `docker compose up -d --build backend`.
+
+Integration tests (opt-in, hit a live backend):
+
+```bash
+docker compose up -d postgres backend
+cargo test -- --ignored
+```
+
+## Structure
 
 ```
 backend/     Axum server + sqlx migrations + integration tests
 frontend/    SvelteKit app (Svelte 5 runes, Tailwind)
-docs/        Bilingual docs (fr, en)
+docs/        Documentation (en, fr)
 .github/     CI + dependabot + PR template
 ```
 
-### What's inside
+## What's inside
 
 - `GET /health` — liveness probe
 - `GET /api/hello?name=Ada` — dummy greeting endpoint
@@ -50,70 +74,13 @@ docs/        Bilingual docs (fr, en)
 - SvelteKit pages `/` (hello demo) and `/notes` (CRUD demo)
 - FR/EN i18n via a runes-backed store
 
-### Docs
+## Docs
 
 - [`docs/en/getting-started.md`](./docs/en/getting-started.md)
 - [`docs/en/architecture.md`](./docs/en/architecture.md)
 
 ---
 
-## Français
-
-### C'est quoi
-
-Un point de départ prêt-à-l'emploi pour une app fullstack basée sur la stack signature Skilluv :
-
-- **Backend** : Rust (Axum, sqlx, PostgreSQL 18)
-- **Frontend** : SvelteKit 5 (runes) + Tailwind
-- **Orchestration** : Docker Compose (postgres + backend + frontend + adminer)
-- **Tests** : `cargo test` + Vitest + Playwright
-- **CI** : GitHub Actions
-
-Clone, `cp .env.example .env`, `docker compose up`. C'est tout.
-
-### Démarrage rapide
-
-```bash
-git clone git@github.com:skilluv-community/starter-fullstack-rust.git
-cd starter-fullstack-rust
-cp .env.example .env
-docker compose up --build
-```
-
-- Frontend : <http://localhost:5173>
-- Backend : <http://localhost:3001/health>
-- Adminer (DB) : <http://localhost:8080>
-
-### Structure
-
-```
-backend/     Serveur Axum + migrations sqlx + tests d'intégration
-frontend/    App SvelteKit (Svelte 5 runes, Tailwind)
-docs/        Documentation bilingue (fr, en)
-.github/     CI + dependabot + template PR
-```
-
-### Ce qu'il y a dedans
-
-- `GET /health` — liveness probe
-- `GET /api/hello?name=Ada` — endpoint de salutation
-- `GET/POST/DELETE /api/notes` — démo CRUD sur PostgreSQL
-- Pages SvelteKit `/` (démo hello) et `/notes` (démo CRUD)
-- i18n FR/EN via un store runes
-
-### Docs
-
-- [`docs/fr/getting-started.md`](./docs/fr/getting-started.md)
-- [`docs/fr/architecture.md`](./docs/fr/architecture.md)
-
----
-
 ## License
 
 MIT — see [LICENSE](./LICENSE).
-
-## Related
-
-- [Skilluv](https://skilluv.io) — the platform this template is designed for
-- [Skilluv Community Charter](https://github.com/skilluv-community/community-charter)
-- [Other starters](https://github.com/orgs/skilluv-community/repositories?q=starter)
