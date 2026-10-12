@@ -1,10 +1,10 @@
 [package]
-name = "starter-fullstack-rust-backend"
+name = "tempox"
 version = "0.1.0"
-edition = "2021"
-rust-version = "1.80"
+edition = "2024"
+rust-version = "1.89"
 license = "MIT"
-description = "Skilluv starter — Rust + Axum + sqlx backend."
+description = "Tempox — Rust + Axum + sqlx backend."
 
 [dependencies]
 axum = { version = "0.8", features = ["macros"] }
