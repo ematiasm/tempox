@@ -62,3 +62,32 @@ async fn notes_crud_roundtrip() {
         .expect("delete");
     assert_eq!(del.status(), 204);
 }
+
+// v1 schema (work-unit 1): the migration creates the five tables and seeds the
+// walk-in customer. Ignored by default: needs a live database (DATABASE_URL,
+// defaulting to the docker-compose postgres on localhost).
+#[tokio::test]
+#[ignore]
+async fn v1_schema_seeds_walkin_customer() {
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
+    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+
+    for table in ["customers", "products", "sales", "sale_items", "stock_movements"] {
+        let regclass: (Option<String>,) = sqlx::query_as("SELECT to_regclass($1)::text")
+            .bind(format!("public.{table}"))
+            .fetch_one(&pool)
+            .await
+            .expect("to_regclass");
+        assert!(regclass.0.is_some(), "table {table} is missing");
+    }
+
+    // The seeded default customer for sales with no named customer.
+    let name: (String,) = sqlx::query_as(
+        "SELECT name FROM customers WHERE id = '00000000-0000-0000-0000-000000000001'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("walk-in seed row");
+    assert_eq!(name.0, "walk-in");
+}
