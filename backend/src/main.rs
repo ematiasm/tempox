@@ -7,6 +7,7 @@ use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
 
 mod db;
+mod money;
 mod models;
 mod routes;
 
