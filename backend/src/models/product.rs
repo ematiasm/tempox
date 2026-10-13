@@ -12,5 +12,6 @@ pub struct Product {
     pub id: Uuid,
     pub name: String,
     pub list_price: i64,
+    pub unit: String,
     pub created_at: DateTime<Utc>,
 }

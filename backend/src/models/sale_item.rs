@@ -1,8 +1,8 @@
 use sqlx::FromRow;
 use uuid::Uuid;
 
-/// One line of a sale. The product name and prices are snapshots taken at
-/// sale time, so later catalog changes never rewrite history.
+/// One line of a sale. The product name, unit, and prices are snapshots taken
+/// at sale time, so later catalog changes never rewrite history.
 // Removed when the sale endpoints (work-units 3-4) construct these.
 #[allow(dead_code)]
 #[derive(Debug, Clone, FromRow)]
@@ -14,4 +14,5 @@ pub struct SaleItem {
     pub quantity: i32,
     pub unit_price: i64,
     pub line_total: i64,
+    pub unit: String,
 }
