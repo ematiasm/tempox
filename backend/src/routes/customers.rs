@@ -22,8 +22,9 @@ pub struct NewCustomer {
 async fn list_customers(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<Customer>>, StatusCode> {
-    let customers = sqlx::query_as::<_, Customer>(
-        "SELECT id, name, created_at FROM customers ORDER BY name",
+    let customers = sqlx::query_as!(
+        Customer,
+        "SELECT id, name, created_at FROM customers ORDER BY name"
     )
     .fetch_all(&state.db)
     .await
@@ -42,10 +43,11 @@ async fn create_customer(
     if name.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
     }
-    let customer = sqlx::query_as::<_, Customer>(
+    let customer = sqlx::query_as!(
+        Customer,
         "INSERT INTO customers (name) VALUES ($1) RETURNING id, name, created_at",
+        name
     )
-    .bind(&name)
     .fetch_one(&state.db)
     .await
     .map_err(conflict_or_500)?;

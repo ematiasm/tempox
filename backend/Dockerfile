@@ -2,6 +2,12 @@
 FROM rust:1.98-bookworm AS builder
 WORKDIR /app
 
+# Query checking happens at compile time against the live database: compose
+# passes this build arg with build network=host so the builder reaches the
+# developer's Postgres. Without it the macro verification fails loudly.
+ARG DATABASE_URL
+ENV DATABASE_URL=${DATABASE_URL}
+
 COPY Cargo.toml ./
 RUN mkdir src && echo "fn main() {}" > src/main.rs && cargo build --release && rm -rf src
 

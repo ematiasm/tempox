@@ -16,8 +16,9 @@ pub fn routes() -> Router<AppState> {
 }
 
 async fn list_notes(State(state): State<AppState>) -> Result<Json<Vec<Note>>, StatusCode> {
-    let rows: Vec<Note> = sqlx::query_as::<_, Note>(
-        "SELECT id, text, created_at FROM notes ORDER BY created_at DESC LIMIT 100",
+    let rows = sqlx::query_as!(
+        Note,
+        "SELECT id, text, created_at FROM notes ORDER BY created_at DESC LIMIT 100"
     )
     .fetch_all(&state.db)
     .await
@@ -36,10 +37,11 @@ async fn create_note(
     if text.is_empty() || text.len() > 500 {
         return Err(StatusCode::BAD_REQUEST);
     }
-    let row: Note = sqlx::query_as::<_, Note>(
+    let row = sqlx::query_as!(
+        Note,
         "INSERT INTO notes (text) VALUES ($1) RETURNING id, text, created_at",
+        text
     )
-    .bind(text)
     .fetch_one(&state.db)
     .await
     .map_err(|e| {
@@ -53,8 +55,7 @@ async fn delete_note(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, StatusCode> {
-    let res = sqlx::query("DELETE FROM notes WHERE id = $1")
-        .bind(id)
+    let res = sqlx::query!("DELETE FROM notes WHERE id = $1", id)
         .execute(&state.db)
         .await
         .map_err(|e| {

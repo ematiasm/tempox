@@ -46,13 +46,14 @@ pub struct NewProduct {
 async fn list_products(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<ProductWithStock>>, StatusCode> {
-    let products = sqlx::query_as::<_, ProductWithStock>(
+    let products = sqlx::query_as!(
+        ProductWithStock,
         "SELECT p.id, p.name, p.list_price, p.unit, p.created_at,
-                COALESCE(SUM(m.quantity), 0)::bigint AS stock
+                COALESCE(SUM(m.quantity), 0)::bigint AS \"stock!\"
          FROM products p
          LEFT JOIN stock_movements m ON m.product_id = p.id
          GROUP BY p.id
-         ORDER BY p.name",
+         ORDER BY p.name"
     )
     .fetch_all(&state.db)
     .await
@@ -84,24 +85,24 @@ async fn create_product(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    let id: (Uuid,) = sqlx::query_as(
+    let id = sqlx::query_scalar!(
         "INSERT INTO products (name, list_price, unit) VALUES ($1, $2, $3) RETURNING id",
+        name,
+        body.list_price,
+        unit
     )
-    .bind(&name)
-    .bind(body.list_price)
-    .bind(&unit)
     .fetch_one(&mut *tx)
     .await
     .map_err(conflict_or_500)?;
 
     // Omitted or zero initial stock means stock starts at 0 with no movement row.
     if let Some(initial) = body.initial_stock.filter(|q| *q > 0) {
-        sqlx::query(
+        sqlx::query!(
             "INSERT INTO stock_movements (product_id, quantity, reason)
              VALUES ($1, $2, 'initial')",
+            id,
+            initial
         )
-        .bind(id.0)
-        .bind(initial)
         .execute(&mut *tx)
         .await
         .map_err(|e| {
@@ -111,15 +112,16 @@ async fn create_product(
     }
 
     // Respond with the same derived-stock projection the list endpoint uses.
-    let product = sqlx::query_as::<_, ProductWithStock>(
+    let product = sqlx::query_as!(
+        ProductWithStock,
         "SELECT p.id, p.name, p.list_price, p.unit, p.created_at,
-                COALESCE(SUM(m.quantity), 0)::bigint AS stock
+                COALESCE(SUM(m.quantity), 0)::bigint AS \"stock!\"
          FROM products p
          LEFT JOIN stock_movements m ON m.product_id = p.id
          WHERE p.id = $1
          GROUP BY p.id",
+        id
     )
-    .bind(id.0)
     .fetch_one(&mut *tx)
     .await
     .map_err(|e| {

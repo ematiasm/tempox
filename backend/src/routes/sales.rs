@@ -5,7 +5,6 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use sqlx::FromRow;
 use uuid::Uuid;
 
 use crate::money::{self, LineInput};
@@ -89,15 +88,14 @@ async fn create_sale(
     // Customer: an unknown id is a 404; omitted means the seeded walk-in.
     let customer_id = match body.customer_id {
         Some(id) => {
-            let found: (i64,) = sqlx::query_as("SELECT count(*) FROM customers WHERE id = $1")
-                .bind(id)
+            let found = sqlx::query_scalar!("SELECT count(*) AS \"count!\" FROM customers WHERE id = $1", id)
                 .fetch_one(&mut *tx)
                 .await
                 .map_err(|e| {
                     tracing::error!(?e, "customer lookup failed");
                     StatusCode::INTERNAL_SERVER_ERROR
                 })?;
-            if found.0 == 0 {
+            if found == 0 {
                 return Err(StatusCode::NOT_FOUND);
             }
             id
@@ -110,10 +108,10 @@ async fn create_sale(
     let mut lines: Vec<LineInput> = Vec::with_capacity(body.items.len());
     let mut snapshots: Vec<(String, String)> = Vec::with_capacity(body.items.len());
     for item in &body.items {
-        let product = sqlx::query_as::<_, (String, i64, String)>(
+        let product = sqlx::query!(
             "SELECT name, list_price, unit FROM products WHERE id = $1",
+            item.product_id
         )
-        .bind(item.product_id)
         .fetch_optional(&mut *tx)
         .await
         .map_err(|e| {
@@ -121,9 +119,8 @@ async fn create_sale(
             StatusCode::INTERNAL_SERVER_ERROR
         })?
         .ok_or(StatusCode::NOT_FOUND)?;
-        let (name, list_price, unit) = product;
-        let unit_price = item.unit_price.unwrap_or(list_price);
-        snapshots.push((name, unit));
+        let unit_price = item.unit_price.unwrap_or(product.list_price);
+        snapshots.push((product.name, product.unit));
         lines.push(LineInput {
             quantity: item.quantity,
             unit_price,
@@ -141,11 +138,11 @@ async fn create_sale(
     }
 
     // The sale header.
-    let sale_id: (Uuid,) = sqlx::query_as(
+    let sale_id = sqlx::query_scalar!(
         "INSERT INTO sales (customer_id, total) VALUES ($1, $2) RETURNING id",
+        customer_id,
+        total
     )
-    .bind(customer_id)
-    .bind(total)
     .fetch_one(&mut *tx)
     .await
     .map_err(|e| {
@@ -160,18 +157,18 @@ async fn create_sale(
         let (product_name, unit) = &snapshots[idx];
         let line_total = line_totals[idx];
 
-        let item_id: (Uuid,) = sqlx::query_as(
+        let item_id = sqlx::query_scalar!(
             "INSERT INTO sale_items
                 (sale_id, product_id, product_name, quantity, unit_price, line_total, unit)
              VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
+            sale_id,
+            item.product_id,
+            product_name,
+            item.quantity,
+            line.unit_price,
+            line_total,
+            unit
         )
-        .bind(sale_id.0)
-        .bind(item.product_id)
-        .bind(product_name)
-        .bind(item.quantity)
-        .bind(line.unit_price)
-        .bind(line_total)
-        .bind(unit)
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| {
@@ -179,13 +176,13 @@ async fn create_sale(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-        sqlx::query(
+        sqlx::query!(
             "INSERT INTO stock_movements (product_id, quantity, reason, sale_id)
              VALUES ($1, $2, 'sale', $3)",
+            item.product_id,
+            -item.quantity,
+            sale_id
         )
-        .bind(item.product_id)
-        .bind(-item.quantity)
-        .bind(sale_id.0)
         .execute(&mut *tx)
         .await
         .map_err(|e| {
@@ -194,8 +191,8 @@ async fn create_sale(
         })?;
 
         items.push(SaleItem {
-            id: item_id.0,
-            sale_id: sale_id.0,
+            id: item_id,
+            sale_id,
             product_id: item.product_id,
             product_name: product_name.clone(),
             quantity: item.quantity,
@@ -207,11 +204,12 @@ async fn create_sale(
 
     // Read the persisted sale so the response carries the real defaults
     // (status, created_at) instead of echoing the request.
-    let sale: Sale = sqlx::query_as(
+    let sale = sqlx::query_as!(
+        Sale,
         "SELECT id, customer_id, total, payment_method, status, reversed_at, created_at
          FROM sales WHERE id = $1",
+        sale_id
     )
-    .bind(sale_id.0)
     .fetch_one(&mut *tx)
     .await
     .map_err(|e| {
@@ -227,29 +225,21 @@ async fn create_sale(
     Ok((StatusCode::CREATED, Json(SaleWithItems { sale, items })))
 }
 
-/// A sale joined with its customer name, as fetched by the list endpoint.
-#[derive(Debug, FromRow)]
-struct SaleWithCustomer {
-    #[sqlx(flatten)]
-    sale: Sale,
-    customer_name: String,
-}
-
 async fn list_sales(
     State(state): State<AppState>,
     Query(params): Query<SalesQuery>,
 ) -> Result<Json<Vec<SaleListItem>>, StatusCode> {
     let limit = params.limit.unwrap_or(50).clamp(1, MAX_LIST_LIMIT);
 
-    let rows = sqlx::query_as::<_, SaleWithCustomer>(
+    let rows = sqlx::query!(
         "SELECT s.id, s.customer_id, s.total, s.payment_method, s.status, s.reversed_at,
                 s.created_at, c.name AS customer_name
          FROM sales s
          JOIN customers c ON c.id = s.customer_id
          ORDER BY s.created_at DESC
          LIMIT $1",
+        limit
     )
-    .bind(limit)
     .fetch_all(&state.db)
     .await
     .map_err(|e| {
@@ -261,11 +251,12 @@ async fn list_sales(
     // purpose — a single json-aggregated query is the optimization, later.
     let mut sales = Vec::with_capacity(rows.len());
     for row in rows {
-        let items = sqlx::query_as::<_, SaleItem>(
+        let items = sqlx::query_as!(
+            SaleItem,
             "SELECT id, sale_id, product_id, product_name, quantity, unit_price, line_total, unit
              FROM sale_items WHERE sale_id = $1",
+            row.id
         )
-        .bind(row.sale.id)
         .fetch_all(&state.db)
         .await
         .map_err(|e| {
@@ -273,7 +264,15 @@ async fn list_sales(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
         sales.push(SaleListItem {
-            sale: row.sale,
+            sale: Sale {
+                id: row.id,
+                customer_id: row.customer_id,
+                total: row.total,
+                payment_method: row.payment_method,
+                status: row.status,
+                reversed_at: row.reversed_at,
+                created_at: row.created_at,
+            },
             customer_name: row.customer_name,
             items,
         });
@@ -283,9 +282,9 @@ async fn list_sales(
 }
 
 async fn cash_total(State(state): State<AppState>) -> Result<Json<Cash>, StatusCode> {
-    // SUM(bigint) is NUMERIC in Postgres: cast back to bigint for the i64 decode.
-    let total: (i64,) = sqlx::query_as(
-        "SELECT COALESCE(SUM(total), 0)::bigint FROM sales WHERE status = 'confirmed'",
+    // SUM(bigint) is NUMERIC in Postgres: the cast keeps the scalar i64.
+    let total = sqlx::query_scalar!(
+        "SELECT COALESCE(SUM(total), 0)::bigint AS \"total!\" FROM sales WHERE status = 'confirmed'"
     )
     .fetch_one(&state.db)
     .await
@@ -293,9 +292,7 @@ async fn cash_total(State(state): State<AppState>) -> Result<Json<Cash>, StatusC
         tracing::error!(?e, "cash total failed");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
-    Ok(Json(Cash {
-        total_cents: total.0,
-    }))
+    Ok(Json(Cash { total_cents: total }))
 }
 
 #[cfg(test)]

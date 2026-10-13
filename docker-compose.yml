@@ -20,6 +20,12 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      # The image build type-checks queries against the live database. The
+      # builder reaches the host's published Postgres through Docker's default
+      # bridge gateway (172.17.0.1), so no host network or extra flags are
+      # needed for `docker compose build`.
+      args:
+        DATABASE_URL: postgres://${POSTGRES_USER:-tempox}:${POSTGRES_PASSWORD:-tempox}@172.17.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-tempox}
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-skilluv}:${POSTGRES_PASSWORD:-skilluv}@postgres:5432/${POSTGRES_DB:-skilluv}
