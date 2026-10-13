@@ -71,6 +71,7 @@ docs/        Documentation (en, fr)
 - `GET /health` — liveness probe
 - `GET /api/hello?name=Ada` — dummy greeting endpoint
 - `GET/POST/DELETE /api/notes` — CRUD demo backed by PostgreSQL
+- **Sales slice (v1)**: multi-item sales with stock and cash derived from an append-only movement ledger — API surface in [`docs/en/architecture.md`](./docs/en/architecture.md)
 - SvelteKit pages `/` (hello demo) and `/notes` (CRUD demo)
 - FR/EN i18n via a runes-backed store
 
