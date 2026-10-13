@@ -1,3 +1,4 @@
+use serde::Serialize;
 use sqlx::FromRow;
 use uuid::Uuid;
 
@@ -5,7 +6,7 @@ use uuid::Uuid;
 /// at sale time, so later catalog changes never rewrite history.
 // Removed when the sale endpoints (work-units 3-4) construct these.
 #[allow(dead_code)]
-#[derive(Debug, Clone, FromRow)]
+#[derive(Debug, Clone, Serialize, FromRow)]
 pub struct SaleItem {
     pub id: Uuid,
     pub sale_id: Uuid,

@@ -220,3 +220,140 @@ async fn v1_units_and_history_guards() {
 
     tx.rollback().await.expect("rollback");
 }
+
+// v1 writes (work-unit 3): a multi-item sale lands in one transaction with its
+// stock movements. Unique product names keep repeated runs collision-free.
+// Ignored by default: needs the live stack (backend + db).
+#[tokio::test]
+#[ignore]
+async fn v1_create_sale_drops_stock_in_one_transaction() {
+    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
+    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+
+    let suffix = uuid::Uuid::new_v4().simple();
+    let rice_name = format!("w3-rice-{suffix}");
+    let rice: (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO products (name, list_price, unit) VALUES ($1, 250, 'g') RETURNING id",
+    )
+    .bind(&rice_name)
+    .fetch_one(&pool)
+    .await
+    .expect("insert rice");
+    sqlx::query("INSERT INTO stock_movements (product_id, quantity, reason) VALUES ($1, 2000, 'initial')")
+        .bind(rice.0)
+        .execute(&pool)
+        .await
+        .expect("rice initial stock");
+
+    let beans_name = format!("w3-beans-{suffix}");
+    let beans: (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO products (name, list_price, unit) VALUES ($1, 100, 'unit') RETURNING id",
+    )
+    .bind(&beans_name)
+    .fetch_one(&pool)
+    .await
+    .expect("insert beans");
+    sqlx::query("INSERT INTO stock_movements (product_id, quantity, reason) VALUES ($1, 10, 'initial')")
+        .bind(beans.0)
+        .execute(&pool)
+        .await
+        .expect("beans initial stock");
+
+    // Cash measured as a delta: prior runs' sales must not matter.
+    let cash_before: (i64,) = sqlx::query_as(
+        "SELECT COALESCE(SUM(total), 0)::bigint FROM sales WHERE status = 'confirmed'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("cash before");
+
+    // Two items in one sale: no customer (walk-in), second line overrides the price.
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{base}/api/sales"))
+        .json(&serde_json::json!({
+            "items": [
+                { "product_id": rice.0, "quantity": 1500 },
+                { "product_id": beans.0, "quantity": 3, "unit_price": 200 }
+            ]
+        }))
+        .send()
+        .await
+        .expect("post");
+    assert_eq!(resp.status(), 201, "sale was not created");
+    let sale: serde_json::Value = resp.json().await.expect("json");
+
+    // Header: total = 1500×250 + 3×200 = 375600 cents, confirmed, on the walk-in.
+    assert_eq!(sale["total"], 375600);
+    assert_eq!(sale["status"], "confirmed");
+    assert_eq!(sale["customer_id"], "00000000-0000-0000-0000-000000000001");
+    let lines = sale["items"].as_array().expect("items array");
+    assert_eq!(lines.len(), 2, "expected two sale lines");
+
+    // Lines snapshot name and unit; line totals follow the money rules.
+    for line in lines {
+        let qty = line["quantity"].as_i64().expect("quantity");
+        let price = line["unit_price"].as_i64().expect("unit_price");
+        assert_eq!(line["line_total"].as_i64().expect("line_total"), qty * price);
+    }
+    assert!(lines.iter().any(|l| l["product_name"] == rice_name && l["unit"] == "g"));
+    assert!(lines
+        .iter()
+        .any(|l| l["product_name"] == beans_name && l["unit"] == "unit"));
+
+    // Ledger: exactly one negative movement per line, on this sale.
+    let sale_id: uuid::Uuid = sale["id"]
+        .as_str()
+        .expect("sale id")
+        .parse()
+        .expect("sale id uuid");
+    let rice_moves: (i64,) = sqlx::query_as(
+        "SELECT COALESCE(SUM(quantity), 0) FROM stock_movements
+         WHERE product_id = $1 AND reason = 'sale' AND sale_id = $2",
+    )
+    .bind(rice.0)
+    .bind(sale_id)
+    .fetch_one(&pool)
+    .await
+    .expect("rice movements");
+    assert_eq!(rice_moves.0, -1500);
+    let beans_moves: (i64,) = sqlx::query_as(
+        "SELECT COALESCE(SUM(quantity), 0) FROM stock_movements
+         WHERE product_id = $1 AND reason = 'sale' AND sale_id = $2",
+    )
+    .bind(beans.0)
+    .bind(sale_id)
+    .fetch_one(&pool)
+    .await
+    .expect("beans movements");
+    assert_eq!(beans_moves.0, -3);
+
+    // Derived stock: 2000 − 1500 = 500 and 10 − 3 = 7.
+    let rice_stock: (i64,) = sqlx::query_as(
+        "SELECT COALESCE(SUM(quantity), 0) FROM stock_movements WHERE product_id = $1",
+    )
+    .bind(rice.0)
+    .fetch_one(&pool)
+    .await
+    .expect("rice stock");
+    assert_eq!(rice_stock.0, 500);
+    let beans_stock: (i64,) = sqlx::query_as(
+        "SELECT COALESCE(SUM(quantity), 0) FROM stock_movements WHERE product_id = $1",
+    )
+    .bind(beans.0)
+    .fetch_one(&pool)
+    .await
+    .expect("beans stock");
+    assert_eq!(beans_stock.0, 7);
+
+    // Cash moved by exactly the sale total.
+    let cash_after: (i64,) = sqlx::query_as(
+        "SELECT COALESCE(SUM(total), 0)::bigint FROM sales WHERE status = 'confirmed'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("cash after");
+    assert_eq!(cash_after.0 - cash_before.0, 375600);
+}
