@@ -357,3 +357,189 @@ async fn v1_create_sale_drops_stock_in_one_transaction() {
     .expect("cash after");
     assert_eq!(cash_after.0 - cash_before.0, 375600);
 }
+
+// v1 reads (work-unit 4): the read surface reflects what the writes put in.
+// Ignored by default: needs the live stack.
+#[tokio::test]
+#[ignore]
+async fn v1_read_endpoints_reflect_writes() {
+    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
+    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+    let client = reqwest::Client::new();
+    let suffix = uuid::Uuid::new_v4().simple();
+
+    // Two products created through the API, with initial stock.
+    let rice_name = format!("w4-rice-{suffix}");
+    let resp = client
+        .post(format!("{base}/api/products"))
+        .json(&serde_json::json!({
+            "name": rice_name, "list_price": 250, "unit": "g", "initial_stock": 2000
+        }))
+        .send()
+        .await
+        .expect("post rice");
+    assert_eq!(resp.status(), 201);
+    let rice: serde_json::Value = resp.json().await.expect("rice json");
+    assert_eq!(rice["stock"], 2000, "initial stock not reflected");
+
+    let beans_name = format!("w4-beans-{suffix}");
+    let resp = client
+        .post(format!("{base}/api/products"))
+        .json(&serde_json::json!({
+            "name": beans_name, "list_price": 100, "unit": "unit", "initial_stock": 10
+        }))
+        .send()
+        .await
+        .expect("post beans");
+    assert_eq!(resp.status(), 201);
+    let beans: serde_json::Value = resp.json().await.expect("beans json");
+
+    // A customer through the API.
+    let customer_name = format!("w4-customer-{suffix}");
+    let resp = client
+        .post(format!("{base}/api/customers"))
+        .json(&serde_json::json!({ "name": customer_name }))
+        .send()
+        .await
+        .expect("post customer");
+    assert_eq!(resp.status(), 201);
+    let created: serde_json::Value = resp.json().await.expect("customer json");
+    let customer_id = created["id"].as_str().expect("customer id");
+
+    // A sale with both products; the first line overrides its price.
+    let resp = client
+        .post(format!("{base}/api/sales"))
+        .json(&serde_json::json!({
+            "customer_id": customer_id,
+            "items": [
+                { "product_id": rice["id"], "quantity": 1500, "unit_price": 200 },
+                { "product_id": beans["id"], "quantity": 3 }
+            ]
+        }))
+        .send()
+        .await
+        .expect("post sale");
+    assert_eq!(resp.status(), 201);
+    let sale: serde_json::Value = resp.json().await.expect("sale json");
+    let expected_total: i64 = 1500 * 200 + 3 * 100;
+    assert_eq!(sale["total"], expected_total);
+
+    // GET /api/products: derived stock reflects the ledger, not a stored field.
+    let products: serde_json::Value = client
+        .get(format!("{base}/api/products"))
+        .send()
+        .await
+        .expect("get products")
+        .json()
+        .await
+        .expect("products json");
+    let products = products.as_array().expect("products array");
+    let rice_read = products
+        .iter()
+        .find(|p| p["name"] == rice_name)
+        .expect("rice in list");
+    assert_eq!(rice_read["stock"], 500, "stock must be 2000 - 1500");
+    assert_eq!(rice_read["unit"], "g");
+    assert_eq!(rice_read["list_price"], 250);
+    let beans_read = products
+        .iter()
+        .find(|p| p["name"] == beans_name)
+        .expect("beans in list");
+    assert_eq!(beans_read["stock"], 7, "stock must be 10 - 3");
+
+    // GET /api/customers: the new customer and the seeded walk-in are both there.
+    let customers: serde_json::Value = client
+        .get(format!("{base}/api/customers"))
+        .send()
+        .await
+        .expect("get customers")
+        .json()
+        .await
+        .expect("customers json");
+    let customers = customers.as_array().expect("customers array");
+    assert!(customers.iter().any(|c| c["name"] == customer_name));
+    assert!(customers
+        .iter()
+        .any(|c| c["name"] == "walk-in" && c["id"] == "00000000-0000-0000-0000-000000000001"));
+
+    // GET /api/sales: the sale appears with its nested lines and customer name.
+    let sales: serde_json::Value = client
+        .get(format!("{base}/api/sales?limit=50"))
+        .send()
+        .await
+        .expect("get sales")
+        .json()
+        .await
+        .expect("sales json");
+    let sales = sales.as_array().expect("sales array");
+    let sale_read = sales
+        .iter()
+        .find(|s| s["id"] == sale["id"])
+        .expect("sale in list");
+    assert_eq!(sale_read["customer_name"], customer_name);
+    assert_eq!(sale_read["status"], "confirmed");
+    let lines = sale_read["items"].as_array().expect("lines");
+    assert_eq!(lines.len(), 2);
+    assert!(lines.iter().any(|l| l["product_name"] == rice_name && l["unit"] == "g"));
+    assert!(lines.iter().any(|l| l["product_name"] == beans_name));
+
+    // GET /api/cash: the total moved by exactly this sale.
+    let cash_before: (i64,) = sqlx::query_as(
+        "SELECT COALESCE(SUM(total), 0)::bigint - $1 FROM sales WHERE status = 'confirmed'",
+    )
+    .bind(expected_total)
+    .fetch_one(&pool)
+    .await
+    .expect("cash arithmetic");
+    let cash: serde_json::Value = client
+        .get(format!("{base}/api/cash"))
+        .send()
+        .await
+        .expect("get cash")
+        .json()
+        .await
+        .expect("cash json");
+    assert_eq!(cash["total_cents"], cash_before.0 + expected_total);
+}
+
+// A product created without initial stock starts at 0 with no movement row.
+// Ignored by default: needs the live stack.
+#[tokio::test]
+#[ignore]
+async fn v1_product_without_initial_stock_starts_at_zero() {
+    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
+    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+    let client = reqwest::Client::new();
+    let name = format!("w4-empty-{}", uuid::Uuid::new_v4().simple());
+
+    let product: serde_json::Value = client
+        .post(format!("{base}/api/products"))
+        .json(&serde_json::json!({ "name": name, "list_price": 100 }))
+        .send()
+        .await
+        .expect("post product")
+        .json()
+        .await
+        .expect("product json");
+    assert_eq!(product["stock"], 0);
+    assert_eq!(product["unit"], "unit", "unit must default to 'unit'");
+
+    let moves: (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM stock_movements WHERE product_id = $1",
+    )
+    .bind(
+        product["id"]
+            .as_str()
+            .expect("id")
+            .parse::<uuid::Uuid>()
+            .expect("uuid"),
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("movement count");
+    assert_eq!(moves.0, 0, "no movement row should exist for zero initial stock");
+}

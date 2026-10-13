@@ -1,10 +1,11 @@
 use axum::{
-    extract::State,
+    extract::{Query, State},
     http::StatusCode,
-    routing::post,
+    routing::{get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
+use sqlx::FromRow;
 use uuid::Uuid;
 
 use crate::money::{self, LineInput};
@@ -15,8 +16,13 @@ use crate::AppState;
 /// customer. Must match the fixed id in `0002_v1_sales_stock.sql`.
 const WALK_IN_CUSTOMER_ID: Uuid = Uuid::from_u128(1);
 
+/// Upper bound for a single list query, whatever the client asks for.
+const MAX_LIST_LIMIT: i64 = 200;
+
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/sales", post(create_sale))
+    Router::new()
+        .route("/sales", post(create_sale).get(list_sales))
+        .route("/cash", get(cash_total))
 }
 
 #[derive(Debug, Deserialize)]
@@ -36,12 +42,33 @@ pub struct NewSaleItem {
     pub unit_price: Option<i64>,
 }
 
-/// A sale with its lines, as returned by the API.
+/// A sale with its lines, as returned by the create endpoint.
 #[derive(Debug, Serialize)]
 pub struct SaleWithItems {
     #[serde(flatten)]
     pub sale: Sale,
     pub items: Vec<SaleItem>,
+}
+
+/// A sale in list form: the sale, its customer's name, and its lines.
+#[derive(Debug, Serialize)]
+pub struct SaleListItem {
+    #[serde(flatten)]
+    pub sale: Sale,
+    pub customer_name: String,
+    pub items: Vec<SaleItem>,
+}
+
+/// The cash balance: the sum of confirmed sales, in cents.
+#[derive(Debug, Serialize)]
+pub struct Cash {
+    pub total_cents: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SalesQuery {
+    #[serde(default)]
+    pub limit: Option<i64>,
 }
 
 async fn create_sale(
@@ -108,7 +135,8 @@ async fn create_sale(
     let mut line_totals = Vec::with_capacity(lines.len());
     for line in &lines {
         line_totals.push(
-            money::line_total(line.quantity, line.unit_price).ok_or(StatusCode::BAD_REQUEST)?,
+            money::line_total(line.quantity, line.unit_price)
+                .ok_or(StatusCode::BAD_REQUEST)?,
         );
     }
 
@@ -197,6 +225,77 @@ async fn create_sale(
     })?;
 
     Ok((StatusCode::CREATED, Json(SaleWithItems { sale, items })))
+}
+
+/// A sale joined with its customer name, as fetched by the list endpoint.
+#[derive(Debug, FromRow)]
+struct SaleWithCustomer {
+    #[sqlx(flatten)]
+    sale: Sale,
+    customer_name: String,
+}
+
+async fn list_sales(
+    State(state): State<AppState>,
+    Query(params): Query<SalesQuery>,
+) -> Result<Json<Vec<SaleListItem>>, StatusCode> {
+    let limit = params.limit.unwrap_or(50).clamp(1, MAX_LIST_LIMIT);
+
+    let rows = sqlx::query_as::<_, SaleWithCustomer>(
+        "SELECT s.id, s.customer_id, s.total, s.payment_method, s.status, s.reversed_at,
+                s.created_at, c.name AS customer_name
+         FROM sales s
+         JOIN customers c ON c.id = s.customer_id
+         ORDER BY s.created_at DESC
+         LIMIT $1",
+    )
+    .bind(limit)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| {
+        tracing::error!(?e, "list_sales failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    // One extra query per sale for its lines: bounded by `limit` and simple on
+    // purpose — a single json-aggregated query is the optimization, later.
+    let mut sales = Vec::with_capacity(rows.len());
+    for row in rows {
+        let items = sqlx::query_as::<_, SaleItem>(
+            "SELECT id, sale_id, product_id, product_name, quantity, unit_price, line_total, unit
+             FROM sale_items WHERE sale_id = $1",
+        )
+        .bind(row.sale.id)
+        .fetch_all(&state.db)
+        .await
+        .map_err(|e| {
+            tracing::error!(?e, "sale items read failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+        sales.push(SaleListItem {
+            sale: row.sale,
+            customer_name: row.customer_name,
+            items,
+        });
+    }
+
+    Ok(Json(sales))
+}
+
+async fn cash_total(State(state): State<AppState>) -> Result<Json<Cash>, StatusCode> {
+    // SUM(bigint) is NUMERIC in Postgres: cast back to bigint for the i64 decode.
+    let total: (i64,) = sqlx::query_as(
+        "SELECT COALESCE(SUM(total), 0)::bigint FROM sales WHERE status = 'confirmed'",
+    )
+    .fetch_one(&state.db)
+    .await
+    .map_err(|e| {
+        tracing::error!(?e, "cash total failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    Ok(Json(Cash {
+        total_cents: total.0,
+    }))
 }
 
 #[cfg(test)]
