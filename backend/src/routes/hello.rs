@@ -16,7 +16,7 @@ struct HelloParams {
 }
 
 async fn hello(Query(q): Query<HelloParams>) -> Json<Value> {
-    let name = q.name.as_deref().unwrap_or("Skilluv");
+    let name = q.name.as_deref().unwrap_or("Tempox");
     Json(json!({
         "message": format!("Hello {name}!"),
         "server_time": Utc::now().to_rfc3339(),

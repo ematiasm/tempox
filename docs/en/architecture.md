@@ -1,4 +1,4 @@
-# Architecture — starter-fullstack-rust
+# Architecture — Tempox
 
 ## Opinionated choices
 
@@ -9,7 +9,7 @@ Axum aligns with the tokio + tower ecosystem and has become the de-facto standar
 ### 2. sqlx over Diesel or SeaORM
 
 - Raw SQL kept close to the code (no query DSL to learn).
-- Compile-time query checking (via `sqlx::query!`) when a live DB is available; falls back to `SQLX_OFFLINE=true` for CI.
+- Compile-time query checking (via `sqlx::query!`) against a live database. The `sqlx::query!` macros resolve while the crate compiles, so CI runs a PostgreSQL service and applies the migrations before the first build step.
 - Async-native, no blocking pool.
 
 ### 3. SvelteKit 5 with runes
@@ -50,7 +50,7 @@ All routes are under `/api`. Money is sent and stored as **integer cents** (`150
 - **Events are immutable**: `sale_items` reject `UPDATE` and `DELETE`; a sale's economics (`total`, `customer_id`, `payment_method`) are locked while the status transition still works for reversal; a product's `unit` is locked once it has history.
 - **Corrections are compensating rows** (a reversal), never edits. The sales lifecycle is designed toward `draft → confirmed → cancel → done`.
 
-## What's out of scope for the starter
+## What's out of scope for Tempox
 
 - Authentication (add your own auth crate, e.g. `axum-login`, JWT, or an external IdP).
 - Observability beyond `tracing` (no Prometheus/OTel here — see `starter-devops`).

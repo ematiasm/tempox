@@ -1,15 +1,15 @@
-# Getting started — starter-fullstack-rust
+# Getting started — Tempox
 
 ## Prerequisites
 
 - Docker + Docker Compose 2.24+
-- (Optional, for local dev without Docker) Rust 1.80+, Node 24+, PostgreSQL 18
+- (Optional, for local dev without Docker) Rust 1.89+, Node 24+, PostgreSQL 18
 
 ## First run
 
 ```bash
-git clone git@github.com:skilluv-community/starter-fullstack-rust.git
-cd starter-fullstack-rust
+git clone https://github.com/ematiasm/tempox.git
+cd tempox
 cp .env.example .env
 docker compose up --build
 ```
@@ -43,7 +43,7 @@ cd backend && cargo test -- --ignored
 
 ## Deploying
 
-This starter is designed for self-hosted deployment via [Coolify](https://coolify.io/). Point Coolify at the repo, and its Docker Compose recipe will build both services.
+Tempox is designed for self-hosted deployment via [Coolify](https://coolify.io/). Point Coolify at the repo, and its Docker Compose recipe will build both services.
 
 For production, at minimum change:
 

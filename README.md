@@ -7,9 +7,9 @@
 
 ## Status
 
-**v0 — foundations working.** The stack runs end-to-end; the notes CRUD demo proves the full path (SvelteKit → Axum → PostgreSQL).
+**v1 — Sales (backend).** Register a multi-item sale; stock drops per line and cash rises by the sale total, in one transaction. Products, customers, and the append-only movement ledger behind them are live, covered by unit and integration tests.
 
-**Next: v1 — Sales.** Register a simple sale and have stock and cash update automatically. In design.
+**Next: v1a — the Sales screen.** The UI is deferred on purpose: the slice is verifiable through the API and curl, so the interface gets built on a backend that already works. See [`plan-v1a.md`](./plan-v1a.md).
 
 ## What this is
 
@@ -54,15 +54,17 @@ Integration tests (opt-in, hit a live backend):
 
 ```bash
 docker compose up -d postgres backend
-cargo test -- --ignored
+cd backend && cargo test -- --ignored
 ```
+
+Note that a running PostgreSQL is required even to *compile*: the `sqlx::query!` macros verify the SQL against a live database while the crate builds. See [`docs/en/getting-started.md`](./docs/en/getting-started.md).
 
 ## Structure
 
 ```
 backend/     Axum server + sqlx migrations + integration tests
 frontend/    SvelteKit app (Svelte 5 runes, Tailwind)
-docs/        Documentation (en, fr)
+docs/        Documentation (en)
 .github/     CI + dependabot + PR template
 ```
 
