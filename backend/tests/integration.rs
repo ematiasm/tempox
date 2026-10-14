@@ -771,3 +771,190 @@ async fn v1_product_without_initial_stock_starts_at_zero() {
         "no movement row should exist for zero initial stock"
     );
 }
+
+// v1a (work-unit 1, S2) — GET /api/sales is scoped by an explicit date range
+// and offset-paginated. `from` is inclusive and `to` is exclusive, so adjacent
+// days never double-count; absent bounds keep the recent-50 behaviour.
+// The window lives in 2001 so rows other tests created never interfere.
+// Ignored by default: needs the live stack (backend + db).
+#[tokio::test]
+#[ignore]
+async fn v1a_sales_list_is_scoped_by_date_and_offset() {
+    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
+    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+    let client = reqwest::Client::new();
+
+    // Three documents around one midnight boundary, plus one at the exact
+    // boundary instant. The boundary row is the whole point: it belongs to the
+    // later day and to that day only.
+    let day = "2001-03-04";
+    let next = "2001-03-05";
+    let bounds = (
+        format!("{day}T00:00:00Z"),
+        format!("{next}T00:00:00Z"),
+        "2001-03-06T00:00:00Z".to_string(),
+    );
+
+    let insert = |created_at: &str| {
+        let created_at = created_at.to_string();
+        let pool = pool.clone();
+        async move {
+            let row: (uuid::Uuid,) = sqlx::query_as(
+                "INSERT INTO sales (customer_id, total, created_at)
+                 VALUES ('00000000-0000-0000-0000-000000000001', 100, $1::timestamptz) RETURNING id",
+            )
+            .bind(created_at)
+            .fetch_one(&pool)
+            .await
+            .expect("insert sale");
+            row.0
+        }
+    };
+
+    // This test asserts absolute counts inside its window, so the window has
+    // to start empty: a previous run's probe rows would otherwise be counted as
+    // this run's. Probe sales carry no lines and no movements, so deleting them
+    // touches neither the ledger nor another test's data.
+    let clear_window = || {
+        let pool = pool.clone();
+        async move {
+            sqlx::query(
+                "DELETE FROM sales WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz",
+            )
+            .bind("2001-03-04T00:00:00Z")
+            .bind("2001-03-06T00:00:00Z")
+            .execute(&pool)
+            .await
+            .expect("clear probe window")
+        }
+    };
+    clear_window().await;
+
+    let late_today = insert("2001-03-04T23:30:00Z").await;
+    let midnight = insert("2001-03-05T00:00:00Z").await;
+    let early_next = insert("2001-03-05T00:30:00Z").await;
+    let noon_next = insert("2001-03-05T12:00:00Z").await;
+
+    let ids_of = |body: &serde_json::Value| -> Vec<String> {
+        body.as_array()
+            .expect("array")
+            .iter()
+            .map(|s| s["id"].as_str().expect("id").to_string())
+            .collect()
+    };
+
+    let get = |query: String| {
+        let client = client.clone();
+        let base = base.clone();
+        async move {
+            let resp = client
+                .get(format!("{base}/api/sales?{query}"))
+                .send()
+                .await
+                .expect("get");
+            assert!(resp.status().is_success(), "list failed: {}", resp.status());
+            resp.json::<serde_json::Value>().await.expect("json")
+        }
+    };
+
+    // Day one: `to` is exclusive, so the midnight document is not here.
+    let day_one = get(format!("from={}&to={}&limit=200", bounds.0, bounds.1)).await;
+    let day_one_ids = ids_of(&day_one);
+    assert!(
+        day_one_ids.contains(&late_today.to_string()),
+        "the day's last sale is missing"
+    );
+    assert!(
+        !day_one_ids.contains(&midnight.to_string()),
+        "`to` must be exclusive: the midnight document belongs to the next day"
+    );
+
+    // Day two: `from` is inclusive, so the midnight document is here, with the
+    // two later ones. Nothing from day one follows it across.
+    let day_two = get(format!("from={}&to={}&limit=200", bounds.1, bounds.2)).await;
+    let day_two_ids = ids_of(&day_two);
+    assert!(
+        day_two_ids.contains(&midnight.to_string()),
+        "`from` must be inclusive: the midnight document belongs to this day"
+    );
+    assert!(day_two_ids.contains(&early_next.to_string()));
+    assert!(day_two_ids.contains(&noon_next.to_string()));
+    assert!(
+        !day_two_ids.contains(&late_today.to_string()),
+        "an adjacent day's sale leaked into this range"
+    );
+
+    // Adjacent days partition the boundary: no document is counted twice and
+    // none is lost across the two ranges that meet at midnight.
+    assert_eq!(day_one_ids.len(), 1, "day one holds exactly its own sale");
+    assert_eq!(day_two_ids.len(), 3, "day two holds exactly its own sales");
+    assert!(
+        !day_one_ids.contains(&early_next.to_string()),
+        "the boundary was double-counted"
+    );
+
+    // Order is newest first, whatever the range.
+    let ordered = get(format!("from={}&to={}&limit=200", bounds.1, bounds.2)).await;
+    let ordered_ids = ids_of(&ordered);
+    assert_eq!(
+        ordered_ids,
+        vec![
+            noon_next.to_string(),
+            early_next.to_string(),
+            midnight.to_string()
+        ],
+        "the ledger must read newest first"
+    );
+
+    // offset pages through the same range without repeating a row.
+    let offset_one = get(format!(
+        "from={}&to={}&limit=2&offset=1",
+        bounds.1, bounds.2
+    ))
+    .await;
+    assert_eq!(
+        ids_of(&offset_one),
+        vec![early_next.to_string(), midnight.to_string()],
+        "offset 1 of the same range must resume after the first row"
+    );
+
+    // No bounds: the date filter is not applied, so the old window of recent
+    // documents still reaches this 2001 row. That is the behaviour v1 shipped.
+    let unbounded = get("limit=200".to_string()).await;
+    assert!(
+        ids_of(&unbounded).contains(&late_today.to_string()),
+        "absent bounds must keep the unscoped recent-documents behaviour"
+    );
+
+    // limit clamps to 1..200: zero is not an empty page, it is one row.
+    let clamped = get(format!("from={}&to={}&limit=0", bounds.1, bounds.2)).await;
+    assert_eq!(
+        clamped.as_array().expect("array").len(),
+        1,
+        "limit must clamp up to 1"
+    );
+
+    // The shape the frontend reads is unchanged: rows still carry the sale,
+    // its customer's name and its nested lines.
+    let row = &day_one.as_array().expect("array")[0];
+    assert!(row["customer_name"].is_string(), "customer_name is missing");
+    assert!(row["items"].is_array(), "items is missing");
+    assert_eq!(row["status"], "confirmed");
+
+    // Nothing above may have written: the probe rows are the only ones this
+    // test added, and they are still exactly four.
+    let mine: (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM sales WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz",
+    )
+    .bind("2001-03-04T00:00:00Z")
+    .bind("2001-03-06T00:00:00Z")
+    .fetch_one(&pool)
+    .await
+    .expect("probe count");
+    assert_eq!(mine.0, 4, "listing a range must not change stored sales");
+
+    // Leave the window as it was found.
+    clear_window().await;
+}

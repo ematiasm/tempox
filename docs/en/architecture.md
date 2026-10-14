@@ -40,7 +40,7 @@ All routes are under `/api`. Money is sent and stored as **integer cents** (`150
 | `GET /api/customers` | Customers, including the seeded `walk-in` |
 | `POST /api/customers` | `{name}` — 409 on duplicate name |
 | `POST /api/sales` | `{customer_id?, items: [{product_id, quantity, unit_price?}]}` — **one transaction**: the sale, its lines (name/unit/price snapshots), and one negative stock movement per line. Omitted `customer_id` → walk-in; omitted `unit_price` → list price. A `unit_price` of `0` is a bonus line (regalo): it is recorded, the stock still drops, and it contributes nothing to cash. 404 unknown product/customer; 400 empty, non-positive quantity, or negative price |
-| `GET /api/sales?limit=50` | Recent sales first, with nested lines and customer name. The limit is clamped to 1..200, so `limit=0` returns one sale rather than none |
+| `GET /api/sales?from=&to=&limit=50&offset=0` | Sales newest first, with nested lines and customer name. `from` is inclusive and `to` is exclusive, so adjacent ranges partition the ledger instead of double-counting the sale recorded at midnight; absent bounds keep the unscoped recent-documents behaviour. `offset` defaults to `0`, clamped up to `0` so a negative value is not a 500. The limit is clamped to 1..200, so `limit=0` returns one sale rather than none |
 | `GET /api/cash` | `{total_cents}` — sum of confirmed sale totals, derived |
 
 Request decoding is axum's `Json` extractor, so its rejections keep their standard codes: `415` without a JSON `content-type`, `400` on malformed JSON, and `422` when the shape parses but a field is wrong (an unparseable UUID, a missing field, `"quantity": "two"`). The handler's own validation answers `400`.
