@@ -350,7 +350,6 @@
     {#if hasInvalid}
       <span class="warn">{lang.t.sales_invalid}</span>
     {/if}
-    <span class="shortcut">{lang.t.sales_draft_hint}</span>
   </div>
 </section>
 
@@ -574,11 +573,6 @@
     gap: 12px;
     padding: 13px 18px;
     border-top: 1px solid var(--rule);
-  }
-  .shortcut {
-    margin-left: auto;
-    color: var(--ink-soft);
-    font-size: var(--step--1);
   }
   .warn {
     color: var(--crimson-deep);

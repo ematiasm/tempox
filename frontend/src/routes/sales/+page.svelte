@@ -16,9 +16,20 @@
   function onkeydown(e: KeyboardEvent) {
     if (e.key === 'F2') {
       e.preventDefault();
-      document.getElementById('product-search')?.focus();
+      // F2 is printed on the band's action, so it records. A key labelled on a
+      // control and bound to something else teaches the cashier that the
+      // shortcut lies.
+      if (ready) draft?.record();
+      else document.getElementById('product-search')?.focus();
     }
   }
+
+  // The product field is where a sale starts, so it holds the caret on arrival:
+  // the cashier can type the first product without touching the mouse or
+  // pressing anything first.
+  $effect(() => {
+    queueMicrotask(() => document.getElementById('product-search')?.focus());
+  });
 </script>
 
 <svelte:window {onkeydown} />
