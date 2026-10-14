@@ -76,9 +76,18 @@ mod tests {
     #[test]
     fn sale_total_sums_all_lines() {
         let lines = [
-            LineInput { quantity: 2, unit_price: 250 },  // $5.00
-            LineInput { quantity: 1, unit_price: 1000 }, // $10.00
-            LineInput { quantity: 4, unit_price: 75 },   // $3.00
+            LineInput {
+                quantity: 2,
+                unit_price: 250,
+            }, // $5.00
+            LineInput {
+                quantity: 1,
+                unit_price: 1000,
+            }, // $10.00
+            LineInput {
+                quantity: 4,
+                unit_price: 75,
+            }, // $3.00
         ];
         assert_eq!(sale_total(&lines), Some(1800)); // $18.00
     }
@@ -91,15 +100,24 @@ mod tests {
     #[test]
     fn sale_total_stays_exact_where_float_would_not() {
         // 3 × $0.10 is 0.30000000000000004 in float; in cents it is exact.
-        let lines = [LineInput { quantity: 3, unit_price: 10 }];
+        let lines = [LineInput {
+            quantity: 3,
+            unit_price: 10,
+        }];
         assert_eq!(sale_total(&lines), Some(30));
     }
 
     #[test]
     fn sale_total_propagates_an_invalid_line() {
         let lines = [
-            LineInput { quantity: 2, unit_price: 250 },
-            LineInput { quantity: 0, unit_price: 250 }, // invalid line poisons the sale
+            LineInput {
+                quantity: 2,
+                unit_price: 250,
+            },
+            LineInput {
+                quantity: 0,
+                unit_price: 250,
+            }, // invalid line poisons the sale
         ];
         assert_eq!(sale_total(&lines), None);
     }

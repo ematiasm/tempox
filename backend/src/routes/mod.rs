@@ -10,14 +10,12 @@ pub mod products;
 pub mod sales;
 
 pub fn router() -> Router<AppState> {
-    Router::new()
-        .merge(health::routes())
-        .nest(
-            "/api",
-            hello::routes()
-                .merge(notes::routes())
-                .merge(sales::routes())
-                .merge(products::routes())
-                .merge(customers::routes()),
-        )
+    Router::new().merge(health::routes()).nest(
+        "/api",
+        hello::routes()
+            .merge(notes::routes())
+            .merge(sales::routes())
+            .merge(products::routes())
+            .merge(customers::routes()),
+    )
 }

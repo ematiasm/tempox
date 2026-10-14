@@ -1,16 +1,11 @@
-use axum::{
-    extract::State,
-    http::StatusCode,
-    routing::get,
-    Json, Router,
-};
+use axum::{Json, Router, extract::State, http::StatusCode, routing::get};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use uuid::Uuid;
 
-use crate::db::conflict_or_500;
 use crate::AppState;
+use crate::db::conflict_or_500;
 
 /// The units a product's quantities are expressed in.
 const UNITS: [&str; 3] = ["unit", "g", "ml"];

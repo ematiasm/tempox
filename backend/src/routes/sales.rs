@@ -1,15 +1,15 @@
 use axum::{
+    Json, Router,
     extract::{Query, State},
     http::StatusCode,
     routing::{get, post},
-    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::money::{self, LineInput};
-use crate::models::{sale::Sale, sale_item::SaleItem};
 use crate::AppState;
+use crate::models::{sale::Sale, sale_item::SaleItem};
+use crate::money::{self, LineInput};
 
 /// The customer seeded by the migration: the default for sales with no named
 /// customer. Must match the fixed id in `0002_v1_sales_stock.sql`.
@@ -88,13 +88,16 @@ async fn create_sale(
     // Customer: an unknown id is a 404; omitted means the seeded walk-in.
     let customer_id = match body.customer_id {
         Some(id) => {
-            let found = sqlx::query_scalar!("SELECT count(*) AS \"count!\" FROM customers WHERE id = $1", id)
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(|e| {
-                    tracing::error!(?e, "customer lookup failed");
-                    StatusCode::INTERNAL_SERVER_ERROR
-                })?;
+            let found = sqlx::query_scalar!(
+                "SELECT count(*) AS \"count!\" FROM customers WHERE id = $1",
+                id
+            )
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| {
+                tracing::error!(?e, "customer lookup failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
             if found == 0 {
                 return Err(StatusCode::NOT_FOUND);
             }
@@ -132,8 +135,7 @@ async fn create_sale(
     let mut line_totals = Vec::with_capacity(lines.len());
     for line in &lines {
         line_totals.push(
-            money::line_total(line.quantity, line.unit_price)
-                .ok_or(StatusCode::BAD_REQUEST)?,
+            money::line_total(line.quantity, line.unit_price).ok_or(StatusCode::BAD_REQUEST)?,
         );
     }
 

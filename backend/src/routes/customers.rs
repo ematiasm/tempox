@@ -1,14 +1,9 @@
-use axum::{
-    extract::State,
-    http::StatusCode,
-    routing::get,
-    Json, Router,
-};
+use axum::{Json, Router, extract::State, http::StatusCode, routing::get};
 use serde::Deserialize;
 
+use crate::AppState;
 use crate::db::conflict_or_500;
 use crate::models::customer::Customer;
-use crate::AppState;
 
 pub fn routes() -> Router<AppState> {
     Router::new().route("/customers", get(list_customers).post(create_customer))
@@ -19,9 +14,7 @@ pub struct NewCustomer {
     pub name: String,
 }
 
-async fn list_customers(
-    State(state): State<AppState>,
-) -> Result<Json<Vec<Customer>>, StatusCode> {
+async fn list_customers(State(state): State<AppState>) -> Result<Json<Vec<Customer>>, StatusCode> {
     let customers = sqlx::query_as!(
         Customer,
         "SELECT id, name, created_at FROM customers ORDER BY name"

@@ -51,11 +51,12 @@ async fn notes_crud_roundtrip() {
         .json()
         .await
         .expect("json");
-    assert!(list
-        .as_array()
-        .expect("array")
-        .iter()
-        .any(|n| n["id"] == id));
+    assert!(
+        list.as_array()
+            .expect("array")
+            .iter()
+            .any(|n| n["id"] == id)
+    );
 
     let del = client
         .delete(format!("{base}/api/notes/{id}"))
@@ -74,7 +75,13 @@ async fn v1_schema_seeds_walkin_customers() {
         .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
     let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
 
-    for table in ["customers", "products", "sales", "sale_items", "stock_movements"] {
+    for table in [
+        "customers",
+        "products",
+        "sales",
+        "sale_items",
+        "stock_movements",
+    ] {
         let regclass: (Option<String>,) = sqlx::query_as("SELECT to_regclass($1)::text")
             .bind(format!("public.{table}"))
             .fetch_one(&pool)
@@ -182,12 +189,11 @@ async fn v1_units_and_history_guards() {
     .fetch_one(&mut *tx)
     .await
     .expect("insert sale item");
-    let cid: (uuid::Uuid,) = sqlx::query_as(
-        "INSERT INTO customers (name) VALUES ('guard-test-other') RETURNING id",
-    )
-    .fetch_one(&mut *tx)
-    .await
-    .expect("insert second customer");
+    let cid: (uuid::Uuid,) =
+        sqlx::query_as("INSERT INTO customers (name) VALUES ('guard-test-other') RETURNING id")
+            .fetch_one(&mut *tx)
+            .await
+            .expect("insert second customer");
 
     // Probe helper: run one expected-to-fail statement against a savepoint,
     // then recover the transaction. Returns the statement's result.
@@ -204,18 +210,34 @@ async fn v1_units_and_history_guards() {
         }};
     }
 
-    probe_denied!("sale item update", "UPDATE sale_items SET quantity = 1 WHERE id = $1", iid.0);
-    probe_denied!("sale item delete", "DELETE FROM sale_items WHERE id = $1", iid.0);
-    probe_denied!("sale total change", "UPDATE sales SET total = 1 WHERE id = $1", sid.0);
-    probe_denied!("sale customer change", "UPDATE sales SET customer_id = $2 WHERE id = $1", sid.0, cid.0);
+    probe_denied!(
+        "sale item update",
+        "UPDATE sale_items SET quantity = 1 WHERE id = $1",
+        iid.0
+    );
+    probe_denied!(
+        "sale item delete",
+        "DELETE FROM sale_items WHERE id = $1",
+        iid.0
+    );
+    probe_denied!(
+        "sale total change",
+        "UPDATE sales SET total = 1 WHERE id = $1",
+        sid.0
+    );
+    probe_denied!(
+        "sale customer change",
+        "UPDATE sales SET customer_id = $2 WHERE id = $1",
+        sid.0,
+        cid.0
+    );
 
     // The status transition (reversal) must still work.
-    let transition = sqlx::query(
-        "UPDATE sales SET status = 'cancel', reversed_at = now() WHERE id = $1",
-    )
-    .bind(sid.0)
-    .execute(&mut *tx)
-    .await;
+    let transition =
+        sqlx::query("UPDATE sales SET status = 'cancel', reversed_at = now() WHERE id = $1")
+            .bind(sid.0)
+            .execute(&mut *tx)
+            .await;
     assert!(transition.is_ok(), "status transition was blocked");
 
     tx.rollback().await.expect("rollback");
@@ -241,11 +263,13 @@ async fn v1_create_sale_drops_stock_in_one_transaction() {
     .fetch_one(&pool)
     .await
     .expect("insert rice");
-    sqlx::query("INSERT INTO stock_movements (product_id, quantity, reason) VALUES ($1, 2000, 'initial')")
-        .bind(rice.0)
-        .execute(&pool)
-        .await
-        .expect("rice initial stock");
+    sqlx::query(
+        "INSERT INTO stock_movements (product_id, quantity, reason) VALUES ($1, 2000, 'initial')",
+    )
+    .bind(rice.0)
+    .execute(&pool)
+    .await
+    .expect("rice initial stock");
 
     let beans_name = format!("w3-beans-{suffix}");
     let beans: (uuid::Uuid,) = sqlx::query_as(
@@ -255,11 +279,13 @@ async fn v1_create_sale_drops_stock_in_one_transaction() {
     .fetch_one(&pool)
     .await
     .expect("insert beans");
-    sqlx::query("INSERT INTO stock_movements (product_id, quantity, reason) VALUES ($1, 10, 'initial')")
-        .bind(beans.0)
-        .execute(&pool)
-        .await
-        .expect("beans initial stock");
+    sqlx::query(
+        "INSERT INTO stock_movements (product_id, quantity, reason) VALUES ($1, 10, 'initial')",
+    )
+    .bind(beans.0)
+    .execute(&pool)
+    .await
+    .expect("beans initial stock");
 
     // Cash measured as a delta: prior runs' sales must not matter.
     let cash_before: (i64,) = sqlx::query_as(
@@ -296,12 +322,21 @@ async fn v1_create_sale_drops_stock_in_one_transaction() {
     for line in lines {
         let qty = line["quantity"].as_i64().expect("quantity");
         let price = line["unit_price"].as_i64().expect("unit_price");
-        assert_eq!(line["line_total"].as_i64().expect("line_total"), qty * price);
+        assert_eq!(
+            line["line_total"].as_i64().expect("line_total"),
+            qty * price
+        );
     }
-    assert!(lines.iter().any(|l| l["product_name"] == rice_name && l["unit"] == "g"));
-    assert!(lines
-        .iter()
-        .any(|l| l["product_name"] == beans_name && l["unit"] == "unit"));
+    assert!(
+        lines
+            .iter()
+            .any(|l| l["product_name"] == rice_name && l["unit"] == "g")
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l["product_name"] == beans_name && l["unit"] == "unit")
+    );
 
     // Ledger: exactly one negative movement per line, on this sale.
     let sale_id: uuid::Uuid = sale["id"]
@@ -460,9 +495,11 @@ async fn v1_read_endpoints_reflect_writes() {
         .expect("customers json");
     let customers = customers.as_array().expect("customers array");
     assert!(customers.iter().any(|c| c["name"] == customer_name));
-    assert!(customers
-        .iter()
-        .any(|c| c["name"] == "walk-in" && c["id"] == "00000000-0000-0000-0000-000000000001"));
+    assert!(
+        customers
+            .iter()
+            .any(|c| c["name"] == "walk-in" && c["id"] == "00000000-0000-0000-0000-000000000001")
+    );
 
     // GET /api/sales: the sale appears with its nested lines and customer name.
     let sales: serde_json::Value = client
@@ -482,7 +519,11 @@ async fn v1_read_endpoints_reflect_writes() {
     assert_eq!(sale_read["status"], "confirmed");
     let lines = sale_read["items"].as_array().expect("lines");
     assert_eq!(lines.len(), 2);
-    assert!(lines.iter().any(|l| l["product_name"] == rice_name && l["unit"] == "g"));
+    assert!(
+        lines
+            .iter()
+            .any(|l| l["product_name"] == rice_name && l["unit"] == "g")
+    );
     assert!(lines.iter().any(|l| l["product_name"] == beans_name));
 
     // GET /api/cash: the total moved by exactly this sale.
@@ -528,18 +569,20 @@ async fn v1_product_without_initial_stock_starts_at_zero() {
     assert_eq!(product["stock"], 0);
     assert_eq!(product["unit"], "unit", "unit must default to 'unit'");
 
-    let moves: (i64,) = sqlx::query_as(
-        "SELECT count(*) FROM stock_movements WHERE product_id = $1",
-    )
-    .bind(
-        product["id"]
-            .as_str()
-            .expect("id")
-            .parse::<uuid::Uuid>()
-            .expect("uuid"),
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("movement count");
-    assert_eq!(moves.0, 0, "no movement row should exist for zero initial stock");
+    let moves: (i64,) =
+        sqlx::query_as("SELECT count(*) FROM stock_movements WHERE product_id = $1")
+            .bind(
+                product["id"]
+                    .as_str()
+                    .expect("id")
+                    .parse::<uuid::Uuid>()
+                    .expect("uuid"),
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("movement count");
+    assert_eq!(
+        moves.0, 0,
+        "no movement row should exist for zero initial stock"
+    );
 }
