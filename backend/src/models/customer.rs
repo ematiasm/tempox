@@ -5,8 +5,6 @@ use uuid::Uuid;
 
 /// A customer. The migration seeds the `walk-in` row: the default for sales
 /// with no named customer.
-// Removed when the sale endpoints (work-units 3-4) construct these.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct Customer {
     pub id: Uuid,

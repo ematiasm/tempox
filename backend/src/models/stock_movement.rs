@@ -4,7 +4,11 @@ use uuid::Uuid;
 
 /// One append-only ledger entry. A product's stock is the SUM of its
 /// movements — never a mutable quantity field.
-// Removed when the sale endpoints (work-units 3-4) construct these.
+///
+/// Not constructed anywhere yet: `products.rs` reads the balance with an
+/// aggregate instead of materializing rows, and nothing reads individual
+/// movements. Kept as the shape of a `stock_movements` row for the v1.5
+/// reversal work, which will write and show them.
 #[allow(dead_code)]
 #[derive(Debug, Clone, FromRow)]
 pub struct StockMovement {

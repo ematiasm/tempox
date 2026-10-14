@@ -4,8 +4,6 @@ use uuid::Uuid;
 
 /// One line of a sale. The product name, unit, and prices are snapshots taken
 /// at sale time, so later catalog changes never rewrite history.
-// Removed when the sale endpoints (work-units 3-4) construct these.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct SaleItem {
     pub id: Uuid,
