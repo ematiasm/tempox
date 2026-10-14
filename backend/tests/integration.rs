@@ -346,6 +346,88 @@ async fn v1_ledger_is_append_only_and_reason_coherent() {
     tx.rollback().await.expect("rollback");
 }
 
+// v1 (P3) — a bonus line is a real line whose price is zero.
+// The money arithmetic and the database constraints have to agree: if the
+// handler accepts a zero line but the schema still says `> 0`, the insert
+// fails and the caller gets a 500 instead of a created sale.
+// Ignored by default: needs the live stack.
+#[tokio::test]
+#[ignore]
+async fn v1_sale_of_bonus_lines_is_recorded() {
+    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
+    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+    let client = reqwest::Client::new();
+    let suffix = uuid::Uuid::new_v4().simple();
+
+    // A product with stock, so the bonus movement has something to take.
+    let gift_name = format!("p3-gift-{suffix}");
+    let product: serde_json::Value = client
+        .post(format!("{base}/api/products"))
+        .json(&serde_json::json!({
+            "name": gift_name, "list_price": 250, "unit": "unit", "initial_stock": 10
+        }))
+        .send()
+        .await
+        .expect("post product")
+        .json()
+        .await
+        .expect("product json");
+
+    let cash_before: (i64,) = sqlx::query_as(
+        "SELECT COALESCE(SUM(total), 0)::bigint FROM sales WHERE status = 'confirmed'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("cash before");
+
+    // Three units, given away: the price override is zero.
+    let resp = client
+        .post(format!("{base}/api/sales"))
+        .json(&serde_json::json!({
+            "items": [{ "product_id": product["id"], "quantity": 3, "unit_price": 0 }]
+        }))
+        .send()
+        .await
+        .expect("post sale");
+    assert_eq!(
+        resp.status(),
+        201,
+        "a bonus sale must be created, not rejected by the schema"
+    );
+    let sale: serde_json::Value = resp.json().await.expect("sale json");
+
+    // The sale exists and is worth nothing.
+    assert_eq!(sale["total"], 0, "a bonus sale totals zero");
+    assert_eq!(sale["status"], "confirmed");
+    let lines = sale["items"].as_array().expect("items");
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0]["unit_price"], 0, "the bonus price is zero");
+    assert_eq!(lines[0]["line_total"], 0, "and so is its line total");
+
+    // The stock left the shop even though no money came in: that is the whole
+    // point of recording a bonus line instead of silently ignoring it.
+    let product_id: uuid::Uuid = product["id"].as_str().expect("id").parse().expect("uuid");
+    let stock: (i64,) = sqlx::query_as(
+        "SELECT COALESCE(SUM(quantity), 0) FROM stock_movements WHERE product_id = $1",
+    )
+    .bind(product_id)
+    .fetch_one(&pool)
+    .await
+    .expect("stock");
+    assert_eq!(stock.0, 7, "10 in, 3 given away");
+
+    // A zero-total sale contributes zero to cash, so the balance is untouched.
+    let cash_after: (i64,) = sqlx::query_as(
+        "SELECT COALESCE(SUM(total), 0)::bigint FROM sales WHERE status = 'confirmed'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("cash after");
+    assert_eq!(cash_after.0, cash_before.0, "a bonus sale moves no money");
+}
+
 // v1 writes (work-unit 3): a multi-item sale lands in one transaction with its
 // stock movements. Unique product names keep repeated runs collision-free.
 // Ignored by default: needs the live stack (backend + db).

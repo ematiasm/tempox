@@ -8,8 +8,6 @@
 pub type Cents = i64;
 
 /// One line of a sale before it is written: quantity and unit price in cents.
-// Used by the sale endpoints (work-unit 3).
-#[allow(dead_code)]
 pub struct LineInput {
     pub quantity: i32,
     pub unit_price: Cents,
@@ -18,12 +16,13 @@ pub struct LineInput {
 /// `line_total = quantity * unit_price`, in exact integer arithmetic.
 ///
 /// Returns `None` when the line violates an invariant the database enforces
-/// (non-positive quantity or price) or when the multiplication would
+/// (non-positive quantity, negative price) or when the multiplication would
 /// overflow: money math fails loudly instead of wrapping silently.
-// Used by the sale endpoints (work-unit 3).
-#[allow(dead_code)]
+///
+/// A zero price is valid — a bonus line (regalo) is a real line whose price
+/// happens to be nothing.
 pub fn line_total(quantity: i32, unit_price: Cents) -> Option<Cents> {
-    if quantity <= 0 || unit_price <= 0 {
+    if quantity <= 0 || unit_price < 0 {
         return None;
     }
     i64::from(quantity).checked_mul(unit_price)
@@ -32,9 +31,8 @@ pub fn line_total(quantity: i32, unit_price: Cents) -> Option<Cents> {
 /// `sales.total = SUM(line_total)` over the sale's lines.
 ///
 /// Returns `None` if any line is invalid. An empty slice yields `0`: the API
-/// rejects empty item lists with 400 before this is ever reached.
-// Used by the sale endpoints (work-unit 3).
-#[allow(dead_code)]
+/// rejects empty item lists with 400 before this is ever reached. A sale whose
+/// lines are all bonus lines totals `0` and is still a real sale.
 pub fn sale_total(lines: &[LineInput]) -> Option<Cents> {
     let mut total: Cents = 0;
     for line in lines {
@@ -62,9 +60,15 @@ mod tests {
     }
 
     #[test]
-    fn line_total_rejects_non_positive_price() {
-        assert_eq!(line_total(2, 0), None);
+    fn line_total_rejects_negative_price() {
+        // Zero is allowed: a bonus line (regalo) is a real sale line whose
+        // price happens to be nothing. Only a negative price is nonsense.
         assert_eq!(line_total(2, -100), None);
+    }
+
+    #[test]
+    fn line_total_allows_a_zero_price() {
+        assert_eq!(line_total(3, 0), Some(0));
     }
 
     #[test]
@@ -105,6 +109,23 @@ mod tests {
             unit_price: 10,
         }];
         assert_eq!(sale_total(&lines), Some(30));
+    }
+
+    #[test]
+    fn sale_total_of_bonus_lines_is_zero() {
+        // A sale made entirely of bonus lines is worth nothing but still
+        // happened: the stock left the shop, so the row must exist at 0.
+        let lines = [
+            LineInput {
+                quantity: 3,
+                unit_price: 0,
+            },
+            LineInput {
+                quantity: 1,
+                unit_price: 0,
+            },
+        ];
+        assert_eq!(sale_total(&lines), Some(0));
     }
 
     #[test]
