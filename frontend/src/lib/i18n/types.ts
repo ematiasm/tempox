@@ -1,10 +1,6 @@
 export type Lang = 'en' | 'fr';
 
 export interface Dict {
-  title: string;
-  tagline: string;
-  greeting_button: string;
-  greeting_placeholder: string;
   notes_title: string;
   notes_placeholder: string;
   notes_add: string;
@@ -16,16 +12,13 @@ export interface Dict {
   sales_tagline: string;
   sales_action: string;
   sales_draft_title: string;
-  sales_draft_pending: string;
   sales_ledger_title: string;
   sales_ledger_sub: string;
-  sales_ledger_pending: string;
   products_title: string;
   products_tagline: string;
   products_action: string;
   products_catalog_title: string;
   products_catalog_sub: string;
-  products_catalog_pending: string;
   sales_product: string;
   sales_customer: string;
   sales_walkin: string;
@@ -42,15 +35,12 @@ export interface Dict {
   sales_lines: string;
   sales_pieces: string;
   sales_bonus_note: string;
-  sales_record: string;
-  sales_recording: string;
   sales_clear: string;
   sales_invalid: string;
   sales_error_title: string;
   sales_confirmed: string;
   sales_draft_hint: string;
   sales_price_unit: string;
-  sales_recorded_this_session: string;
   sales_scope: string;
   sales_today: string;
   sales_yesterday: string;

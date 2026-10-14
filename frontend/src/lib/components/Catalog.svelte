@@ -99,11 +99,27 @@
   }
 
   const hasFilters = $derived(query.trim() !== '');
+
+  /**
+   * F2 focuses the create form's first field.
+   *
+   * The band button announces F2, so the key has to do something: a shortcut
+   * printed on a control and wired to nothing is worse than no label, because
+   * the cashier tries it and concludes the app is broken.
+   */
+  function onkeydown(e: KeyboardEvent) {
+    if (e.key === 'F2') {
+      e.preventDefault();
+      document.getElementById('new-name')?.focus();
+    }
+  }
 </script>
 
 <!-- The band belongs to the route, not to this component: two regions rendering
      their own copy of the page's heading puts two <h1>Products</h1> on one page
      and leaves a screen reader with two rival titles. -->
+<svelte:window {onkeydown} />
+
 <section class="body" aria-labelledby="catalog-h">
   <div class="head">
     <div>
@@ -113,6 +129,7 @@
     <div class="controls">
       <input
         class="control search"
+        id="catalog-search"
         value={query}
         oninput={(e) => onSearch(e.currentTarget.value)}
         placeholder={lang.t.products_search}

@@ -25,9 +25,17 @@
   interface Props {
     /** Called after a sale is recorded, so the ledger can refresh. */
     onrecorded?: (saleId: string) => void;
+    /**
+     * Reports whether the sheet currently holds something recordable.
+     *
+     * The band owns the page's single next action, and the band lives in the
+     * route, so the sheet has to say when that action is available rather than
+     * keeping the button to itself.
+     */
+    onready?: (ready: boolean) => void;
   }
 
-  let { onrecorded }: Props = $props();
+  let { onrecorded, onready }: Props = $props();
 
   // One line being composed: the product, plus the two fields as typed text.
   // The text is the source of truth for the field's own validity; the parsed
@@ -87,6 +95,12 @@
   );
 
   const canRecord = $derived(complete.length > 0 && !submitting);
+
+  // Tell the route whether the band's action is live. Without this the button
+  // would look clickable while the sheet has nothing to record.
+  $effect(() => {
+    onready?.(canRecord);
+  });
 
   /** True when a line has text in a field that does not parse. */
   const hasInvalid = $derived(
@@ -150,7 +164,14 @@
     }
   }
 
-  async function record() {
+  /**
+   * Records the sale.
+   *
+   * Exported so the band's action — the page's single next action — drives the
+   * same code path as the keyboard shortcut, instead of a second implementation
+   * that could drift from this one.
+   */
+  export async function record() {
     if (!canRecord) return;
     submitting = true;
     error = null;
@@ -321,10 +342,6 @@
   </div>
 
   <div class="actions">
-    <button type="button" class="record" onclick={record} disabled={!canRecord}>
-      {submitting ? lang.t.sales_recording : lang.t.sales_record}
-      <kbd>Ctrl↵</kbd>
-    </button>
     {#if lines.length}
       <button type="button" class="ghost" onclick={() => (lines = [])} disabled={submitting}>
         {lang.t.sales_clear}
@@ -333,6 +350,7 @@
     {#if hasInvalid}
       <span class="warn">{lang.t.sales_invalid}</span>
     {/if}
+    <span class="shortcut">{lang.t.sales_draft_hint}</span>
   </div>
 </section>
 
@@ -557,37 +575,10 @@
     padding: 13px 18px;
     border-top: 1px solid var(--rule);
   }
-  .record {
-    display: inline-flex;
-    align-items: center;
-    gap: 10px;
-    background: var(--crimson);
-    color: #fff;
-    border: 0;
-    border-radius: var(--radius);
-    padding: 11px 18px;
-    font-family: var(--font-figure);
-    font-size: var(--step-3);
-    font-weight: 600;
-    cursor: pointer;
-    box-shadow: 0 2px 0 var(--crimson-deep);
-  }
-  .record:hover:not(:disabled) {
-    background: #b81e2e;
-  }
-  .record:disabled {
-    background: var(--paper-sunk);
+  .shortcut {
+    margin-left: auto;
     color: var(--ink-soft);
-    box-shadow: none;
-    cursor: default;
-  }
-  .record kbd {
-    font-family: var(--font-text);
     font-size: var(--step--1);
-    border: 1px solid currentColor;
-    border-radius: 2px;
-    padding: 1px 4px;
-    opacity: 0.8;
   }
   .warn {
     color: var(--crimson-deep);

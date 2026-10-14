@@ -87,6 +87,7 @@
 <div class="picker">
   <input
     class="control"
+    id="product-search"
     bind:this={inputEl}
     bind:value={query}
     onfocus={() => (open = true)}
