@@ -28,7 +28,33 @@ const en: Dict = {
   products_catalog_title: 'Catalog',
   products_catalog_sub:
     "Search runs server-side on name; the sale form's type-ahead uses the same query",
-  products_catalog_pending: 'The catalog, its search and the create form are built in T7.'
+  products_catalog_pending: 'The catalog, its search and the create form are built in T7.',
+  sales_product: 'Product',
+  sales_customer: 'Customer',
+  sales_walkin: 'Walk-in — Consumidor Final',
+  sales_new_customer: 'New customer',
+  sales_new_customer_placeholder: 'Name of the new customer…',
+  sales_customer_existing: (name: string) =>
+    `“${name}” already exists — it is selected as this sale's customer.`,
+  sales_qty: 'Qty',
+  sales_price: 'Price',
+  sales_line: 'Line',
+  sales_remove: 'Remove',
+  sales_no_lines: 'No lines yet — pick a product above and it lands here with its price filled in.',
+  sales_live_total: 'Live total',
+  sales_line_one: 'line',
+  sales_lines: 'lines',
+  sales_pieces: 'base units',
+  sales_bonus_note: 'includes a bonus line at $0.00',
+  sales_record: 'Record sale',
+  sales_recording: 'Recording…',
+  sales_clear: 'Clear',
+  sales_invalid: 'A field does not hold a valid number — fix it before recording.',
+  sales_error_title: 'Not recorded: ',
+  sales_confirmed: 'Confirmed',
+  sales_draft_hint: 'Ctrl+Enter records',
+  sales_price_unit: '$/unit',
+  sales_recorded_this_session: ' recorded in this session — the ledger list is built in T6.'
 };
 
 export default en;
