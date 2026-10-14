@@ -2,3 +2,10 @@
 build/
 node_modules/
 package-lock.json
+
+# Generated locally by tooling, gitignored, and absent in CI: without these
+# entries `npm run lint` fails on a developer's machine and passes in CI,
+# which is the worst of both — a green pipeline that no one can reproduce.
+.atl/
+test-results/
+playwright-report/
