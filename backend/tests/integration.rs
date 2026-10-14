@@ -243,6 +243,109 @@ async fn v1_units_and_history_guards() {
     tx.rollback().await.expect("rollback");
 }
 
+// v1 (P1) — the stock ledger is append-only and reason-coherent.
+// plan-v1.md: "Stock is never a mutable `quantity` field ... every change is an
+// append-only row", plus decision 15: the database enforces the history guards.
+// Ignored by default: needs a live database.
+#[tokio::test]
+#[ignore]
+async fn v1_ledger_is_append_only_and_reason_coherent() {
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
+    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+
+    let mut tx = pool.begin().await.expect("begin");
+
+    let pid: (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO products (name, list_price, unit) VALUES ('p1-ledger-probe', 250, 'g')
+         RETURNING id",
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .expect("insert product");
+    let mid: (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO stock_movements (product_id, quantity, reason) VALUES ($1, 1500, 'initial')
+         RETURNING id",
+    )
+    .bind(pid.0)
+    .fetch_one(&mut *tx)
+    .await
+    .expect("insert initial movement");
+    let sid: (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO sales (customer_id, total)
+         VALUES ('00000000-0000-0000-0000-000000000001', 3750) RETURNING id",
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .expect("insert sale");
+
+    // One expected-to-fail statement per rule, each isolated in a SAVEPOINT:
+    // in Postgres a failed statement aborts the whole transaction (25P02), so
+    // without the savepoint every probe after the first would fail for the
+    // wrong reason.
+    macro_rules! probe_denied {
+        ($label:expr, $sql:expr $(, $bind:expr)*) => {{
+            sqlx::query("SAVEPOINT probe")
+                .execute(&mut *tx)
+                .await
+                .expect("savepoint");
+            let result = sqlx::query($sql) $(.bind($bind))*.execute(&mut *tx).await;
+            sqlx::query("ROLLBACK TO SAVEPOINT probe")
+                .execute(&mut *tx)
+                .await
+                .expect("rollback to savepoint");
+            assert!(result.is_err(), "{} was allowed", $label);
+        }};
+    }
+
+    probe_denied!(
+        "ledger update",
+        "UPDATE stock_movements SET quantity = 999999 WHERE id = $1",
+        mid.0
+    );
+    probe_denied!(
+        "ledger delete",
+        "DELETE FROM stock_movements WHERE id = $1",
+        mid.0
+    );
+    probe_denied!(
+        "unknown movement reason",
+        "INSERT INTO stock_movements (product_id, quantity, reason) VALUES ($1, 5, 'theft')",
+        pid.0
+    );
+    probe_denied!(
+        "sale movement without its sale",
+        "INSERT INTO stock_movements (product_id, quantity, reason) VALUES ($1, 5, 'sale')",
+        pid.0
+    );
+    probe_denied!(
+        "initial movement carrying a sale",
+        "INSERT INTO stock_movements (product_id, quantity, reason, sale_id) VALUES ($1, 5, 'initial', $2)",
+        pid.0,
+        sid.0
+    );
+    probe_denied!(
+        "deleting a product that has history",
+        "DELETE FROM products WHERE id = $1",
+        pid.0
+    );
+    // TRUNCATE is a set operation: a FOR EACH ROW trigger never fires for it,
+    // so it needs its own statement-level guard. Without it the whole ledger
+    // can be emptied in one statement that no row trigger ever sees.
+    probe_denied!("truncating the ledger", "TRUNCATE stock_movements");
+
+    // Every rejection must leave the ledger unchanged: the product keeps
+    // exactly its one initial movement and nothing else landed on it.
+    let rows: (i64,) = sqlx::query_as("SELECT count(*) FROM stock_movements WHERE product_id = $1")
+        .bind(pid.0)
+        .fetch_one(&mut *tx)
+        .await
+        .expect("count movements");
+    assert_eq!(rows.0, 1, "a rejected write changed the ledger");
+
+    tx.rollback().await.expect("rollback");
+}
+
 // v1 writes (work-unit 3): a multi-item sale lands in one transaction with its
 // stock movements. Unique product names keep repeated runs collision-free.
 // Ignored by default: needs the live stack (backend + db).
