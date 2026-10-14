@@ -43,10 +43,11 @@ jobs:
         with:
           workspaces: backend
       - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      # The migrations must be applied by sqlx itself, never by a raw `psql`
-      # loop: `sqlx::migrate!` in the binary reads `_sqlx_migrations`, so a
-      # different applier would leave that table empty and make the app
+      # The migrations must run BEFORE anything compiles, clippy included: it
+      # builds the crate, and every handler uses sqlx's macros, which query
+      # this database while expanding. A different applier is not an option
+      # either: `sqlx::migrate!` in the binary reads `_sqlx_migrations`, so a
+      # raw `psql` loop would leave that table empty and make the app
       # re-execute every migration on boot. One migrator, one source of truth.
       - name: Cache sqlx-cli
         id: sqlx-cli-cache
@@ -62,12 +63,11 @@ jobs:
         run: >-
           cargo install sqlx-cli --version ^0.8 --locked
           --no-default-features --features rustls,postgres
-      # The schema has to exist BEFORE cargo compiles anything: the macros
-      # expand during the build and query this database.
       - name: Apply migrations
         run: |
           sqlx migrate run --source migrations
           sqlx migrate info --source migrations
+      - run: cargo clippy --all-targets -- -D warnings
       # Unit tests plus the full build of the binary used below.
       - run: cargo build --all-features
       - run: cargo test --all-features
