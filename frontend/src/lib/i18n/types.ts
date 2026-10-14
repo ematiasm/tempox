@@ -83,4 +83,27 @@ export interface Dict {
   sales_annulment: string;
   sales_annulment_value: string;
   sales_annulment_note: string;
+  products_invalid: string;
+  products_search: string;
+  products_error: string;
+  products_no_match: string;
+  products_clear_search: string;
+  products_empty: string;
+  products_create_first: string;
+  products_unit: string;
+  products_list_price: string;
+  products_stock: string;
+  products_product_one: string;
+  products_products: string;
+  products_derived: string;
+  products_derived_note: string;
+  products_new_title: string;
+  products_new_sub: string;
+  products_name: string;
+  products_name_placeholder: string;
+  products_initial_stock: string;
+  products_create: string;
+  products_creating: string;
+  products_created: (name: string) => string;
+  products_create_error: string;
 }

@@ -86,7 +86,31 @@ const en: Dict = {
   sales_bonus_lines_note: 'Recorded at $0.00; the stock still moved',
   sales_annulment: 'Annulment',
   sales_annulment_value: 'v1.5',
-  sales_annulment_note: 'The reversal endpoint does not exist yet; status reads as history'
+  sales_annulment_note: 'The reversal endpoint does not exist yet; status reads as history',
+  products_invalid: 'A number here is not valid — fix it before creating the product.',
+  products_search: 'Search by name…',
+  products_error: 'Could not read the catalog: ',
+  products_no_match: 'No product matches that search.',
+  products_clear_search: 'Clear the search',
+  products_empty: 'No products yet — create the first one',
+  products_create_first: 'Create the first product',
+  products_unit: 'Unit',
+  products_list_price: 'List price',
+  products_stock: 'Stock',
+  products_product_one: 'product',
+  products_products: 'products',
+  products_derived: 'Derived',
+  products_derived_note: 'stock is computed from movements, never typed',
+  products_new_title: 'New product',
+  products_new_sub:
+    'v1a creates unit products only — a gram price cannot be stored finer than 1¢/g',
+  products_name: 'Name',
+  products_name_placeholder: 'e.g. Harina 000 Panda 1 kg',
+  products_initial_stock: 'Initial stock',
+  products_create: 'Create product',
+  products_creating: 'Creating…',
+  products_created: (name: string) => `Created “${name}”.`,
+  products_create_error: 'Not created: '
 };
 
 export default en;

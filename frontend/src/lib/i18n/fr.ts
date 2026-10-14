@@ -90,7 +90,31 @@ const fr: Dict = {
   sales_annulment: 'Annulation',
   sales_annulment_value: 'v1.5',
   sales_annulment_note:
-    'L’endpoint d’annulation n’existe pas encore ; le statut se lit comme un historique'
+    'L’endpoint d’annulation n’existe pas encore ; le statut se lit comme un historique',
+  products_invalid: 'Un nombre ici n’est pas valide — corrigez-le avant de créer le produit.',
+  products_search: 'Rechercher par nom…',
+  products_error: 'Impossible de lire le catalogue : ',
+  products_no_match: 'Aucun produit ne correspond à cette recherche.',
+  products_clear_search: 'Effacer la recherche',
+  products_empty: 'Aucun produit pour l’instant — créez le premier',
+  products_create_first: 'Créer le premier produit',
+  products_unit: 'Unité',
+  products_list_price: 'Prix de vente',
+  products_stock: 'Stock',
+  products_product_one: 'produit',
+  products_products: 'produits',
+  products_derived: 'Dérivé',
+  products_derived_note: 'le stock est calculé à partir des mouvements, jamais saisi',
+  products_new_title: 'Nouveau produit',
+  products_new_sub:
+    'v1a ne crée que des produits à l’unité — un prix au gramme ne peut pas être stocké plus fin que 1 ¢/g',
+  products_name: 'Nom',
+  products_name_placeholder: 'ex. Harina 000 Panda 1 kg',
+  products_initial_stock: 'Stock initial',
+  products_create: 'Créer le produit',
+  products_creating: 'Création…',
+  products_created: (name: string) => `« ${name} » créé.`,
+  products_create_error: 'Non créé : '
 };
 
 export default fr;

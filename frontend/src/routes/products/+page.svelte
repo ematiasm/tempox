@@ -1,7 +1,6 @@
 <script lang="ts">
   import { lang } from '$lib/i18n/index.svelte';
-  // T3 scope: the shell this route lives in. The catalog, its search and the
-  // create form arrive in T7.
+  import Catalog from '$lib/components/Catalog.svelte';
 </script>
 
 <header class="band">
@@ -9,18 +8,15 @@
     <h1>{lang.t.products_title}</h1>
     <p>{lang.t.products_tagline}</p>
   </div>
-  <button class="action" disabled>{lang.t.products_action} <kbd>F2</kbd></button>
+  <!-- The page's single next action lives in the band, as on /sales. It moves
+       the caret to the first field of the create form rather than opening a
+       modal: creating a product is a few fields, not an interruption. -->
+  <button class="action" onclick={() => document.getElementById('new-name')?.focus()}>
+    {lang.t.products_action} <kbd>F2</kbd>
+  </button>
 </header>
 
-<section class="body" aria-labelledby="catalog-h">
-  <div class="head">
-    <div>
-      <h2 id="catalog-h">{lang.t.products_catalog_title}</h2>
-      <div class="sub">{lang.t.products_catalog_sub}</div>
-    </div>
-  </div>
-  <p class="pending">{lang.t.products_catalog_pending}</p>
-</section>
+<Catalog />
 
 <style>
   .band {
@@ -61,10 +57,6 @@
       0 8px 18px -10px rgb(0 0 0 / 0.55);
     cursor: pointer;
   }
-  .action:disabled {
-    opacity: 0.55;
-    cursor: default;
-  }
   .action kbd {
     font-family: var(--font-text);
     font-size: var(--step--1);
@@ -74,31 +66,5 @@
     border-radius: 2px;
     padding: 2px 5px;
     background: var(--paper);
-  }
-
-  .body {
-    margin: 22px 26px 0 28px;
-    background: var(--paper-raised);
-    border: 1px solid var(--rule);
-    border-radius: 4px;
-  }
-  .head {
-    padding: 14px 18px 12px;
-    border-bottom: 1px solid var(--rule);
-  }
-  .head h2 {
-    font-family: var(--font-figure);
-    font-size: var(--step-3);
-    font-weight: 600;
-  }
-  .sub {
-    color: var(--ink-soft);
-    font-size: var(--step-0);
-    margin-top: 2px;
-  }
-  .pending {
-    padding: 26px 18px;
-    color: var(--ink-soft);
-    font-size: var(--step-0);
   }
 </style>
