@@ -958,3 +958,149 @@ async fn v1a_sales_list_is_scoped_by_date_and_offset() {
     // Leave the window as it was found.
     clear_window().await;
 }
+
+// v1a (work-unit 2, S3) — GET /api/products is searchable by name and
+// offset-paginated, while stock stays derived and the name ordering holds.
+// Ignored by default: needs the live stack (backend + db).
+#[tokio::test]
+#[ignore]
+async fn v1a_products_list_is_searchable_and_paginated() {
+    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
+    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+    let client = reqwest::Client::new();
+
+    // A marker no other row can carry, so the assertions never depend on what
+    // the rest of the suite left in the catalog. Mixed case on purpose: `q` is
+    // a case-insensitive substring match, so a lowercase needle must find it.
+    let suffix = uuid::Uuid::new_v4().simple();
+    let marker = format!("v1a-q-{suffix}");
+    let names = [
+        format!("{marker}-Alfajor"),
+        format!("{marker}-banana"),
+        format!("{marker}-Cafe"),
+    ];
+
+    for (idx, name) in names.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO products (name, list_price, unit) VALUES ($1, $2, 'unit') RETURNING id",
+        )
+        .bind(name)
+        .bind(100 + idx as i64)
+        .execute(&pool)
+        .await
+        .expect("insert product");
+    }
+    // One more with the marker but a different substring, to prove the match
+    // is on the whole name and not just the prefix.
+    let decoy = format!("zzz-{marker}-Yerba");
+    sqlx::query("INSERT INTO products (name, list_price, unit) VALUES ($1, 100, 'unit')")
+        .bind(&decoy)
+        .execute(&pool)
+        .await
+        .expect("insert decoy");
+
+    let get = |query: String| {
+        let client = client.clone();
+        let base = base.clone();
+        async move {
+            let resp = client
+                .get(format!("{base}/api/products?{query}"))
+                .send()
+                .await
+                .expect("get");
+            assert!(resp.status().is_success(), "list failed: {}", resp.status());
+            resp.json::<serde_json::Value>().await.expect("json")
+        }
+    };
+
+    let names_of = |body: &serde_json::Value| -> Vec<String> {
+        body.as_array()
+            .expect("array")
+            .iter()
+            .map(|p| p["name"].as_str().expect("name").to_string())
+            .collect()
+    };
+
+    // `q` is a case-insensitive substring match over the whole name, so the
+    // decoy is found too; the three marker rows and it are the complete set.
+    let found = get(format!("q={marker}&limit=200")).await;
+    let found_names = names_of(&found);
+    assert_eq!(
+        found_names.len(),
+        4,
+        "substring match must find all four rows, found: {found_names:?}"
+    );
+    assert!(found_names.contains(&decoy), "the decoy was not matched");
+    assert!(
+        !names_of(&get(format!("q={marker}xx&limit=200")).await)
+            .iter()
+            .any(|n| n.contains(&marker)),
+        "a needle that matches nothing must return nothing"
+    );
+
+    // Ordering by name is preserved under a filter.
+    let mut expected = names.to_vec();
+    expected.push(decoy.clone());
+    expected.sort();
+    assert_eq!(
+        names_of(&get(format!("q={marker}&limit=200")).await),
+        expected,
+        "a filtered catalog must still read in name order"
+    );
+
+    // Two adjacent pages of the same query partition the result: no row is
+    // repeated across them and none is skipped.
+    let first = get(format!("q={marker}&limit=2&offset=0")).await;
+    let second = get(format!("q={marker}&limit=2&offset=2")).await;
+    let first_names = names_of(&first);
+    let second_names = names_of(&second);
+    assert_eq!(first_names.len(), 2, "limit must cap the page");
+    assert_eq!(second_names.len(), 2, "offset must resume the same query");
+    assert!(
+        first_names.iter().all(|n| !second_names.contains(n)),
+        "adjacent pages repeated a row: {first_names:?} then {second_names:?}"
+    );
+    let mut paged = first_names.clone();
+    paged.extend(second_names.clone());
+    paged.sort();
+    assert_eq!(
+        paged, expected,
+        "the two pages must reconstruct the whole filtered set"
+    );
+
+    // The offset is a real one, not a synonym for the first page.
+    let beyond = get(format!("q={marker}&limit=200&offset=4")).await;
+    assert!(
+        names_of(&beyond).is_empty(),
+        "an offset past the end must return an empty page"
+    );
+
+    // Absent `q` lists the catalog: the unscoped call still returns rows.
+    let unscoped = get("limit=5".to_string()).await;
+    assert!(
+        !names_of(&unscoped).is_empty(),
+        "absent q must keep listing the catalog"
+    );
+
+    // Derived stock and unit survive the filter: each new product starts at 0
+    // and no list query may invent a movement.
+    let row = &found.as_array().expect("array")[0];
+    assert_eq!(row["stock"], 0, "a fresh product starts at zero stock");
+    assert_eq!(row["unit"], "unit");
+    assert_eq!(
+        row["list_price"], 100,
+        "the list price reads back unchanged"
+    );
+    let movements: (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM stock_movements m
+         JOIN products p ON p.id = m.product_id
+         WHERE p.name LIKE $1",
+    )
+    .bind(format!("%{marker}%"))
+    .fetch_one(&pool)
+    .await
+    .expect("movement count");
+    assert_eq!(movements.0, 0, "listing products must not write movements");
+}
