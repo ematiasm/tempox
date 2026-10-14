@@ -57,7 +57,40 @@ const fr: Dict = {
   sales_draft_hint: 'Ctrl+Entrée enregistre',
   sales_price_unit: '$/unité',
   sales_recorded_this_session:
-    ' enregistrée(s) dans cette session — la liste du journal est construite en T6.'
+    ' enregistrée(s) dans cette session — la liste du journal est construite en T6.',
+  sales_scope: 'Portée par date',
+  sales_today: 'Aujourd’hui',
+  sales_yesterday: 'Hier',
+  sales_older: 'Plus ancien',
+  sales_newer: 'Plus récent',
+  sales_legend_confirmed: 'Confirmée — le tampon',
+  sales_legend_annulled: 'Annulée — barrée',
+  sales_loading: 'Chargement…',
+  sales_document_one: 'document',
+  sales_documents: 'documents',
+  sales_ledger_error: 'Impossible de lire le journal : ',
+  sales_retry: 'Réessayer',
+  sales_no_sales_today: 'Aucune vente aujourd’hui — la première arrive ici avec son tampon.',
+  sales_no_sales_day: 'Aucune vente ce jour-là.',
+  sales_time: 'Heure',
+  sales_sale: 'Vente',
+  sales_items: 'Lignes',
+  sales_status: 'Statut',
+  sales_total: 'Total',
+  sales_annulled: 'Anulado',
+  sales_lines_of: 'Lignes de',
+  sales_unit_price: 'Prix unitaire',
+  sales_bonus: 'offert',
+  sales_cash_on_hand: 'Caisse en main',
+  sales_cash_note: 'Toutes les ventes confirmées, depuis toujours',
+  sales_shown_sales: 'Sur cette page',
+  sales_shown_note: 'Les documents affichés ci-dessus',
+  sales_bonus_lines: 'Lignes offertes',
+  sales_bonus_lines_note: 'Enregistrées à 0,00 $ ; le stock a quand même bougé',
+  sales_annulment: 'Annulation',
+  sales_annulment_value: 'v1.5',
+  sales_annulment_note:
+    'L’endpoint d’annulation n’existe pas encore ; le statut se lit comme un historique'
 };
 
 export default fr;
