@@ -75,7 +75,7 @@ jobs:
       # the step whose job it is; SQLX_OFFLINE=false opts back into the database
       # this job already has.
       - name: Verify the sqlx offline cache is current
-        run: SQLX_OFFLINE=false sqlx prepare --check -- --all-targets
+        run: SQLX_OFFLINE=false cargo sqlx prepare --check -- --all-targets
       # --locked everywhere: Cargo.lock is tracked, so the build must use the
       # versions it pins instead of silently re-resolving them. A stale lock
       # fails the build loudly rather than shipping an untested combination.
