@@ -121,5 +121,12 @@ itself. The review above was performed inline instead, and its claim checks are
 reproducible greps rather than a reviewer's recollection.
 
 The three probe sales it created remain in the development database. They are
-inert — no production data, no migration, and `stock_movements` is append-only
-so they cannot corrupt a balance — but they should be cleared before any demo.
+**not** inert: each wrote a `stock_movements` row, and that table is append-only
+by trigger, so deleting them means disabling the custody guard this review
+itself keeps ("keep" above). The product rows were untouched. What the three
+probes actually cost is the demo: `/sales` and the catalog carry three $4.500
+sale documents and one synthetic product that nobody recognizes.
+
+A fourth `demo-cafe-1kg` sale predates the subagent (2026-10-13, 250 × 4600 =
+$11.500) and is the owner's own data, not a probe. Any cleanup that keys on the
+product name hits it too.
