@@ -187,110 +187,112 @@
       </div>
     </div>
   {:else}
-    <table class="docs">
-      <thead>
-        <tr>
-          <th scope="col">{lang.t.sales_time}</th>
-          <th scope="col">{lang.t.sales_sale}</th>
-          <th scope="col">{lang.t.sales_customer}</th>
-          <th scope="col" class="num">{lang.t.sales_items}</th>
-          <th scope="col">{lang.t.sales_status}</th>
-          <th scope="col" class="num">{lang.t.sales_total}</th>
-        </tr>
-      </thead>
-      <tbody>
-        {#each rows as row (row.id)}
-          {@const open = expanded.has(row.id)}
-          {@const annulled = isAnnulled(row)}
-          <tr class="doc">
-            <td class="figures time">
-              {new Date(row.created_at).toLocaleTimeString('en-US', {
-                hour: '2-digit',
-                minute: '2-digit',
-                hour12: false
-              })}
-            </td>
-            <td>
-              <button
-                type="button"
-                class="doc-id"
-                aria-expanded={open}
-                aria-controls="lines-{row.id}"
-                onclick={() => toggle(row.id)}
-              >
-                <svg
-                  class="chev"
-                  class:open
-                  viewBox="0 0 12 12"
-                  aria-hidden="true"
-                  focusable="false"
-                >
-                  <path
-                    d="M4.5 2.5 8 6l-3.5 3.5"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.8"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                  />
-                </svg>
-                <span class="figures">#{row.id.slice(0, 8)}</span>
-              </button>
-            </td>
-            <td class="customer" class:walkin={row.customer_name === 'walk-in'}>
-              {row.customer_name === 'walk-in' ? lang.t.sales_walkin : row.customer_name}
-            </td>
-            <td class="num figures items">{row.items.length}</td>
-            <td>
-              {#if annulled}
-                <Stamp label={lang.t.sales_annulled} tone="annulled" size="cell" />
-              {:else}
-                <Stamp label={lang.t.sales_confirmed} size="cell" />
-              {/if}
-            </td>
-            <td class="num">
-              <span class="total figures" class:void={annulled}>{formatCents(row.total)}</span>
-            </td>
+    <div class="table-scroll">
+      <table class="docs">
+        <thead>
+          <tr>
+            <th scope="col">{lang.t.sales_time}</th>
+            <th scope="col">{lang.t.sales_sale}</th>
+            <th scope="col">{lang.t.sales_customer}</th>
+            <th scope="col" class="num">{lang.t.sales_items}</th>
+            <th scope="col">{lang.t.sales_status}</th>
+            <th scope="col" class="num">{lang.t.sales_total}</th>
           </tr>
-          {#if open}
-            <tr class="lines-row">
-              <td colspan="6">
-                <div class="lines" id="lines-{row.id}">
-                  <table>
-                    <caption>{lang.t.sales_lines_of} #{row.id.slice(0, 8)}</caption>
-                    <thead>
-                      <tr>
-                        <th scope="col">{lang.t.sales_product}</th>
-                        <th scope="col" class="num">{lang.t.sales_qty}</th>
-                        <th scope="col" class="num">{lang.t.sales_unit_price}</th>
-                        <th scope="col" class="num">{lang.t.sales_line}</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {#each row.items as item (item.id)}
-                        <tr>
-                          <td>
-                            {item.product_name}
-                            {#if item.unit_price === 0}
-                              <span class="gift">— {lang.t.sales_bonus}</span>
-                            {/if}
-                          </td>
-                          <td class="num figures">{formatQuantity(item.quantity, item.unit)}</td>
-                          <td class="num figures">
-                            {formatCents(item.unit_price)}<span class="per">/{item.unit}</span>
-                          </td>
-                          <td class="num figures">{formatCents(item.line_total)}</td>
-                        </tr>
-                      {/each}
-                    </tbody>
-                  </table>
-                </div>
+        </thead>
+        <tbody>
+          {#each rows as row (row.id)}
+            {@const open = expanded.has(row.id)}
+            {@const annulled = isAnnulled(row)}
+            <tr class="doc">
+              <td class="figures time">
+                {new Date(row.created_at).toLocaleTimeString('en-US', {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                  hour12: false
+                })}
+              </td>
+              <td>
+                <button
+                  type="button"
+                  class="doc-id"
+                  aria-expanded={open}
+                  aria-controls="lines-{row.id}"
+                  onclick={() => toggle(row.id)}
+                >
+                  <svg
+                    class="chev"
+                    class:open
+                    viewBox="0 0 12 12"
+                    aria-hidden="true"
+                    focusable="false"
+                  >
+                    <path
+                      d="M4.5 2.5 8 6l-3.5 3.5"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.8"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                  </svg>
+                  <span class="figures">#{row.id.slice(0, 8)}</span>
+                </button>
+              </td>
+              <td class="customer" class:walkin={row.customer_name === 'walk-in'}>
+                {row.customer_name === 'walk-in' ? lang.t.sales_walkin : row.customer_name}
+              </td>
+              <td class="num figures items">{row.items.length}</td>
+              <td>
+                {#if annulled}
+                  <Stamp label={lang.t.sales_annulled} tone="annulled" size="cell" />
+                {:else}
+                  <Stamp label={lang.t.sales_confirmed} size="cell" />
+                {/if}
+              </td>
+              <td class="num">
+                <span class="total figures" class:void={annulled}>{formatCents(row.total)}</span>
               </td>
             </tr>
-          {/if}
-        {/each}
-      </tbody>
-    </table>
+            {#if open}
+              <tr class="lines-row">
+                <td colspan="6">
+                  <div class="lines" id="lines-{row.id}">
+                    <table>
+                      <caption>{lang.t.sales_lines_of} #{row.id.slice(0, 8)}</caption>
+                      <thead>
+                        <tr>
+                          <th scope="col">{lang.t.sales_product}</th>
+                          <th scope="col" class="num">{lang.t.sales_qty}</th>
+                          <th scope="col" class="num">{lang.t.sales_unit_price}</th>
+                          <th scope="col" class="num">{lang.t.sales_line}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {#each row.items as item (item.id)}
+                          <tr>
+                            <td>
+                              {item.product_name}
+                              {#if item.unit_price === 0}
+                                <span class="gift">— {lang.t.sales_bonus}</span>
+                              {/if}
+                            </td>
+                            <td class="num figures">{formatQuantity(item.quantity, item.unit)}</td>
+                            <td class="num figures">
+                              {formatCents(item.unit_price)}<span class="per">/{item.unit}</span>
+                            </td>
+                            <td class="num figures">{formatCents(item.line_total)}</td>
+                          </tr>
+                        {/each}
+                      </tbody>
+                    </table>
+                  </div>
+                </td>
+              </tr>
+            {/if}
+          {/each}
+        </tbody>
+      </table>
+    </div>
   {/if}
 
   <!-- The cash figures close the page the way the footings close a column. -->
@@ -428,8 +430,17 @@
     margin-left: auto;
   }
 
+  .table-scroll {
+    /* The ledger is a wide document. Below the point where its columns stop
+       fitting, it scrolls inside its own frame instead of making the whole page
+       scroll sideways — a page that pans horizontally under a thumb is how a
+       shop employee loses the column they were reading. */
+    overflow-x: auto;
+    border-radius: 0 0 4px 4px;
+  }
   table.docs {
     width: 100%;
+    min-width: 640px;
     border-collapse: collapse;
     background: var(--paper-raised);
     border: 1px solid var(--rule);

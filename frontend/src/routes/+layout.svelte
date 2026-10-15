@@ -200,6 +200,18 @@
       display: flex;
       align-items: center;
       gap: 10px;
+      /* The nav bar holds a brand, two destinations and a language toggle.
+         On a phone the version chip is decoration and the toggle can be its
+         own width: without both, the bar is wider than the screen and the
+         whole page pans sideways under a thumb. */
+      flex-shrink: 0;
+    }
+    .lang {
+      width: auto;
+      padding: 5px 9px;
+    }
+    .version {
+      display: none;
     }
   }
 </style>
