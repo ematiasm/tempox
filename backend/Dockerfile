@@ -2,14 +2,21 @@
 FROM rust:1.98-bookworm AS builder
 WORKDIR /app
 
-# Query checking happens at compile time against the live database: compose
-# passes this build arg with build network=host so the builder reaches the
-# developer's Postgres. Without it the macro verification fails loudly.
-ARG DATABASE_URL
-ENV DATABASE_URL=${DATABASE_URL}
+# The `sqlx::query!` macros verify their SQL at compile time. `.sqlx/` carries
+# that metadata, so this image builds with no database anywhere: no build arg
+# pointing at the developer's Postgres, and no reachability through the bridge
+# gateway. Regenerate the cache with `make sqlx-prepare` after changing a query;
+# CI fails if it is stale, so this stage cannot build against old metadata.
+#
+# It is copied after the dependency-only build, not before it: a layer is
+# invalidated by anything above it, so putting an often-regenerated directory
+# before that step would rebuild every dependency whenever a query changes.
+ENV SQLX_OFFLINE=true
 
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir src && echo "fn main() {}" > src/main.rs && cargo build --release --locked && rm -rf src
+
+COPY .sqlx ./.sqlx
 
 COPY src ./src
 COPY migrations ./migrations

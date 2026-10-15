@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT name, list_price, unit FROM products WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "list_price",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "unit",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "75933c6d50c710969213bc4a31759ff02eaf647dd195d9123c6bbb0ee26093ce"
+}

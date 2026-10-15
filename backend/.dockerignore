@@ -1,0 +1,4 @@
+# The build context. Without this file, every `docker compose build` uploads
+# `target/` — several gigabytes of local compiler output the image never uses —
+# before the first instruction runs.
+target/

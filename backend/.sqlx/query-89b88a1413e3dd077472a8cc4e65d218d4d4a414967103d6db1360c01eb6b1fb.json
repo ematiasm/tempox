@@ -1,0 +1,67 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT s.id, s.customer_id, s.total, s.payment_method, s.status, s.reversed_at,\n                s.created_at, c.name AS customer_name\n         FROM sales s\n         JOIN customers c ON c.id = s.customer_id\n         WHERE ($1::timestamptz IS NULL OR s.created_at >= $1)\n           AND ($2::timestamptz IS NULL OR s.created_at < $2)\n         ORDER BY s.created_at DESC\n         LIMIT $3 OFFSET $4",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "customer_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "total",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "payment_method",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "reversed_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "customer_name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Timestamptz",
+        "Timestamptz",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "89b88a1413e3dd077472a8cc4e65d218d4d4a414967103d6db1360c01eb6b1fb"
+}

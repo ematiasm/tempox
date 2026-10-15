@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT p.id, p.name, p.list_price, p.unit, p.created_at,\n                COALESCE(SUM(m.quantity), 0)::bigint AS \"stock!\"\n         FROM products p\n         LEFT JOIN stock_movements m ON m.product_id = p.id\n         WHERE p.id = $1\n         GROUP BY p.id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "list_price",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "unit",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "stock!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "b0ba02c7ba0278b7378718331ea1fb9f57936ce2c60c75213fd32545c2fa8aab"
+}
