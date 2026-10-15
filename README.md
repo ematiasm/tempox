@@ -50,19 +50,29 @@ cd frontend && npm install && npm run dev
 
 After changing backend code, rebuild the container: `docker compose up -d --build backend`.
 
-Integration tests write to a test database, never the development one. Create it
-once, then run the suites:
+Integration tests run against the same stack, so start it first:
 
 ```bash
-make test-db-prepare   # once, after cloning
+make dev        # postgres + backend + frontend
 make test
 ```
 
 `make test` runs the frontend unit tests and the backend unit + integration
-tests. The backend integration tests record real sales, products and stock
-movements, and `stock_movements` is append-only, so those rows land in
-`tempox_test` — a second database inside the same postgres container — through a
-second backend on port 3002.
+tests. The integration tests drive the real API on `localhost:3001` and connect
+to the `tempox` database on `localhost:5432`, so they need that stack up; without
+it `make test-backend` stops with a message saying so rather than failing eight
+tests with a connection error.
+
+The tests record real sales, products and stock movements, and they land in the
+database the screens read. Expect to see test rows (`w4-rice-<uuid>` and friends)
+in the app after a run, and clear them by recreating the volume:
+
+```bash
+docker compose down -v
+```
+
+That is why the integration tests are not part of `make build` or `make lint`:
+those two need no database at all.
 
 Compiling needs no database at all: `backend/.sqlx/` carries the metadata the
 `sqlx::query!` macros verify against, so `make build` and `make lint` work with
