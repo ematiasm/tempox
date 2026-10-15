@@ -71,9 +71,6 @@ in the app after a run, and clear them by recreating the volume:
 docker compose down -v
 ```
 
-That is why the integration tests are not part of `make build` or `make lint`:
-those two need no database at all.
-
 Compiling needs no database at all: `backend/.sqlx/` carries the metadata the
 `sqlx::query!` macros verify against, so `make build` and `make lint` work with
 PostgreSQL stopped. After changing a query, run `make sqlx-prepare` to refresh
