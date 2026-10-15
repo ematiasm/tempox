@@ -55,7 +55,16 @@ jobs:
         # only keep alive by forcing it onto Node 24.
         uses: actions/cache@v5
         with:
-          path: ~/.cargo/bin/sqlx
+          # `cargo install sqlx-cli` installs two binaries: `sqlx`, the CLI
+          # itself, and `cargo-sqlx`, which is what makes `cargo sqlx` a valid
+          # subcommand. Caching only `sqlx` meant a cache hit skipped the
+          # install below while leaving `cargo-sqlx` absent, so the `prepare`
+          # check failed with "no such command: `sqlx`". Both belong in the
+          # archive. Editing `path` also rotates the cache version, so the
+          # stale entry cannot be matched again.
+          path: |
+            ~/.cargo/bin/sqlx
+            ~/.cargo/bin/cargo-sqlx
           key: sqlx-cli-0.8-${{ runner.os }}
       # sqlx-cli publishes no prebuilt binaries, so this compiles (~30s). The
       # version tracks the `sqlx` crate, which must stay the same generation:
@@ -166,7 +175,12 @@ jobs:
         # Node 24, same as the backend job.
         uses: actions/cache@v5
         with:
-          path: ~/.cargo/bin/sqlx
+          # Both binaries, same as the backend job: the key is shared, so an
+          # archive saved here without `cargo-sqlx` would break that job's
+          # `cargo sqlx prepare` check the moment it matched.
+          path: |
+            ~/.cargo/bin/sqlx
+            ~/.cargo/bin/cargo-sqlx
           key: sqlx-cli-0.8-${{ runner.os }}
       - name: Install sqlx-cli
         if: steps.sqlx-cli-cache.outputs.cache-hit != 'true'
