@@ -90,7 +90,7 @@
     id="product-search"
     bind:this={inputEl}
     bind:value={query}
-    onfocus={() => (open = true)}
+    oninput={() => (open = true)}
     {onkeydown}
     placeholder="Search by name…"
     role="combobox"
