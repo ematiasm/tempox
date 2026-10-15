@@ -33,3 +33,4 @@ Status: **closed 2026-10-14** by the owner ("cerralo ahora", L8). Branch `feat/v
 - L9 state at closure: T1–T8 + T9–T11 closed; S15's finish-review commit landed (`critique/*.md` is tracked); no raster ships from this repository.
 - L10 evidence: closure verification green — 32 unit + 6 e2e + svelte-check 0/0 (frontend); fmt, clippy, 11 unit + 11 integration (backend). Backend is on `:3001`, not `:8080` (Adminer).
 - L11 evidence: T12 found and fixed — `v1_read_endpoints_reflect_writes` broke once the catalog outgrew one page (92 products locally vs a default `limit` of 50).
+- L12 decision: the probes stayed and the guard was never weakened — the dev database was recreated instead (`down -v` + `up -d --build backend`); all 5 migrations re-applied on boot; clean state verified; backup at `/tmp/tempox-dev-backup-20261015-0002.sql`.
