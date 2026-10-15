@@ -38,9 +38,12 @@ Thumbs.db
 .codegraph/
 
 #PLAN & features
-PLAN.md
-plan-v1.md
-plan-v1a.md
+# Anchored to the repository root on purpose: an unanchored `plan-v1a.md` also
+# matched `odd/tasks/plan-v1a.md`, the ODD feature document the subagents read.
+# The working plans stay local; the feature document is part of the work.
+/PLAN.md
+/plan-v1.md
+/plan-v1a.md
 
 # impeccable runtime state (ephemeral, per-dev)
 # impeccable-ignore-start

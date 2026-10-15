@@ -4,6 +4,7 @@ use axum::{
     http::StatusCode,
     routing::{get, post},
 };
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -68,6 +69,16 @@ pub struct Cash {
 pub struct SalesQuery {
     #[serde(default)]
     pub limit: Option<i64>,
+    #[serde(default)]
+    pub offset: Option<i64>,
+    /// Inclusive lower bound on `created_at`. Absent means no lower bound.
+    #[serde(default)]
+    pub from: Option<DateTime<Utc>>,
+    /// Exclusive upper bound on `created_at`. Absent means no upper bound.
+    /// Exclusive is what makes adjacent days partition the ledger instead of
+    /// double-counting the sale recorded at midnight.
+    #[serde(default)]
+    pub to: Option<DateTime<Utc>>,
 }
 
 async fn create_sale(
@@ -232,15 +243,28 @@ async fn list_sales(
     Query(params): Query<SalesQuery>,
 ) -> Result<Json<Vec<SaleListItem>>, StatusCode> {
     let limit = params.limit.unwrap_or(50).clamp(1, MAX_LIST_LIMIT);
+    // A negative offset is not a page request: OFFSET refuses it in Postgres,
+    // and turning that into a 500 would blame the server for a bad query.
+    let offset = params.offset.unwrap_or(0).max(0);
 
+    // One statement for both cases: a NULL bound is not a filter. `from` is
+    // inclusive and `to` is exclusive, so the two ranges that meet at midnight
+    // partition the ledger — no sale is counted twice or lost between them.
+    // With both bounds absent the WHERE clause is vacuously true, which is the
+    // unscoped behaviour v1 shipped.
     let rows = sqlx::query!(
         "SELECT s.id, s.customer_id, s.total, s.payment_method, s.status, s.reversed_at,
                 s.created_at, c.name AS customer_name
          FROM sales s
          JOIN customers c ON c.id = s.customer_id
+         WHERE ($1::timestamptz IS NULL OR s.created_at >= $1)
+           AND ($2::timestamptz IS NULL OR s.created_at < $2)
          ORDER BY s.created_at DESC
-         LIMIT $1",
-        limit
+         LIMIT $3 OFFSET $4",
+        params.from,
+        params.to,
+        limit,
+        offset
     )
     .fetch_all(&state.db)
     .await

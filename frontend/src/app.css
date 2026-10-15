@@ -1,5 +1,153 @@
+/* Tempox — the stamps token layer.
+ *
+ * Direction contract: .impeccable/surfaces/sales.md
+ * Composition: "the ledger document" (surface seed 17aa8db8).
+ *
+ * The world lends four things and only four: type, palette, density, and one
+ * signature move. Layout, navigation and controls stay the standard ones a
+ * web app already uses, which is why nothing here renames a button.
+ *
+ * The paper rules ARE the ledger's grid, never a texture behind a table: there
+ * is exactly one line system in this file (--rule / --rule-strong) and both the
+ * sheet's rules and the table's borders consume it.
+ */
+
 @import 'tailwindcss';
 
+/* Fira Sans Condensed, served from the project's own files: a shop PC on a bad
+ * connection should not wait on a third-party host, and a font fetched from
+ * someone else's server is a dependency nobody declared. Latin subset only. */
+@font-face {
+  font-family: 'Fira Sans Condensed';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/fira-sans-condensed-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Fira Sans Condensed';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('/fonts/fira-sans-condensed-600.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Fira Sans Condensed';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/fira-sans-condensed-700.woff2') format('woff2');
+}
+
 :root {
-  color-scheme: dark;
+  /* The shop PC sits in a lit back office; the ground is paper, not a dark
+   * theme chosen because the category likes dark. */
+  color-scheme: light;
+
+  --paper: #f6f2e9;
+  --paper-raised: #fbf9f3;
+  --paper-sunk: #efeade;
+  --ink: #15161c;
+  --ink-soft: #5b5e6e;
+  --indigo: #2b3162;
+  --indigo-soft: #4b5182;
+  --crimson: #a81b2a;
+  --crimson-deep: #7e1420;
+
+  /* The single line system. Both spellings exist because a hairline over paper
+   * and a hairline under a header do different jobs at the same weight. */
+  --rule: rgb(32 36 66 / 0.16);
+  --rule-strong: rgb(32 36 66 / 0.32);
+
+  /* Type: the condensed humanist carries figures and headings; the system sans
+   * carries text. Amounts are tabular so a total never reflows while typing. */
+  --font-figure: 'Fira Sans Condensed', ui-sans-serif, system-ui, sans-serif;
+  --font-text: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+
+  --step--1: 0.6875rem;
+  --step-0: 0.8125rem;
+  --step-1: 0.875rem;
+  --step-2: 1rem;
+  --step-3: 1.25rem;
+  --step-4: 1.75rem;
+  --step-5: 2.375rem;
+
+  --radius: 3px;
+  --rail-w: 92px;
+  --tab-overhang: 12px;
+}
+
+html,
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-text);
+  font-size: var(--step-1);
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Browser surfaces are part of the design and ship with defaults belonging to
+ * nobody: theme the ones this world can reach. */
+::selection {
+  background: rgb(168 27 42 / 0.18);
+  color: var(--ink);
+}
+input,
+select,
+button,
+textarea {
+  caret-color: var(--crimson);
+  font: inherit;
+  color: inherit;
+}
+:focus-visible {
+  outline: 2px solid var(--crimson);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+* {
+  scrollbar-color: var(--indigo-soft) transparent;
+  scrollbar-width: thin;
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgb(43 49 98 / 0.35);
+  border: 3px solid var(--paper);
+  border-radius: 99px;
+}
+
+/* Reusable world primitives */
+.figures {
+  font-family: var(--font-figure);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+.label {
+  font-family: var(--font-figure);
+  font-size: var(--step-1);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--indigo-soft);
+}
+
+.control {
+  width: 100%;
+  border: 1px solid var(--rule-strong);
+  background: #fff;
+  border-radius: var(--radius);
+  padding: 10px 11px;
+  font-size: var(--step-2);
+}
+.control::placeholder {
+  color: #6c6f7e;
+}
+.control:disabled {
+  background: var(--paper-sunk);
+  color: var(--ink-soft);
 }
