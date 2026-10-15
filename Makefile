@@ -1,11 +1,13 @@
-.PHONY: dev test lint build clean fmt sqlx-prepare sqlx-check help
+.PHONY: dev test test-frontend test-backend test-db-prepare test-db-reset lint build clean fmt sqlx-prepare sqlx-check help
 
 help:
 	@echo "Targets:"
 	@echo "  dev             — start the whole stack (postgres + backend + frontend)"
-	@echo "  test            — run every suite"
+	@echo "  test            — run every suite (backend tests use the test database)"
 	@echo "  test-frontend   — frontend unit tests (needs nothing running)"
-	@echo "  test-backend    — backend unit + integration tests"
+	@echo "  test-backend    — backend unit + integration tests, on the test database"
+	@echo "  test-db-prepare — create the test database once, after cloning"
+	@echo "  test-db-reset   — recreate the test database from scratch"
 	@echo "  sqlx-prepare    — regenerate .sqlx after changing a query (needs postgres)"
 	@echo "  sqlx-check      — verify .sqlx matches the current queries (needs postgres)"
 	@echo "  lint            — clippy + eslint + svelte-check"
@@ -28,13 +30,21 @@ dev:
 # append-only. They run against `tempox_test` — a second database inside the same
 # postgres container — through a second backend on port 3002, so none of those
 # rows land in the database the screens read.
+#
+# You have to have created it once: `make test-db-prepare`.
 test: test-frontend test-backend
 
 test-frontend:
 	cd frontend && npm run test:unit -- --run
 
 test-backend:
-	cd backend && cargo test --all-features -- --include-ignored --test-threads=1
+	./scripts/test-backend.sh run
+
+test-db-prepare:
+	./scripts/test-backend.sh prepare
+
+test-db-reset:
+	./scripts/test-backend.sh reset
 
 # The offline cache is what every other cargo command trusts. When a query
 # changes and the cache is not regenerated, compilation fails on a stale type

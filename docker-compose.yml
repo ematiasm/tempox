@@ -31,6 +31,35 @@ services:
       postgres:
         condition: service_healthy
 
+  # The same image as `backend`, on port 3002, pointed at a second database
+  # (`tempox_test`) inside the same postgres container. The integration tests
+  # record real sales, products and stock movements, and `stock_movements` is
+  # append-only — so whatever they write is permanent and must not land in the
+  # database the screens read.
+  #
+  # Port 3002 matters as much as the database name: seven of the eleven tests
+  # drive the HTTP API rather than connecting directly, so pointing the tests at
+  # a different database is not enough on its own — they also have to reach a
+  # backend that is pointed at that database.
+  #
+  # The `test` profile keeps this out of `docker compose up` and `make dev`.
+  backend-test:
+    profiles: ["test"]
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: tempox-backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-skilluv}:${POSTGRES_PASSWORD:-skilluv}@postgres:5432/${TEST_DB:-tempox_test}
+      BACKEND_PORT: 3002
+      RUST_LOG: ${RUST_LOG:-info}
+    ports:
+      - "3002:3002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   frontend:
     build:
       context: ./frontend
