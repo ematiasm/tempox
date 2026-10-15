@@ -65,10 +65,12 @@ jobs:
           path: |
             ~/.cargo/bin/sqlx
             ~/.cargo/bin/cargo-sqlx
-          key: sqlx-cli-0.8-${{ runner.os }}
+          key: sqlx-cli-0.9-${{ runner.os }}
       # sqlx-cli publishes no prebuilt binaries, so this compiles (~30s). The
-      # version tracks the `sqlx` crate, which must stay the same generation:
-      # the recorded migration checksums are generation-specific.
+      # version tracks the `sqlx` crate, and the `.sqlx` cache format does not
+      # carry across generations: a 0.9 crate refuses the files a 0.8
+      # `prepare` recorded (`prepare check failed: one or more query files
+      # differ`), so the two move together.
       - name: Install sqlx-cli
         if: steps.sqlx-cli-cache.outputs.cache-hit != 'true'
         # --force: a miss here does not guarantee `~/.cargo/bin` is empty.
@@ -77,7 +79,7 @@ jobs:
         # and a plain install stops with "binary `sqlx` already exists in
         # destination". Overwriting is what we want: the version is pinned.
         run: >-
-          cargo install sqlx-cli --version ^0.8 --locked --force
+          cargo install sqlx-cli --version ^0.9 --locked --force
           --no-default-features --features rustls,postgres
       - name: Apply migrations
         run: |
@@ -186,14 +188,15 @@ jobs:
           path: |
             ~/.cargo/bin/sqlx
             ~/.cargo/bin/cargo-sqlx
-          key: sqlx-cli-0.8-${{ runner.os }}
+          key: sqlx-cli-0.9-${{ runner.os }}
       - name: Install sqlx-cli
         if: steps.sqlx-cli-cache.outputs.cache-hit != 'true'
         # --force, same as the backend job: rust-cache can restore `sqlx`
         # without the sqlx-cli entry matching, and a plain install then fails
-        # with "binary `sqlx` already exists in destination".
+        # with "binary `sqlx` already exists in destination". Version matches
+        # the backend job so the shared cache key holds one generation.
         run: >-
-          cargo install sqlx-cli --version ^0.8 --locked --force
+          cargo install sqlx-cli --version ^0.9 --locked --force
           --no-default-features --features rustls,postgres
       - name: Apply migrations
         working-directory: backend
