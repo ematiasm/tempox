@@ -4,8 +4,12 @@ Feature: **Vite 8 + vite-plugin-svelte 7 + vitest 5 on SvelteKit 2** — the bun
 together, because they cannot be separated.
 Document: `odd/tasks/frontend-vite8-slice1.md` (specs authority; owner scope L2, reshaped by owner L11).
 
-Status: **implemented, independently verified and committed.** Branch `chore/vite8-slice1`, work unit
-`fc4467f` — `build(deps): move the frontend to Vite 8 with vitest 5`.
+Status: **closed.** Branch `chore/vite8-slice1` pushed, PR [#20](https://github.com/ematiasm/tempox/pull/20)
+open against `main`, work unit `fc4467f` — `build(deps): move the frontend to Vite 8 with vitest 5`.
+
+**CI passed on the first run** (run 38819466475): Backend (Rust) 1m23s, Frontend (SvelteKit) 35s, End to end
+(Playwright) 1m33s. The e2e job downloaded chromium v1248 and ran `6 passed` — the local failure was only the
+missing browser build, and the runner supplies it.
 
 ## Tasks
 

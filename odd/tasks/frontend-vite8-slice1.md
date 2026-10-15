@@ -304,3 +304,37 @@ the plan returned `writerSelfVerification: true` and `independentVerifier: true`
 an independent read-only verification of the diff, not on the writer's own checks alone. Recorded rather than
 worked around: installing a package-local binary to make the facade happy is not something this slice should do,
 and the missing binary is not something the slice can fix.
+
+L15 (evidence, 2026-10-15, closing): **CI passed on the first run**, which is the validation the local work
+could not provide. PR [#20](https://github.com/ematiasm/tempox/pull/20), branch `chore/vite8-slice1` → `main`,
+labels `dependencies` + `ci`.
+
+```
+✓ Backend (Rust)           in 1m23s
+✓ Frontend (SvelteKit)     in 35s
+✓ End to end (Playwright)  in 1m33s      run 38819466475
+```
+
+The e2e log is the part worth keeping, because it settles the one open question this slice carried: the runner
+downloaded **chromium v1248** (`npx playwright install --with-deps chromium`) and then ran the sale flow with
+**`6 passed (11.7s)`**. The local failure was exactly the missing browser build and nothing else — the runner
+supplies it, as this repository's CI already did. The e2e is now verified on Vite 8 in a clean environment, not
+just on the development machine.
+
+Two notes on the PR itself, recorded so the reasoning is not lost:
+
+- **The repository's own conventions were followed, not the packaged skill's defaults.** That skill requires every
+  PR to link an approved issue with exactly one `type:*` label. This repository has no open issues, `gh label
+  list` exposes no `type:*` label at all, and `ci.yml` is its only workflow — it validates no issue references.
+  The real precedent is PR #18 (a dependency major bump, same shape), which links no issue and carries the
+  `dependencies` label. So this PR links no issue and carries `dependencies` + `ci`, with the deviation stated in
+  the body rather than hidden.
+- **Checkboxes were marked honestly.** "I have added tests" and "I have updated documentation if needed" were
+  left **unchecked**: no test was added (the 32 existing unit assertions are unchanged, `git diff main --
+  frontend/tests` empty) and the ODD documents are not product documentation. The verifier's offered regression
+  test was deliberately not taken, because the spec did not ask for it; it is named in the PR body as a
+  follow-up decision rather than silently omitted.
+
+Two follow-ups the PR states and does not take: the `frontend/Dockerfile` copies only `package.json` and so
+ignores the lockfile entirely (pre-existing, and it means the surgical lock governs CI and the repository but
+**not** the image), and slice 2 — SvelteKit 3 with `adapter-node` 6, whose gate is recorded in L4.
