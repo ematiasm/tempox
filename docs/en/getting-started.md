@@ -30,37 +30,42 @@ Once up:
 
 ## Running tests
 
-Create the test database once, then run both suites:
+The integration tests need the stack running, so start it first:
 
 ```bash
-make test-db-prepare
+make dev      # postgres + backend + frontend
 make test
 ```
 
 `make test` runs the frontend unit tests and the backend unit + integration
-tests. Nothing else has to be running: `make test-db-prepare` starts the postgres
-service if it is down.
+tests. The integration tests talk to the API at `localhost:3001` and to the
+database at `localhost:5432` — the ports compose publishes — so they need that
+stack up. If the backend is not answering, `make test-backend` says so and stops
+instead of letting eight tests fail with a connection error.
 
 ### Where the tests write
 
-The integration tests record real sales, products and stock movements, and
-`stock_movements` is append-only by trigger. Every row a run creates is
-therefore permanent: there is no "delete the test data" afterwards, and the only
-way to clear the development database would be to destroy it entirely, losing
-the real sales with it.
+The tests record real sales, products and stock movements, and `stock_movements`
+is append-only by trigger. Every row a run creates is permanent: there is no
+"delete the test data" afterwards.
 
-So they run against `tempox_test` instead — a second database inside the same
-postgres container, reached through a second backend on port 3002. Two facts
-make the second backend necessary, not optional: seven of the eleven tests drive
-the HTTP API rather than connecting directly, so pointing `DATABASE_URL`
-somewhere else is not enough on its own.
+They run against the same `tempox` database the screens read — one stack, one
+database, one backend. Two consequences worth knowing:
 
-The database persists between runs, so only the first run pays for creating it.
-It accumulates rows like any other database; when that bothers you (or after
-touching the schema), recreate it:
+- The rows show up in the app. After a run you will see products named
+  `w4-rice-<uuid>` and their sales in the catalogue and the sales list. They also
+  cannot be deleted individually: the ledger guards reject that.
+- `docker compose down -v` is how they go away. That drops the `pgdata` volume,
+  so your own data goes with it.
+
+CI does the same thing: a single postgres and a single backend, started by the
+job itself.
+
+### One suite at a time
 
 ```bash
-make test-db-reset
+make test-frontend   # frontend unit tests, needs nothing running
+make test-backend    # backend unit + integration, needs the dev stack up
 ```
 
 ### Why compiling needs no database
@@ -80,13 +85,6 @@ make sqlx-prepare
 Compiling against a stale cache fails on a type that no longer matches, in a
 place that names the query rather than the cause. CI runs `sqlx prepare --check`
 so a stale cache cannot merge.
-
-### One suite at a time
-
-```bash
-make test-frontend   # frontend unit tests, needs nothing running
-make test-backend    # backend unit + integration, on the test database
-```
 
 ## Deploying
 
