@@ -67,6 +67,15 @@ jobs:
         run: |
           sqlx migrate run --source migrations
           sqlx migrate info --source migrations
+      # `.sqlx/` is what lets the crate compile with no database at all, which is
+      # how `make build` and `make lint` work on a laptop and how the image builds
+      # without reaching this job's Postgres. Compiling against a stale cache
+      # fails later on a type that no longer matches, in a place that names the
+      # query rather than the cause. This check turns that into a clear error at
+      # the step whose job it is; SQLX_OFFLINE=false opts back into the database
+      # this job already has.
+      - name: Verify the sqlx offline cache is current
+        run: SQLX_OFFLINE=false cargo sqlx prepare --check -- --all-targets
       # --locked everywhere: Cargo.lock is tracked, so the build must use the
       # versions it pins instead of silently re-resolving them. A stale lock
       # fails the build loudly rather than shipping an untested combination.

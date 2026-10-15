@@ -1,0 +1,17 @@
+# `sqlx::query!`, `query_as!` and `query_scalar!` are checked against a live
+# database while this crate compiles. That used to mean every `cargo` command
+# needed PostgreSQL reachable, which does not work from the host: `.env` names
+# the `postgres` service, and that hostname only resolves inside the compose
+# network. `make test`, `make lint` and `make build` all died there before a
+# single test ran.
+#
+# `.sqlx/` holds the query metadata those macros need, recorded by a build that
+# did have a database. With it, compilation opens no connection at all.
+#
+# After changing a query, regenerate it: `make sqlx-prepare`. CI fails if it is
+# stale.
+#
+# `SQLX_OFFLINE=false cargo ...` opts a single command back into the live
+# database; cargo's `[env]` does not override a variable already set.
+[env]
+SQLX_OFFLINE = "true"

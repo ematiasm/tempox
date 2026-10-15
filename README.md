@@ -50,14 +50,25 @@ cd frontend && npm install && npm run dev
 
 After changing backend code, rebuild the container: `docker compose up -d --build backend`.
 
-Integration tests (opt-in, hit a live backend):
+Integration tests write to a test database, never the development one. Create it
+once, then run the suites:
 
 ```bash
-docker compose up -d postgres backend
-cd backend && cargo test -- --ignored
+make test-db-prepare   # once, after cloning
+make test
 ```
 
-Note that a running PostgreSQL is required even to *compile*: the `sqlx::query!` macros verify the SQL against a live database while the crate builds. See [`docs/en/getting-started.md`](./docs/en/getting-started.md).
+`make test` runs the frontend unit tests and the backend unit + integration
+tests. The backend integration tests record real sales, products and stock
+movements, and `stock_movements` is append-only, so those rows land in
+`tempox_test` — a second database inside the same postgres container — through a
+second backend on port 3002.
+
+Compiling needs no database at all: `backend/.sqlx/` carries the metadata the
+`sqlx::query!` macros verify against, so `make build` and `make lint` work with
+PostgreSQL stopped. After changing a query, run `make sqlx-prepare` to refresh
+that cache; CI fails if it is stale. See
+[`docs/en/getting-started.md`](./docs/en/getting-started.md).
 
 ## Structure
 
