@@ -51,7 +51,9 @@ jobs:
       # re-execute every migration on boot. One migrator, one source of truth.
       - name: Cache sqlx-cli
         id: sqlx-cli-cache
-        uses: actions/cache@v4
+        # v5 runs on Node 24; v4 still declares Node 20, which the runners
+        # only keep alive by forcing it onto Node 24.
+        uses: actions/cache@v5
         with:
           path: ~/.cargo/bin/sqlx
           key: sqlx-cli-0.8-${{ runner.os }}
@@ -161,7 +163,8 @@ jobs:
       # sqlx's macros, which query the database while expanding.
       - name: Cache sqlx-cli
         id: sqlx-cli-cache
-        uses: actions/cache@v4
+        # Node 24, same as the backend job.
+        uses: actions/cache@v5
         with:
           path: ~/.cargo/bin/sqlx
           key: sqlx-cli-0.8-${{ runner.os }}
@@ -219,7 +222,8 @@ jobs:
         if: always()
         run: cat /tmp/backend.log || true
 
-      - uses: actions/upload-artifact@v4
+      # v6, not v5: v5 does not move this action off Node 20.
+      - uses: actions/upload-artifact@v6
         if: failure()
         with:
           name: playwright-report
