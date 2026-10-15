@@ -647,26 +647,37 @@ async fn v1_read_endpoints_reflect_writes() {
     assert_eq!(sale["total"], expected_total);
 
     // GET /api/products: derived stock reflects the ledger, not a stored field.
-    let products: serde_json::Value = client
-        .get(format!("{base}/api/products"))
-        .send()
-        .await
-        .expect("get products")
-        .json()
-        .await
-        .expect("products json");
-    let products = products.as_array().expect("products array");
-    let rice_read = products
-        .iter()
-        .find(|p| p["name"] == rice_name)
-        .expect("rice in list");
+    // Each product is read back by name through the catalog search the screen
+    // uses, not from the unpaginated list. That list is paginated and ordered by
+    // name, so reading it whole made this test depend on how full the database
+    // was: past one page of products, the row being asserted fell off the end
+    // and the failure named the test rather than the cause.
+    let read_product = |name: String| {
+        let client = client.clone();
+        let base = base.clone();
+        async move {
+            let rows: serde_json::Value = client
+                .get(format!("{base}/api/products"))
+                .query(&[("q", name.clone())])
+                .send()
+                .await
+                .expect("get products")
+                .json()
+                .await
+                .expect("products json");
+            rows.as_array()
+                .expect("products array")
+                .iter()
+                .find(|p| p["name"] == name.as_str())
+                .cloned()
+                .expect("product in search results")
+        }
+    };
+    let rice_read = read_product(rice_name.clone()).await;
     assert_eq!(rice_read["stock"], 500, "stock must be 2000 - 1500");
     assert_eq!(rice_read["unit"], "g");
     assert_eq!(rice_read["list_price"], 250);
-    let beans_read = products
-        .iter()
-        .find(|p| p["name"] == beans_name)
-        .expect("beans in list");
+    let beans_read = read_product(beans_name.clone()).await;
     assert_eq!(beans_read["stock"], 7, "stock must be 10 - 3");
 
     // GET /api/customers: the new customer and the seeded walk-in are both there.
