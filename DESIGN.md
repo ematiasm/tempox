@@ -114,12 +114,15 @@ A restrained strategy with one committed accent: tinted neutrals carry the
 whole surface, and crimson is spent where the shop's attention actually matters.
 
 ### Primary
-- **Stamp Crimson** (`#a81b2a`): the confirmed stamp, the action band, the
-  record button, the focus ring, and the caret. It marks *commitment* — the
-  thing that has been recorded and the thing that will record. Its rarity is
-  what makes it read.
-- **Crimson Deep** (`#7e1420`): the shadow under the record button, and the
-  colour of an error's heading. Never used for large fields.
+- **Stamp Crimson** (`#a81b2a`): the system's only accent, carrying two related
+  jobs. **Commitment**: the confirmed stamp, the action band, the record and
+  create buttons, the active destination, and the focus ring and caret.
+  **Attention**: an error's heading, an invalid field, a shelf running low, the
+  regalo marker on a bonus line, and the destructive hover on a remove control.
+  Both jobs mean "look here"; the colour is never decoration, never a
+  background wash, and never a section marker.
+- **Crimson Deep** (`#7e1420`): the shadow under the record button, and error
+  text that needs to sit darker than the accent itself.
 
 ### Secondary
 - **Ledger Indigo** (`#2b3162`): the navigation rail, the cash-on-hand ground,
@@ -143,10 +146,12 @@ values in the system. The sheet's rules and the table's borders consume the same
 two tokens, because the paper's rules *are* the table's grid — never a texture
 painted behind a table. Two line systems would turn the world into a costume.
 
-**The Crimson Is Spent Rule.** Crimson appears on the action band, the confirmed
-stamp, the record button, and the focus ring, and nowhere else. It is never
-decoration, never a background wash, never a section marker. A page with crimson
-in three more places has none.
+**The Crimson Is Spent Rule.** Crimson is the system's only accent and it does
+one kind of work: it marks what the shop should look at. Commitment — the
+stamp, the action band, the record button, the active destination, the focus
+ring. Attention — an error, an invalid field, a low shelf, a giveaway. Nothing
+else: it is never a background wash, never a decorative rule, never a section
+marker. A page that adds crimson in a third role has spent it.
 
 **The Annulled Is Ink Rule.** A cancelled document is indigo-black and struck
 through, never crimson. An annulment is a correction, not an alarm; colouring it
@@ -329,8 +334,9 @@ system permitted to sit off-axis.
 
 ### Do:
 - **Do** set every number in the figure face with tabular numerals.
-- **Do** spend crimson on the band, the confirmed stamp, the record button, and
-  the focus ring — and nowhere else.
+- **Do** reserve crimson for attention: commitment (stamp, action, focus) and
+  alert (error, invalid field, low stock, regalo). Never a wash, a rule, or a
+  section marker.
 - **Do** render a `g` or `ml` product's unit verbatim: `1,500 g` at `$0.01/g`,
   never converted to kilograms or litres.
 - **Do** strike through an annulled document in ink, and its total with it.

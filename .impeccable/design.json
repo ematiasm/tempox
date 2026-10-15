@@ -193,8 +193,14 @@
       }
     ],
     "breakpoints": [
-      { "name": "stack", "value": "1180px" },
-      { "name": "rail-horizontal", "value": "860px" }
+      {
+        "name": "stack",
+        "value": "1180px"
+      },
+      {
+        "name": "rail-horizontal",
+        "value": "860px"
+      }
     ]
   },
   "components": [
@@ -289,7 +295,7 @@
       },
       {
         "name": "The Crimson Is Spent Rule",
-        "body": "Crimson appears on the action band, the confirmed stamp, the record button, and the focus ring, and nowhere else. It is never decoration, never a background wash, never a section marker. A page with crimson in three more places has none.",
+        "body": "Crimson is the system's only accent and it does one kind of work: it marks what the shop should look at. Commitment — the stamp, the action band, the record button, the active destination, the focus ring. Attention — an error, an invalid field, a low shelf, a giveaway. Nothing else: it is never a background wash, never a decorative rule, never a section marker. A page that adds crimson in a third role has spent it.",
         "section": "colors"
       },
       {
@@ -315,7 +321,7 @@
     ],
     "dos": [
       "Do set every number in the figure face with tabular numerals.",
-      "Do spend crimson on the band, the confirmed stamp, the record button, and the focus ring — and nowhere else.",
+      "Do reserve crimson for attention: commitment (stamp, action, focus) and alert (error, invalid field, low stock, regalo). Never a wash, a rule, or a section marker.",
       "Do render a g or ml product's unit verbatim: 1,500 g at $0.01/g, never converted to kilograms or litres.",
       "Do strike through an annulled document in ink, and its total with it.",
       "Do show honest empty states that name the next action, and never invent sample rows.",

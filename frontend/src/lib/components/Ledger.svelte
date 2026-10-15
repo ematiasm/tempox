@@ -218,7 +218,22 @@
                 aria-controls="lines-{row.id}"
                 onclick={() => toggle(row.id)}
               >
-                <span class="chev" class:open>▸</span>
+                <svg
+                  class="chev"
+                  class:open
+                  viewBox="0 0 12 12"
+                  aria-hidden="true"
+                  focusable="false"
+                >
+                  <path
+                    d="M4.5 2.5 8 6l-3.5 3.5"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.8"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                </svg>
                 <span class="figures">#{row.id.slice(0, 8)}</span>
               </button>
             </td>
@@ -473,7 +488,8 @@
     cursor: pointer;
   }
   .chev {
-    font-size: var(--step-1);
+    width: 12px;
+    height: 12px;
     transition: transform 120ms ease-out;
   }
   .chev.open {
