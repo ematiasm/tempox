@@ -1,0 +1,69 @@
+name: Bug report
+description: Something is broken, or a test is failing for a reason nobody understands yet
+title: "[Bug]: "
+# Applied automatically when the issue is created from this form. GitHub does
+# this natively -- no Action, nothing to maintain.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to write this down. A bug report is only as
+        useful as what it lets someone else reproduce, so the two fields that
+        matter most are the steps and what you actually saw.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happens
+      description: What goes wrong, and what you expected instead.
+      placeholder: "A sale with a bonus line is rejected with a 400, but plan-v1a says a zero price is a real line."
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: How to reproduce
+      description: |
+        The exact steps, in order. If you can, include the command or the
+        request that triggers it -- `curl`, a URL, or the clicks.
+      value: |
+        1.
+        2.
+        3.
+      render: markdown
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: What you actually saw
+      description: |
+        Paste the real output: the error, the stack trace, the log line, the
+        wrong number. Do not summarize it -- the exact text is usually where
+        the answer is.
+      render: shell
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where does it live?
+      description: |
+        Roughly where the problem is. This is a guess, not a commitment: pick
+        "Not sure yet" when the trail has not been followed and nobody should
+        pretend otherwise.
+      options:
+        - Backend (Rust)
+        - Frontend (SvelteKit)
+        - Database / migration
+        - CI or tooling
+        - Not sure yet
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before opening
+      options:
+        - label: I reproduced it on the current `main`, not on an older checkout
+        - label: I searched the existing issues and this is not a duplicate

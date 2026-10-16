@@ -1,0 +1,64 @@
+name: Feature or change
+description: Propose a new capability, or a change to how something already works
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A proposal that names the problem first is much easier to answer than
+        one that opens with the solution. If the "why" is not written down, the
+        only possible reply is a guess.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: |
+        What is hard, missing or wrong today, and who feels it. Describe the
+        situation, not the fix.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you propose
+      description: The change you have in mind, and why it solves the problem above.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What else was considered
+      description: |
+        Other options and why they lost. "Nothing, this was obvious" is a valid
+        answer -- but say so rather than leaving it blank.
+    validations:
+      required: false
+  - type: textarea
+    id: risks
+    attributes:
+      label: What could go wrong
+      description: |
+        Anything this touches that already works: an existing contract, stored
+        data, a screen someone depends on. Note it even if it seems minor.
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which area does this touch?
+      options:
+        - Backend (Rust)
+        - Frontend (SvelteKit)
+        - Database / migration
+        - CI or tooling
+        - Docs only
+        - Not sure yet
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before opening
+      options:
+        - label: I searched the existing issues and proposals for this

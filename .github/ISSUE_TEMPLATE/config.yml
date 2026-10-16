@@ -1,0 +1,12 @@
+# The issue chooser.
+#
+# `blank_issues_enabled: false` is deliberate. Every issue here gets a label
+# from the form it came from, which is the whole reason these forms exist; a
+# blank issue would arrive unlabelled and invisible to any filter. If a report
+# genuinely fits none of the forms, `question` is the closest and can be
+# relabelled once the shape is clear.
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/ematiasm/tempox/security/advisories/new
+    about: Report a vulnerability privately instead of in a public issue.
