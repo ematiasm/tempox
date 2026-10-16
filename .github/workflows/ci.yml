@@ -146,6 +146,56 @@ jobs:
       - run: npm run test:unit -- --run
       - run: npm run build
 
+  # The frontend image is the only artifact in this repository that CI never
+  # built (#23). Its two defects were both invisible from the outside -- the
+  # lockfile never entered the build, and `COPY . .` overwrote the installed
+  # tree -- and neither could be caught by any job here.
+  #
+  # What this job actually proves, stated precisely so its green means what it
+  # looks like it means: the image builds from the committed lockfile alone, and
+  # every package it installs is one the lock pins. `npm ci` is load-bearing for
+  # that -- it fails with EUSAGE when the manifest and the lock disagree, which
+  # nothing else in this pipeline checks, because the npm jobs above run
+  # `npm install` and will quietly re-resolve instead.
+  #
+  # What it cannot prove: the overwrite defect. A CI checkout has no
+  # `node_modules` (it is gitignored), so the context is already clean and
+  # `COPY . .` has nothing to clobber. That half of #23 is covered by
+  # `frontend/.dockerignore` plus the sentinel test recorded in the PR, not by
+  # this job. Saying so beats implying a guarantee the job does not give.
+  #
+  # No registry cache is configured on purpose: `npm ci` is the check, and a
+  # stale cache is one more thing that could make it pass for the wrong reason.
+  image:
+    name: Frontend image (Docker)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build the frontend image
+        run: docker build --tag tempox-frontend:ci --file frontend/Dockerfile frontend
+      # The build succeeds if the layers resolve; this asserts the result is
+      # actually usable, so a broken image cannot ride on a green build.
+      - name: The image serves the app
+        run: |
+          docker run --rm --detach --name tempox-frontend-ci --publish 4173:5173 tempox-frontend:ci
+          ready=""
+          for _ in $(seq 1 60); do
+            if curl -sf http://localhost:4173/sales >/dev/null; then ready=1; break; fi
+            sleep 1
+          done
+          if [ -z "$ready" ]; then
+            echo "::error::the image did not serve /sales in 60s"
+            docker logs tempox-frontend-ci
+            docker stop tempox-frontend-ci || true
+            exit 1
+          fi
+          # `/` redirects to `/sales` through the app's own +page.ts, so this
+          # also proves routing survived the build.
+          status="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:4173/)"
+          docker stop tempox-frontend-ci || true
+          echo "GET / -> $status"
+          test "$status" = "307"
+
   # The sale flow against a real database and a real API (S14). This is the
   # stamp's regression barrier: the stamp is the one piece of the direction no
   # unit test can see, so it needs a browser driving the real screen.
