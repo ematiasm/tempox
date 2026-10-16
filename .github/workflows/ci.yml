@@ -53,7 +53,7 @@ jobs:
         id: sqlx-cli-cache
         # v5 runs on Node 24; v4 still declares Node 20, which the runners
         # only keep alive by forcing it onto Node 24.
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           # `cargo install sqlx-cli` installs two binaries: `sqlx`, the CLI
           # itself, and `cargo-sqlx`, which is what makes `cargo sqlx` a valid
@@ -180,7 +180,7 @@ jobs:
       - name: Cache sqlx-cli
         id: sqlx-cli-cache
         # Node 24, same as the backend job.
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           # Both binaries, same as the backend job: the key is shared, so an
           # archive saved here without `cargo-sqlx` would break that job's
