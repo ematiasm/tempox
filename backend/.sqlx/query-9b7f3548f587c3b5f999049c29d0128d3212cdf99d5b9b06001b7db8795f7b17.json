@@ -21,8 +21,8 @@
         "Uuid",
         "Text",
         "Int4",
-        "Int8",
-        "Int8",
+        "Numeric",
+        "Numeric",
         "Text"
       ]
     },

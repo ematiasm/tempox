@@ -5,6 +5,7 @@ use axum::{
     routing::{get, post},
 };
 use chrono::{DateTime, Utc};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -37,9 +38,10 @@ pub struct NewSale {
 pub struct NewSaleItem {
     pub product_id: Uuid,
     pub quantity: i32,
-    /// Omitted defaults to the product's list price.
+    /// Omitted defaults to the product's list price. A decimal string, not a
+    /// JSON number: a float would lose the cent.
     #[serde(default)]
-    pub unit_price: Option<i64>,
+    pub unit_price: Option<Decimal>,
 }
 
 /// A sale with its lines, as returned by the create endpoint.
@@ -59,10 +61,11 @@ pub struct SaleListItem {
     pub items: Vec<SaleItem>,
 }
 
-/// The cash balance: the sum of confirmed sales, in cents.
+/// The cash balance: the sum of confirmed sales, as a currency amount.
 #[derive(Debug, Serialize)]
 pub struct Cash {
-    pub total_cents: i64,
+    #[serde(serialize_with = "crate::money::serialize_amount")]
+    pub total: Decimal,
 }
 
 #[derive(Debug, Deserialize)]
@@ -219,7 +222,11 @@ async fn create_sale(
     // (status, created_at) instead of echoing the request.
     let sale = sqlx::query_as!(
         Sale,
-        "SELECT id, customer_id, total, payment_method, status, reversed_at, created_at
+        // round(...,2): the column declares scale 6 and returns its value at that
+        // scale, so an amount would leave as `3750.000000`. See 0006 for why the
+        // column declares 6, and `money::MONEY_SCALE` for the contract.
+        "SELECT id, customer_id, round(total, 2) AS \"total!\", payment_method, status,
+                reversed_at, created_at
          FROM sales WHERE id = $1",
         sale_id
     )
@@ -253,8 +260,8 @@ async fn list_sales(
     // With both bounds absent the WHERE clause is vacuously true, which is the
     // unscoped behaviour v1 shipped.
     let rows = sqlx::query!(
-        "SELECT s.id, s.customer_id, s.total, s.payment_method, s.status, s.reversed_at,
-                s.created_at, c.name AS customer_name
+        "SELECT s.id, s.customer_id, round(s.total, 2) AS \"total!\", s.payment_method, s.status,
+                s.reversed_at, s.created_at, c.name AS customer_name
          FROM sales s
          JOIN customers c ON c.id = s.customer_id
          WHERE ($1::timestamptz IS NULL OR s.created_at >= $1)
@@ -279,7 +286,9 @@ async fn list_sales(
     for row in rows {
         let items = sqlx::query_as!(
             SaleItem,
-            "SELECT id, sale_id, product_id, product_name, quantity, unit_price, line_total, unit
+            "SELECT id, sale_id, product_id, product_name, quantity,
+                    round(unit_price, 2) AS \"unit_price!\",
+                    round(line_total, 2) AS \"line_total!\", unit
              FROM sale_items WHERE sale_id = $1",
             row.id
         )
@@ -308,9 +317,8 @@ async fn list_sales(
 }
 
 async fn cash_total(State(state): State<AppState>) -> Result<Json<Cash>, StatusCode> {
-    // SUM(bigint) is NUMERIC in Postgres: the cast keeps the scalar i64.
     let total = sqlx::query_scalar!(
-        "SELECT COALESCE(SUM(total), 0)::bigint AS \"total!\" FROM sales WHERE status = 'confirmed'"
+        "SELECT COALESCE(SUM(total), 0)::numeric AS \"total!\" FROM sales WHERE status = 'confirmed'"
     )
     .fetch_one(&state.db)
     .await
@@ -318,7 +326,7 @@ async fn cash_total(State(state): State<AppState>) -> Result<Json<Cash>, StatusC
         tracing::error!(?e, "cash total failed");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
-    Ok(Json(Cash { total_cents: total }))
+    Ok(Json(Cash { total }))
 }
 
 #[cfg(test)]

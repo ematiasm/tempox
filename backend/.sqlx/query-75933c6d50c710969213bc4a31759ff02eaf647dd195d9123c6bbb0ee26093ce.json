@@ -17,7 +17,7 @@
       {
         "ordinal": 1,
         "name": "list_price",
-        "type_info": "Int8",
+        "type_info": "Numeric",
         "origin": {
           "Table": {
             "table": "products",

@@ -1,3 +1,4 @@
+use rust_decimal::Decimal;
 use serde::Serialize;
 use sqlx::FromRow;
 use uuid::Uuid;
@@ -11,7 +12,9 @@ pub struct SaleItem {
     pub product_id: Uuid,
     pub product_name: String,
     pub quantity: i32,
-    pub unit_price: i64,
-    pub line_total: i64,
+    #[serde(serialize_with = "crate::money::serialize_amount")]
+    pub unit_price: Decimal,
+    #[serde(serialize_with = "crate::money::serialize_amount")]
+    pub line_total: Decimal,
     pub unit: String,
 }

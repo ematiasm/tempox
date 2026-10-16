@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, sale_id, product_id, product_name, quantity, unit_price, line_total, unit\n             FROM sale_items WHERE sale_id = $1",
+  "query": "SELECT id, sale_id, product_id, product_name, quantity,\n                    round(unit_price, 2) AS \"unit_price!\",\n                    round(line_total, 2) AS \"line_total!\", unit\n             FROM sale_items WHERE sale_id = $1",
   "describe": {
     "columns": [
       {
@@ -60,25 +60,15 @@
       },
       {
         "ordinal": 5,
-        "name": "unit_price",
-        "type_info": "Int8",
-        "origin": {
-          "Table": {
-            "table": "sale_items",
-            "name": "unit_price"
-          }
-        }
+        "name": "unit_price!",
+        "type_info": "Numeric",
+        "origin": "Expression"
       },
       {
         "ordinal": 6,
-        "name": "line_total",
-        "type_info": "Int8",
-        "origin": {
-          "Table": {
-            "table": "sale_items",
-            "name": "line_total"
-          }
-        }
+        "name": "line_total!",
+        "type_info": "Numeric",
+        "origin": "Expression"
       },
       {
         "ordinal": 7,
@@ -103,10 +93,10 @@
       false,
       false,
       false,
-      false,
-      false,
+      null,
+      null,
       false
     ]
   },
-  "hash": "90ee22a2bdb682a26ef1519b8d66ed71ff9c3ad231ba4fd739ad5e6ba0c379a3"
+  "hash": "1ddb848f7e98cdfa102128d5bf53000cfb47ecaf9406ada616325f9a4048a4c8"
 }

@@ -5,12 +5,14 @@ use axum::{
     routing::get,
 };
 use chrono::{DateTime, Utc};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use uuid::Uuid;
 
 use crate::AppState;
 use crate::db::conflict_or_500;
+use crate::money;
 
 /// The units a product's quantities are expressed in.
 const UNITS: [&str; 3] = ["unit", "g", "ml"];
@@ -28,7 +30,8 @@ pub fn routes() -> Router<AppState> {
 pub struct ProductWithStock {
     pub id: Uuid,
     pub name: String,
-    pub list_price: i64,
+    #[serde(serialize_with = "crate::money::serialize_amount")]
+    pub list_price: Decimal,
     pub unit: String,
     pub stock: i64,
     pub created_at: DateTime<Utc>,
@@ -37,7 +40,8 @@ pub struct ProductWithStock {
 #[derive(Debug, Deserialize)]
 pub struct NewProduct {
     pub name: String,
-    pub list_price: i64,
+    /// A decimal string, not a JSON number: a float would lose the cent.
+    pub list_price: Decimal,
     /// Defaults to `"unit"`.
     #[serde(default)]
     pub unit: Option<String>,
@@ -76,9 +80,14 @@ async fn list_products(
     // on the whole name, not its prefix, and `%`/`_` in the caller's text are
     // literal — without the escape an `_` would match any character and a `%`
     // would match the entire catalog.
+    //
+    // `round(p.list_price, 2)`: the column declares scale 6 (see 0006 for why),
+    // and PostgreSQL returns a NUMERIC with the column's declared scale, so an
+    // amount would leave as `25.000000`. Rounding at the read edge is what makes
+    // the wire contract two decimals, in one place, for both endpoints.
     let rows = sqlx::query_as!(
         ProductWithStock,
-        r#"SELECT p.id, p.name, p.list_price, p.unit, p.created_at,
+        r#"SELECT p.id, p.name, round(p.list_price, 2) AS "list_price!", p.unit, p.created_at,
                   COALESCE(SUM(m.quantity), 0)::bigint AS "stock!"
            FROM products p
            LEFT JOIN stock_movements m ON m.product_id = p.id
@@ -114,7 +123,10 @@ async fn create_product(
     Json(body): Json<NewProduct>,
 ) -> Result<(StatusCode, Json<ProductWithStock>), StatusCode> {
     let name = body.name.trim().to_string();
-    if name.is_empty() || body.list_price < 0 {
+    if name.is_empty()
+        || body.list_price.is_sign_negative()
+        || !money::is_whole_cents(body.list_price)
+    {
         return Err(StatusCode::BAD_REQUEST);
     }
     let unit = body.unit.unwrap_or_else(|| "unit".to_string());
@@ -159,7 +171,7 @@ async fn create_product(
     // Respond with the same derived-stock projection the list endpoint uses.
     let product = sqlx::query_as!(
         ProductWithStock,
-        "SELECT p.id, p.name, p.list_price, p.unit, p.created_at,
+        "SELECT p.id, p.name, round(p.list_price, 2) AS \"list_price!\", p.unit, p.created_at,
                 COALESCE(SUM(m.quantity), 0)::bigint AS \"stock!\"
          FROM products p
          LEFT JOIN stock_movements m ON m.product_id = p.id
