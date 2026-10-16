@@ -30,7 +30,8 @@ S8. The frontend image builds under Node 26 and **serves `/sales`**: `docker bui
    cosmetic.
 S9. The Node range of every package in the tree admits 26. Verified: no package's `engines.node` excludes it,
    and the packages that constrained the floor (`vitest` needs `^22.12.0 || ^24.0.0 || >=26.0.0`,
-   `@sveltejs/vite-plugin-svelte` and `rolldown` need `>=24`) already admit it.
+   `@sveltejs/vite-plugin-svelte` (`^20.19 || ^22.12 || >=24`) and `rolldown` (`^20.19.0 || >=22.12.0`)
+   already admit it.
 S10. One work-unit commit on branch `chore/node26`, because S1, S2 and S3 are indivisible: bumping CI while
    leaving the image on 24 would create the same split-runtime defect this slice removes.
 S11. After this slice is merged, PR #30 is merged and `main` is verified green with `@types/node` on 26.
@@ -44,7 +45,8 @@ S11. After this slice is merged, PR #30 is merged and `main` is verified green w
 | T3 | Guard check: no declaration below 26 survives, and the four action-runtime comment lines are byte-identical to `main` | S4, S5 | done | L6 |
 | T4 | Verify on the branch: five checks under Node 26, plus the image builds and serves `/sales` | S7, S8 | done | L7 |
 | T5 | Commit, push, open the PR | S10 | pending | — |
-| T6 | CI green on the PR | S7, S8 | pending | — |
+| T6 | CI green on the PR | S7, S8 | done | L8 |
+| T8 | Independent read-only verification of the diff (risk item 5) | all | done | L9 |
 | T7 | Merge the slice, then merge #30 and verify `main` | S11 | pending | — |
 
 ## Log
@@ -71,12 +73,14 @@ declaration change and not a code change.
 
 S9 verified by reading every `engines.node` in `frontend/package-lock.json`: **243** packages declare one and
 **none** excludes Node 26. The tightest are `vitest` (`^22.12.0 || ^24.0.0 || >=26.0.0`), and
-`@sveltejs/vite-plugin-svelte`, `rolldown` and `@typescript-eslint/visitor-keys` (all `>=24`).
+`@sveltejs/vite-plugin-svelte`, `rolldown` and `@typescript-eslint/visitor-keys` all admit 26 (their ranges are
+`^20.19 || ^22.12 || >=24`, `^20.19.0 || >=22.12.0` and `^18.18.0 || ^20.9.0 || >=21.1.0` respectively — the
+third is the loosest of the three, not `>=24`).
 `node:26-bookworm-slim` confirmed present with `docker manifest inspect`. The floors the repository already
 recorded (`odd/tasks/frontend-vite8-slice1.md` L3/L8) stay valid: Vite 8 needs `>=22.12.0`, vitest 5 needs
 `>=26.0.0` for the 26 line, SvelteKit needs `>=22.17`.
 
-L3 (plan, 2026-10-16, before the first write): the three files, exactly six lines — `ci.yml` L140 and L275
+L3 (plan, 2026-10-16, before the first write): the three files, five sites — `ci.yml` L140 and L275
 (frontend job, e2e job); `frontend/Dockerfile` L1 and L14 (`deps` and runtime stages);
 `docs/en/getting-started.md` L6. Nothing else in the repository declares a Node version, established by
 `git grep -nE "node:2[0-9]|node-version"` across all tracked files.
@@ -95,9 +99,9 @@ other slices warn about: a document that asserts results it did not produce is w
 the next reader treats it as authority. The rule applied from here on is that `## Log` gains an entry only
 after the command that produced it has run.
 
-L5 (implementation, 2026-10-16, T2): the three files, exactly six lines, no more. `ci.yml` L140 and L275
+L5 (implementation, 2026-10-16, T2 — **corrected 2026-10-16, see L9**): the three files, five sites, no more. `ci.yml` L140 and L275
 (frontend job, e2e job) to `"26"`; `frontend/Dockerfile` L1 and L14 to `node:26-bookworm-slim`;
-`docs/en/getting-started.md` L6 to `Node 26+`. The full diff against `main` is six changed lines across three
+`docs/en/getting-started.md` L6 to `Node 26+`. The full diff against `main` is five changed lines across three
 files and nothing else.
 
 One tooling note worth keeping: the first attempt applied both files in one batched call and the whole call
@@ -140,5 +144,65 @@ manifest disagree; it is the check that would catch a base-image move that quiet
 
 ## Remaining work
 
-T5 through T7 are open (commit, PR, CI, and the #30 merge). Evidence is appended to `## Log` as each task
-produces it; nothing above is claimed before it is measured.
+T7 is open (merge the slice, then #30). Independent verification returned clean (L9); T8 is closed.
+
+L9 (independent verification, 2026-10-16, T8 — `gentle-ai-verify`, read-only, separate context): **zero defects,
+S1-S6 PASS.** This is the verification the change's risk class requires (item 5), and it was run before the
+merge rather than after it.
+
+| spec | verdict | how it was checked |
+|---|---|---|
+| S1 | PASS | exactly 2 `node-version` sites, full-file diff vs `main` touches only L140/L275 |
+| S2 | PASS | both `FROM` lines moved, nothing else in the file |
+| S3 | PASS | `getting-started.md:6` reads `Node 26+` |
+| S4 | PASS | **verified against `git show main:...`, not against this document**; L54-55, L232, L300 byte-identical |
+| S5 | PASS | `ae5f23b --name-only` = exactly 3 files; `frontend/package.json` diff empty, no `engines` field |
+| S6 | PASS | `@types/node` still `^22.9.0`, lock at `22.20.1`, branch differs from PR #30's |
+
+Two of my own measurements were **independently reproduced rather than taken on trust**, which is the point of
+running it separately:
+
+- **The `engines` scan (S9)**, the claim that decides whether Node 26 is viable at all. Reproduced offline with
+the frontend's own `semver`: 243 packages declare `engines.node`, and **0 exclude 26.11.1** — including the
+stronger check that **no range has an upper bound** (`<`). That last part is what makes the scan meaningful: my
+original pass used a heuristic that could have missed a `<26` bound, and the verifier's did not.
+- **The five checks and the Docker half (S7/S8)**: same exit codes, same 32/32, `v26.12.0` inside the built
+image, `/sales` HTTP 200. It also hit and correctly diagnosed a port mismatch on its first attempt (tried 3000;
+the container listens on 5173 per `EXPOSE`) — its own retry, not a defect in the change.
+
+Three advisories, all bookkeeping and all fixed in L10 rather than argued with: the changed-line count, a loose
+`>=24` phrasing for two package ranges, and the mirror reading `T6 pending` while this document had moved on.
+
+L10 (correction, 2026-10-16, from L9's advisories — all three mine, in this document): the arithmetic one is a
+real error worth naming. L3 and L5 said "exactly six lines" for a commit whose stat is **5 insertions, 5
+deletions**. The sites were enumerated correctly and then counted wrong, and nothing depended on the number —
+but the document is the specs authority for this slice, and a reader checking the diff against "six" would have
+found a discrepancy and had to decide whether the code or the document was wrong. Corrected in L3 and L5 with a
+pointer to this entry. Also: `@sveltejs/vite-plugin-svelte` is `^20.19 || ^22.12 || >=24` and `rolldown` is
+`^20.19.0 || >=22.12.0`, so "all `>=24`" was loose for those two (the substance held), and the mirror was
+re-synchronised.
+
+## Remaining work
+
+T7 only (merge the slice, then #30). Independent verification returned clean (L9). Evidence is appended to
+`## Log` as each task produces it.
+
+L8 (evidence, 2026-10-16, T6): CI passed on the PR's first run. Run `38897304773` on `ca343b9`, all four jobs
+`success`:
+
+| job | result | the part that matters here |
+|---|---|---|
+| Backend (Rust) | pass 1m12s | unaffected by the move |
+| Frontend (SvelteKit) | pass 37s | the log shows `node-version: 26` |
+| Frontend image (Docker) | pass 27s | loaded `node:26-bookworm-slim`; step "The image serves the app" `success` |
+| End to end (Playwright) | pass 1m36s | the log shows `node-version: 26`, then `node: v26.12.0` |
+
+The image job is the one that justifies this run existing separately from the local work: it pulls
+`node:26-bookworm-slim` from the registry on a clean runner, which is the only thing that proves the tag
+resolves outside the owner's machine. The local `docker manifest inspect` said the tag exists; this says the
+build actually uses it.
+
+S8 therefore holds twice over, locally and in CI. The one step of interest that did **not** run is
+`Run actions/upload-artifact@v7` (`skipped`, as designed: it is `if: failure()`, and E2E passed), so this run
+still does not exercise the artifact upload path — unchanged from the earlier note, and not something this slice
+can fix.
