@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ApiError,
+  createCreditNote,
   createProduct,
   createSale,
   dayRange,
@@ -223,6 +224,45 @@ describe('createProduct and createSale (S4)', () => {
 
     const body = JSON.parse(String(calledInit(fetchMock)?.body));
     expect(body).not.toHaveProperty('customer_id');
+  });
+});
+
+describe('createCreditNote (S3, S7)', () => {
+  it('posts the refund to the sale it corrects, exactly as given', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ id: 'n1' }, 201));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createCreditNote('s1', [
+      { sale_item_id: 'i1', quantity: 3 },
+      { sale_item_id: 'i2', quantity: 1 }
+    ]);
+
+    const url = calledUrl(fetchMock);
+    // The sale is in the path, not in the body: the refund belongs to a
+    // document, and a body-sale_id would let the two disagree.
+    expect(url.pathname).toBe('/api/sales/s1/credit-notes');
+    expect(calledInit(fetchMock)?.method).toBe('POST');
+    expect(JSON.parse(String(calledInit(fetchMock)?.body))).toEqual({
+      items: [
+        { sale_item_id: 'i1', quantity: 3 },
+        { sale_item_id: 'i2', quantity: 1 }
+      ]
+    });
+  });
+
+  it('carries the status of a refused refund so the caller can explain it', async () => {
+    // 409 is the server's cumulative guard answering: the client must not try
+    // to reproduce that arithmetic, only to report it.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => jsonResponse({ error: 'too much' }, 409))
+    );
+
+    await expect(
+      createCreditNote('s1', [{ sale_item_id: 'i1', quantity: 99 }])
+    ).rejects.toMatchObject({
+      status: 409
+    });
   });
 });
 

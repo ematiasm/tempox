@@ -31,7 +31,7 @@ Axum aligns with the tokio + tower ecosystem and has become the de-facto standar
 
 ## API surface (v1 — sales)
 
-All routes are under `/api`. Money is sent and stored as **integer cents** (`1500` = $15.00); quantities are integers in the product's **base unit** (`unit` | `g` | `ml`).
+All routes are under `/api`. Money is sent and stored as a **decimal amount** (`"15.00"` = $15.00) — a string on the wire, `NUMERIC(14,6)` with a whole-cents guard in the database, `rust_decimal::Decimal` in Rust. Quantities are integers in the product's **base unit** (`unit` | `g` | `ml`).
 
 | Route | Purpose |
 |---|---|
@@ -40,17 +40,18 @@ All routes are under `/api`. Money is sent and stored as **integer cents** (`150
 | `GET /api/customers` | Customers, including the seeded `walk-in` |
 | `POST /api/customers` | `{name}` — 409 on duplicate name |
 | `POST /api/sales` | `{customer_id?, items: [{product_id, quantity, unit_price?}]}` — **one transaction**: the sale, its lines (name/unit/price snapshots), and one negative stock movement per line. Omitted `customer_id` → walk-in; omitted `unit_price` → list price. A `unit_price` of `0` is a bonus line (regalo): it is recorded, the stock still drops, and it contributes nothing to cash. 404 unknown product/customer; 400 empty, non-positive quantity, or negative price |
-| `GET /api/sales?from=&to=&limit=50&offset=0` | Sales newest first, with nested lines and customer name. `from` is inclusive and `to` is exclusive, so adjacent ranges partition the ledger instead of double-counting the sale recorded at midnight; absent bounds keep the unscoped recent-documents behaviour. `offset` defaults to `0`, clamped up to `0` so a negative value is not a 500. The limit is clamped to 1..200, so `limit=0` returns one sale rather than none |
-| `GET /api/cash` | `{total_cents}` — sum of confirmed sale totals, derived |
+| `GET /api/sales?from=&to=&limit=50&offset=0` | Sales newest first, with nested lines, customer name, and `credit_notes` (oldest first, each with its `items`; an empty array when the sale was never corrected). `from` is inclusive and `to` is exclusive, so adjacent ranges partition the ledger instead of double-counting the sale recorded at midnight; absent bounds keep the unscoped recent-documents behaviour. `offset` defaults to `0`, clamped up to `0` so a negative value is not a 500. The limit is clamped to 1..200, so `limit=0` returns one sale rather than none |
+| `POST /api/sales/{id}/credit-notes` | `{items: [{sale_item_id, quantity}]}` — **one transaction**: a credit note, its lines (name/unit/price snapshots of the corrected sale line), and one **positive** stock movement per line. Reverses part or all of a sale; several notes may follow while each line's cumulative refunded quantity stays within what was sold. 404 unknown sale or a line that is not that sale's; 400 empty items or a non-positive quantity; 409 a refund that would exceed the quantity sold. Concurrent refunds of one sale are serialized with `SELECT ... FOR UPDATE`, so two notes cannot both pass the cumulative guard |
+| `GET /api/cash` | `{total}` — sum of confirmed sale totals **minus every credit note**, derived |
 
 Request decoding is axum's `Json` extractor, so its rejections keep their standard codes: `415` without a JSON `content-type`, `400` on malformed JSON, and `422` when the shape parses but a field is wrong (an unparseable UUID, a missing field, `"quantity": "two"`). The handler's own validation answers `400`.
 
 ### Invariants enforced by the database
 
-- **Money is exact**: integer cents, with `line_total = quantity × unit_price` and `sales.total = Σ line_total` computed by unit-tested pure functions before any write. Amounts are never negative; a price of `0` is allowed, which is how a bonus line (regalo) is recorded.
-- **Stock is a ledger**: append-only movements; balances are always derived (`SUM`), never stored. The ledger rejects `UPDATE`, `DELETE` and `TRUNCATE`, and every reason is one of the values the schema knows, so a balance change always has a nameable cause.
-- **Events are immutable**: `sale_items` reject `UPDATE` and `DELETE`; a sale's economics (`total`, `customer_id`, `payment_method`) are locked while the status transition still works for reversal; a product's `unit` is locked once it has history.
-- **Corrections are compensating rows** (a reversal), never edits. The sales lifecycle is designed toward `draft → confirmed → cancel → done`.
+- **Money is exact**: a decimal currency amount with two decimals, guarded by *value* (`v = round(v, 2)`) in a column that declares scale 6, so an over-precise value is refused instead of silently rounded. `line_total = quantity × unit_price` and `sales.total = Σ line_total` are computed by unit-tested pure functions before any write. Amounts are never negative; a price of `0` is allowed, which is how a bonus line (regalo) is recorded.
+- **Stock is a ledger**: append-only movements; balances are always derived (`SUM`), never stored. The ledger rejects `UPDATE`, `DELETE` and `TRUNCATE`, and every reason is one of the values the schema knows (`initial`, `sale`, `credit_note`), so a balance change always has a nameable cause. A movement for a sale or a credit note must name the document that caused it, and a `credit_note` movement must name its note.
+- **Events are immutable**: `sale_items`, `credit_notes` and `credit_note_items` reject `UPDATE`, `DELETE` and `TRUNCATE`; a sale's and a note's economics (`total`, `customer_id`/`sale_id`, `payment_method`) are locked.
+- **Corrections are compensating rows** (a reversal), never edits. Reversing a sale emits a **credit note** — a second document that returns stock and money — and leaves the sale byte-for-byte as recorded: `status` stays `confirmed` and `reversed_at` stays NULL. A partial refund is not an annulment; a sale reads as annulled when its lines are fully refunded, which the client derives from the notes.
 
 ## What's out of scope for Tempox
 

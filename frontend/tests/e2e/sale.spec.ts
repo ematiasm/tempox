@@ -67,6 +67,47 @@ test('a sale is recorded from the draft sheet and wears its stamp', async ({ pag
   await expect(page.locator('.lines table')).toContainText('$100.00');
 });
 
+test('a sale can be returned in parts with credit notes', async ({ page }) => {
+  const name = `e2e-refund-${Date.now().toString(36)}`;
+
+  await page.goto('/products');
+  await page.locator('#new-name').fill(name);
+  await page.locator('#new-price').fill('25.00');
+  await page.locator('#new-stock').fill('10');
+  await page.getByRole('button', { name: 'Create product' }).click();
+  await expect(page.getByRole('status')).toContainText(name);
+
+  await page.goto('/sales');
+  await page.getByRole('combobox', { name: 'Product' }).fill(name);
+  await expect(page.getByRole('option').first()).toContainText(name);
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('Enter');
+  const line = page.locator('.sheet table.lines tbody tr').first();
+  await expect(line).toContainText(name);
+  await line.locator('input[aria-label^="Qty"]').fill('4');
+  await expect(page.locator('.sheet .total')).toHaveText('$100.00');
+  await page.getByRole('button', { name: /Record sale/ }).click();
+
+  const doc = page.locator('table.docs tbody tr.doc').first();
+  await expect(doc.locator('.stamp')).toContainText('Confirmed');
+  await doc.locator('.doc-id').click();
+  const document = page.locator('.lines');
+  await expect(document.locator('.note-block')).toHaveCount(0);
+
+  const quantity = page.getByRole('textbox', { name: `Return ${name}` });
+  await quantity.fill('1');
+  await page.getByRole('button', { name: 'Annul sale…' }).click();
+  await expect(document.locator('.note-block')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Yes, annul' }).click();
+  await expect(document.locator('.note-block')).toContainText('−$25.00');
+  await expect(doc.locator('.stamp')).toContainText('Confirmed');
+
+  await page.getByRole('textbox', { name: `Return ${name}` }).fill('3');
+  await page.getByRole('button', { name: 'Annul sale…' }).click();
+  await page.getByRole('button', { name: 'Yes, annul' }).click();
+  await expect(doc.locator('.stamp')).toContainText('Anulado');
+});
+
 test('a bonus line is recorded and moves no money', async ({ page }) => {
   const name = `e2e-gift-${Date.now().toString(36)}`;
 

@@ -92,7 +92,8 @@ docs/        Documentation (en)
 - `GET /api/hello?name=Ada` — dummy greeting endpoint
 - `GET/POST/DELETE /api/notes` — CRUD demo backed by PostgreSQL
 - **Sales slice (v1)**: multi-item sales with stock and cash derived from an append-only movement ledger — API surface in [`docs/en/architecture.md`](./docs/en/architecture.md)
-- SvelteKit pages `/` (hello demo) and `/notes` (CRUD demo)
+- **Sales reversal (v1.5)**: a mistaken sale is annulled by a credit note, in whole or in part — a second document that returns stock and money while the sale stays exactly as recorded. `POST /api/sales/{id}/credit-notes`, and `/api/cash` is net of the refunds
+- SvelteKit pages `/sales` (the ledger and the draft sheet) and `/products` (the catalog); `/` redirects to `/sales`, and `/notes` stays reachable by URL
 - FR/EN i18n via a runes-backed store
 
 ## Docs

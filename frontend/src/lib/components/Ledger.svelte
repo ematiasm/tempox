@@ -10,10 +10,17 @@
    * means the shop's today, not UTC's — a sale recorded at 22:00 in Argentina
    * belongs to that day's page, not to tomorrow's.
    */
-  import { ApiError, getCash, listSales, dayRange, type SaleListItem } from '#lib/api.js';
-  import { formatMoney, formatQuantity, sumAmounts } from '#lib/money.js';
+  import {
+    ApiError,
+    createCreditNote,
+    getCash,
+    listSales,
+    dayRange,
+    type SaleListItem
+  } from '#lib/api.js';
+  import { formatMoney, formatQuantity, parseQuantity, sumAmounts } from '#lib/money.js';
   import { lang } from '#lib/i18n/index.svelte.js';
-  import { SvelteSet } from 'svelte/reactivity';
+  import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import Stamp from './Stamp.svelte';
 
   interface Props {
@@ -39,6 +46,16 @@
   // the expanded rows stay in step with the set without reassigning it.
   let expanded = new SvelteSet<string>();
 
+  // The refund state, kept per document rather than globally: opening a second
+  // document must not inherit the first one's half-filled form, and a confirm
+  // that is open on one row must not arm another.
+  // The value is the text the cashier typed, exactly as typed; validation
+  // happens when they submit, not on every keystroke.
+  let refundDraft = new SvelteMap<string, Map<string, string>>();
+  let confirming = $state<string | null>(null);
+  let refunding = $state<string | null>(null);
+  let refundError = $state<string | null>(null);
+
   const range = $derived(dayRange(dayStart));
   /**
    * Whether the page is showing the shop's current day.
@@ -63,6 +80,9 @@
 
   /** The rows the page actually holds — pagination shows no total count (S10). */
   const shownTotal = $derived(sumAmounts(rows.map((r) => r.total)) ?? '0.00');
+  const refundedTotal = $derived(
+    sumAmounts(rows.flatMap((row) => row.credit_notes.map((note) => note.total))) ?? '0.00'
+  );
   const bonusLines = $derived(
     rows.reduce((n, r) => n + r.items.filter((i) => i.unit_price === '0.00').length, 0)
   );
@@ -118,6 +138,106 @@
   /** A cancelled sale is struck through, never crimson: it is a correction, not an alarm. */
   function isAnnulled(row: SaleListItem) {
     return row.status === 'cancel' || row.reversed_at !== null;
+  }
+
+  /**
+   * How much of each line has already come back, keyed by sale-line id.
+   *
+   * Derived from the notes the server sent rather than tracked locally: the
+   * server is the authority on what was refunded, and a local tally would drift
+   * the moment a refund lands in another tab.
+   */
+  function refundedByLine(row: SaleListItem): Map<string, number> {
+    const refunded = new SvelteMap<string, number>();
+    for (const note of row.credit_notes) {
+      for (const item of note.items) {
+        refunded.set(item.sale_item_id, (refunded.get(item.sale_item_id) ?? 0) + item.quantity);
+      }
+    }
+    return refunded;
+  }
+
+  /** What a line still has to return. Zero means it is done. */
+  function refundableOf(itemId: string, sold: number, refunded: Map<string, number>): number {
+    return Math.max(0, sold - (refunded.get(itemId) ?? 0));
+  }
+
+  /**
+   * Whether the sale is fully reversed.
+   *
+   * A partial refund is not an annulment: the document still stands, wearing its
+   * confirmed stamp, with a note underneath it. Only when every unit has come
+   * back does the sale read as annulled — and even then it is derived, never a
+   * status the server wrote on it.
+   */
+  function isFullyRefunded(row: SaleListItem): boolean {
+    const refunded = refundedByLine(row);
+    return (
+      row.items.length > 0 &&
+      row.items.every((item) => refundableOf(item.id, item.quantity, refunded) === 0)
+    );
+  }
+
+  /** The draft refund text for one line: what was refunded sits above it as "left". */
+  function refundText(rowId: string, itemId: string, remaining: number): string {
+    return refundDraft.get(rowId)?.get(itemId) ?? String(remaining);
+  }
+
+  function setRefundText(rowId: string, itemId: string, text: string) {
+    const draft = new SvelteMap(refundDraft.get(rowId) ?? []);
+    draft.set(itemId, text);
+    refundDraft.set(rowId, draft);
+  }
+
+  function clearRefundDraft(rowId: string) {
+    refundDraft.delete(rowId);
+  }
+
+  /**
+   * The lines this document would return, or `null` when the form is not valid.
+   *
+   * A line left at its full remaining quantity is the common case and needs no
+   * special casing: the server enforces the limit, this only refuses to send a
+   * quantity that is not a positive integer.
+   */
+  function refundPlan(row: SaleListItem): { sale_item_id: string; quantity: number }[] | null {
+    const refunded = refundedByLine(row);
+    const plan: { sale_item_id: string; quantity: number }[] = [];
+    for (const item of row.items) {
+      const remaining = refundableOf(item.id, item.quantity, refunded);
+      if (remaining === 0) continue;
+      const quantity = parseQuantity(refundText(row.id, item.id, remaining));
+      if (quantity === null || quantity > remaining) return null;
+      plan.push({ sale_item_id: item.id, quantity });
+    }
+    return plan.length > 0 ? plan : null;
+  }
+
+  async function submitRefund(row: SaleListItem) {
+    const plan = refundPlan(row);
+    if (plan === null) {
+      refundError = lang.t.sales_refund_invalid;
+      return;
+    }
+    refunding = row.id;
+    refundError = null;
+    try {
+      await createCreditNote(row.id, plan);
+      clearRefundDraft(row.id);
+      confirming = null;
+      // Reload the day rather than patching the row in place: the note the
+      // server wrote is the record, and the derived stamped state has to come
+      // from it, not from what this component believes it sent.
+      rows = await listSales({ from: range.from, to: range.to, limit: PAGE, offset: 0 });
+      const c = await getCash();
+      cash = c.total;
+    } catch (e) {
+      // A 409 is the cumulative guard answering, and it is the one refusal a
+      // cashier can act on: the line has less left than the form asked for.
+      refundError = e instanceof ApiError ? `${e.message} (${e.status})` : String(e);
+    } finally {
+      refunding = null;
+    }
   }
 </script>
 
@@ -204,7 +324,7 @@
         <tbody>
           {#each rows as row (row.id)}
             {@const open = expanded.has(row.id)}
-            {@const annulled = isAnnulled(row)}
+            {@const annulled = isAnnulled(row) || isFullyRefunded(row)}
             <tr class="doc">
               <td class="figures time">
                 {new Date(row.created_at).toLocaleTimeString('en-US', {
@@ -267,10 +387,13 @@
                           <th scope="col" class="num">{lang.t.sales_qty}</th>
                           <th scope="col" class="num">{lang.t.sales_unit_price}</th>
                           <th scope="col" class="num">{lang.t.sales_line}</th>
+                          <th scope="col" class="num">{lang.t.sales_refund_qty}</th>
                         </tr>
                       </thead>
                       <tbody>
                         {#each row.items as item (item.id)}
+                          {@const refunded = refundedByLine(row)}
+                          {@const remaining = refundableOf(item.id, item.quantity, refunded)}
                           <tr>
                             <td>
                               {item.product_name}
@@ -283,10 +406,103 @@
                               {formatMoney(item.unit_price)}<span class="per">/{item.unit}</span>
                             </td>
                             <td class="num figures">{formatMoney(item.line_total)}</td>
+                            <td class="num return-cell">
+                              {#if remaining > 0}
+                                <input
+                                  type="text"
+                                  inputmode="numeric"
+                                  aria-label="Return {item.product_name}"
+                                  value={refundText(row.id, item.id, remaining)}
+                                  oninput={(event) =>
+                                    setRefundText(row.id, item.id, event.currentTarget.value)}
+                                />
+                              {:else}
+                                <span class="returned">{lang.t.sales_refund_none}</span>
+                              {/if}
+                              <span class="left"
+                                >{lang.t.sales_refund_left(remaining, item.quantity)}</span
+                              >
+                            </td>
                           </tr>
                         {/each}
                       </tbody>
                     </table>
+                    {#each row.credit_notes as note (note.id)}
+                      <section
+                        class="note-block"
+                        aria-label="{lang.t.sales_credit_note} NC-#{note.id.slice(0, 8)}"
+                      >
+                        <div class="note-head">
+                          <span>{lang.t.sales_credit_note} NC-#{note.id.slice(0, 8)}</span>
+                          <span class="note-total figures">−{formatMoney(note.total)}</span>
+                          <time
+                            >{new Date(note.created_at).toLocaleTimeString('en-US', {
+                              hour: '2-digit',
+                              minute: '2-digit',
+                              hour12: false
+                            })}</time
+                          >
+                        </div>
+                        <table>
+                          <thead>
+                            <tr>
+                              <th scope="col">{lang.t.sales_product}</th>
+                              <th scope="col" class="num">{lang.t.sales_qty}</th>
+                              <th scope="col" class="num">{lang.t.sales_unit_price}</th>
+                              <th scope="col" class="num">{lang.t.sales_line}</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {#each note.items as item (item.id)}
+                              <tr>
+                                <td>{item.product_name}</td>
+                                <td class="num figures"
+                                  >{formatQuantity(item.quantity, item.unit)}</td
+                                >
+                                <td class="num figures"
+                                  >{formatMoney(item.unit_price)}<span class="per"
+                                    >/{item.unit}</span
+                                  ></td
+                                >
+                                <td class="num figures">{formatMoney(item.line_total)}</td>
+                              </tr>
+                            {/each}
+                          </tbody>
+                        </table>
+                      </section>
+                    {/each}
+                    <div class="refund">
+                      {#if isFullyRefunded(row)}
+                        <p>{lang.t.sales_refund_none}</p>
+                      {:else if confirming === row.id}
+                        <p class="refund-warn">{lang.t.sales_refund_confirm}</p>
+                        <button
+                          type="button"
+                          class="danger"
+                          disabled={refunding === row.id}
+                          onclick={() => submitRefund(row)}
+                        >
+                          {refunding === row.id ? '…' : lang.t.sales_refund_yes}
+                        </button>
+                        <button type="button" onclick={() => (confirming = null)}
+                          >{lang.t.sales_refund_no}</button
+                        >
+                      {:else}
+                        <button
+                          type="button"
+                          class="danger"
+                          onclick={() => {
+                            confirming = row.id;
+                            refundError = null;
+                          }}
+                        >
+                          {lang.t.sales_refund_action}
+                        </button>
+                      {/if}
+                      {#if refundError}
+                        <p role="alert">{lang.t.sales_refund_error}{refundError}</p>
+                      {/if}
+                    </div>
                   </div>
                 </td>
               </tr>
@@ -315,9 +531,9 @@
       <span class="note">{lang.t.sales_bonus_lines_note}</span>
     </div>
     <div class="fig">
-      <span class="label">{lang.t.sales_annulment}</span>
-      <span class="value note-value">{lang.t.sales_annulment_value}</span>
-      <span class="note">{lang.t.sales_annulment_note}</span>
+      <span class="label">{lang.t.sales_refunded}</span>
+      <span class="value figures">{formatMoney(refundedTotal)}</span>
+      <span class="note">{lang.t.sales_refunded_note}</span>
     </div>
   </div>
 </section>
@@ -576,6 +792,117 @@
     color: var(--crimson);
     font-weight: 600;
   }
+  .return-cell {
+    white-space: nowrap;
+  }
+  .return-cell input {
+    width: 5.5em;
+    padding: 5px 7px;
+    border: 1px solid var(--rule-strong);
+    border-radius: var(--radius);
+    background: #fff;
+    color: var(--ink);
+    font-family: var(--font-figure);
+    font-size: var(--step-1);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+  .left {
+    display: block;
+    color: var(--ink-soft);
+    font-size: var(--step--1);
+  }
+  .returned {
+    color: var(--ink-soft);
+    font-size: var(--step--1);
+  }
+  .refund {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 22px;
+    padding: 16px 0 4px;
+  }
+  .refund p {
+    margin: 0;
+  }
+  .refund-warn {
+    flex-basis: 100%;
+    color: var(--ink-soft);
+  }
+  .refund button {
+    border: 1px solid var(--rule-strong);
+    background: var(--paper-raised);
+    color: var(--ink);
+    border-radius: var(--radius);
+    padding: 7px 11px;
+    font-size: var(--step-0);
+    font-weight: 600;
+    cursor: pointer;
+  }
+  /*
+   * An annulment is a correction, not an alarm (DESIGN.md, "The Annulled Is Ink
+   * Rule"). So the control is ink, like every other control on the page, and
+   * crimson arrives only on hover — the same shape the sheet's remove control
+   * uses. A crimson fill here would be a third role for the one accent, spent
+   * against the stamp it is meant to belong to.
+   */
+  .refund button.danger {
+    border-color: var(--ink);
+    background: transparent;
+    color: var(--ink);
+  }
+  .refund button.danger:hover:not(:disabled) {
+    border-color: var(--crimson);
+    color: var(--crimson);
+    background: rgb(168 27 42 / 0.08);
+  }
+  .refund button:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+  .refund [role='alert'] {
+    flex-basis: 100%;
+    color: var(--crimson-deep);
+    font-size: var(--step-0);
+  }
+  .note-block {
+    margin-top: 18px;
+    padding-top: 12px;
+    border-top: 1px solid var(--rule-strong);
+  }
+  .note-head {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    align-items: baseline;
+    gap: 14px;
+    margin-bottom: 7px;
+    color: var(--ink-soft);
+    font-size: var(--step-0);
+  }
+  .note-total {
+    text-align: right;
+    font-size: var(--step-2);
+    font-weight: 700;
+    color: var(--ink);
+  }
+  .note-block table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--paper);
+    border: 1px solid var(--rule);
+  }
+  .note-block th {
+    font-size: var(--step--1);
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--rule);
+  }
+  .note-block td {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--rule);
+    font-size: var(--step-1);
+  }
 
   .alert {
     display: flex;
@@ -677,11 +1004,6 @@
     font-size: var(--step-4);
     font-weight: 700;
     line-height: 1.1;
-  }
-  .note-value {
-    font-family: var(--font-figure);
-    color: var(--ink-soft);
-    font-weight: 600;
   }
   .note {
     color: var(--ink-soft);

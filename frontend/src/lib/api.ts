@@ -62,7 +62,47 @@ export type Sale = {
   created_at: string;
 };
 
-export type SaleListItem = Sale & { customer_name: string; items: SaleItem[] };
+export type SaleListItem = Sale & {
+  customer_name: string;
+  items: SaleItem[];
+  credit_notes: CreditNote[];
+};
+
+/**
+ * One line of a credit note: how much of one sale line came back.
+ *
+ * `sale_item_id` is the link back to the corrected line, and the name, unit and
+ * price are the sale line's snapshots — a refund returns what was charged, not
+ * today's catalog price.
+ */
+export type CreditNoteItem = {
+  id: string;
+  credit_note_id: string;
+  sale_item_id: string;
+  product_id: string;
+  product_name: string;
+  quantity: number;
+  unit_price: string;
+  line_total: string;
+  unit: Unit;
+};
+
+/**
+ * The compensating document that reverses part or all of a sale.
+ *
+ * The sale keeps its own status: a corrected sale still reads `confirmed`,
+ * because what changed is not the sale but the fact that a second document
+ * exists. Whether a sale is annulled is therefore derived from this array, not
+ * read off the sale.
+ */
+export type CreditNote = {
+  id: string;
+  sale_id: string;
+  /** Always positive: the amount returned. The sign is the display's business. */
+  total: string;
+  created_at: string;
+  items: CreditNoteItem[];
+};
 
 export type Cash = { total: string };
 
@@ -152,6 +192,32 @@ export async function createSale(sale: NewSale): Promise<Sale & { items: SaleIte
 
 export async function getCash(): Promise<Cash> {
   return request<Cash>(new URL('/api/cash', BASE));
+}
+
+/** One line of a refund: which sale line, and how many units come back. */
+export type NewCreditNoteLine = {
+  sale_item_id: string;
+  /** Integer quantity, at most what the line has left to return. */
+  quantity: number;
+};
+
+/**
+ * Reverses part or all of a sale by issuing a credit note.
+ *
+ * The note, its lines and the stock movements land in one transaction on the
+ * server, so a failed refund leaves nothing behind. The server is also the
+ * authority on how much a line has left to return: this client sends what the
+ * cashier asked for and surfaces the refusal (409) rather than second-guessing
+ * it with its own arithmetic.
+ */
+export async function createCreditNote(
+  saleId: string,
+  items: NewCreditNoteLine[]
+): Promise<CreditNote> {
+  return request<CreditNote>(
+    new URL(`/api/sales/${saleId}/credit-notes`, BASE),
+    json('POST', { items })
+  );
 }
 
 // ── Products ─────────────────────────────────────────────────────────────────

@@ -25,10 +25,10 @@ Back office at a fixed PC in the shop: desktop-first, keyboard-friendly, mobile 
 ## Capabilities and Constraints
 
 - v1 backend shipped and tested: multi-item sales with snapshot lines, products (list price + base unit + initial stock), customers (name-only, seeded `walk-in`), derived cash, derived stock.
-- The database enforces: integer-cents money, exact totals, immutable events (no edit/delete — corrections are reversals), product unit locked once referenced.
+- The database enforces: decimal money with an exact whole-cents guard, exact totals, immutable events (no edit/delete — a mistaken sale is reversed by a credit note, in whole or in part, never edited).
 - Compile-time checked queries; the image build verifies them against the live database.
 - **Terminology and UI in English until the es-AR i18n layer lands** (user decision; `walk-in` displays as "Consumidor Final" later).
-- Undecided: auth and roles (v5 staff), reversal endpoint (v1.5), purchases/expenses/accounting (v2–v6).
+- Undecided: auth and roles (v5 staff), the es-AR locale (the other half of v1.5), purchases/expenses/accounting (v2–v6).
 
 ## Brand Commitments
 
