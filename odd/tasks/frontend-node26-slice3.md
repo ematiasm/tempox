@@ -142,9 +142,25 @@ new base tag, and the runtime inside it reports 26 — so the Dockerfile half of
 itself, not by reading the file. `npm ci` matters separately here, because it fails loudly when the lock and the
 manifest disagree; it is the check that would catch a base-image move that quietly changed resolved versions.
 
-## Remaining work
+L8 (evidence, 2026-10-16, T6): CI passed on the PR's first run. Run `38897304773` on `ca343b9`, all four jobs
+`success`:
 
-T7 is open (merge the slice, then #30). Independent verification returned clean (L9); T8 is closed.
+| job | result | the part that matters here |
+|---|---|---|
+| Backend (Rust) | pass 1m12s | unaffected by the move |
+| Frontend (SvelteKit) | pass 37s | the log shows `node-version: 26` |
+| Frontend image (Docker) | pass 27s | loaded `node:26-bookworm-slim`; step "The image serves the app" `success` |
+| End to end (Playwright) | pass 1m36s | the log shows `node-version: 26`, then `node: v26.12.0` |
+
+The image job is the one that justifies this run existing separately from the local work: it pulls
+`node:26-bookworm-slim` from the registry on a clean runner, which is the only thing that proves the tag
+resolves outside the owner's machine. The local `docker manifest inspect` said the tag exists; this says the
+build actually uses it.
+
+S8 therefore holds twice over, locally and in CI. The one step of interest that did **not** run is
+`Run actions/upload-artifact@v7` (`skipped`, as designed: it is `if: failure()`, and E2E passed), so this run
+still does not exercise the artifact upload path — unchanged from the earlier note, and not something this slice
+can fix.
 
 L9 (independent verification, 2026-10-16, T8 — `gentle-ai-verify`, read-only, separate context): **zero defects,
 S1-S6 PASS.** This is the verification the change's risk class requires (item 5), and it was run before the
@@ -182,27 +198,37 @@ pointer to this entry. Also: `@sveltejs/vite-plugin-svelte` is `^20.19 || ^22.12
 `^20.19.0 || >=22.12.0`, so "all `>=24`" was loose for those two (the substance held), and the mirror was
 re-synchronised.
 
+L11 (evidence, 2026-10-16, T7 — why #30's green CI could not be reused, and the trial merge that replaced it):
+#35 merged as `15f723a` and `main`'s own run `38898310312` came back **success** on that sha, so the slice
+itself is validated on `main` and not only on the branch.
+
+The interesting part is what it took to validate PR #30 on top of it. #30's checks were all `pass`, but they
+belong to run `38838741034`, created at `2026-10-16T02:06:51Z` against base `743f3802` — **16 commits behind**
+the `main` it would land on. That base predates #26-#29 and predates Node 26 entirely, so those three green
+checks were evidence about a tree that no longer exists. Merging on that basis would have been trusting a
+result for a different input, which is the same failure this whole slice was about.
+
+So the merge was rehearsed instead, on the real target, before anything was merged (via
+`git merge --no-commit --no-ff` on a throwaway branch, then aborted):
+
+| step | result |
+|---|---|
+| textual merge of #30 onto `main` @ `15f723a` | clean, no conflict; 2 files, 9 insertions, 9 deletions |
+| `package.json` spec vs lock root | all consistent |
+| `@types/node` resolved | **26.6.5** (`undici-types` 8.9.0) |
+| `typescript-eslint` (from #28) | still **8.71.2** |
+| `prettier-plugin-svelte` (from #29) | still **4.1.1** |
+| `npm ci` / `lint` / `check` / `test:unit` / `build` under Node 26 | 0 · 0 · 0 errors · **32/32** · 0 |
+
+The last three rows are the ones that matter for this slice specifically: #30 rewrites `frontend/package-lock.json`,
+the same file #28 and #29 rewrote, so the risk was that a clean textual merge would silently drop one of those
+two bumps. Both survived, and the checks pass with `@types/node@26.6.5` actually installed — which is the
+combination that did not exist before this slice, since 26 types on a Node 24 runtime was the mismatch.
+
+A rebase was requested on #30 so the merge gets real CI on the current base rather than the 16-commit-old green.
+
 ## Remaining work
 
-T7 only (merge the slice, then #30). Independent verification returned clean (L9). Evidence is appended to
-`## Log` as each task produces it.
-
-L8 (evidence, 2026-10-16, T6): CI passed on the PR's first run. Run `38897304773` on `ca343b9`, all four jobs
-`success`:
-
-| job | result | the part that matters here |
-|---|---|---|
-| Backend (Rust) | pass 1m12s | unaffected by the move |
-| Frontend (SvelteKit) | pass 37s | the log shows `node-version: 26` |
-| Frontend image (Docker) | pass 27s | loaded `node:26-bookworm-slim`; step "The image serves the app" `success` |
-| End to end (Playwright) | pass 1m36s | the log shows `node-version: 26`, then `node: v26.12.0` |
-
-The image job is the one that justifies this run existing separately from the local work: it pulls
-`node:26-bookworm-slim` from the registry on a clean runner, which is the only thing that proves the tag
-resolves outside the owner's machine. The local `docker manifest inspect` said the tag exists; this says the
-build actually uses it.
-
-S8 therefore holds twice over, locally and in CI. The one step of interest that did **not** run is
-`Run actions/upload-artifact@v7` (`skipped`, as designed: it is `if: failure()`, and E2E passed), so this run
-still does not exercise the artifact upload path — unchanged from the earlier note, and not something this slice
-can fix.
+T7 only: merge #30 (with CI on the rebased head), then verify `main` green with `@types/node` on 26. Independent
+verification returned clean (L9); #30 rehearsed on the real base (L11). Evidence is appended to `## Log` as each
+task produces it.
