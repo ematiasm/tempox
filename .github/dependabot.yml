@@ -27,6 +27,25 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    # TypeScript 7 is a stable release that nothing in this stack accepts yet,
+    # so every proposal for it fails CI on `npm install` with ERESOLVE rather
+    # than on anything we could fix:
+    #   - @sveltejs/kit@3.1.0            peers typescript ^6.0.0
+    #   - typescript-eslint@8.71.1       peers typescript >=4.8.4 <6.1.0
+    #   - svelte-check@4.7.6             peers typescript ^5.0.0 || ^6.0.0
+    # None of them has a release that widens this: kit 3.1.0 and svelte-check
+    # 4.7.6 are current, and typescript-eslint's canary still pins <6.1.0.
+    #
+    # Scoped to 7.x rather than to every major on purpose: an `update-types:
+    # [version-update:semver-major]` rule would also silence TypeScript 8, so
+    # forgetting this entry would cost us the next signal too. This way the
+    # worst case is missing 7.x while 8 still arrives.
+    #
+    # REMOVE THIS ENTRY once kit, typescript-eslint and svelte-check all accept
+    # TypeScript 7. Tracked in issue #24; do not let it outlive its reason.
+    ignore:
+      - dependency-name: "typescript"
+        versions: ["7.x"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
