@@ -116,12 +116,12 @@ describe('listCustomers and getCash', () => {
   });
 
   it('reads the cash total', async () => {
-    const fetchMock = vi.fn(async () => jsonResponse({ total_cents: 18430000 }));
+    const fetchMock = vi.fn(async () => jsonResponse({ total: '184300.00' }));
     vi.stubGlobal('fetch', fetchMock);
 
     const cash = await getCash();
     expect(calledUrl(fetchMock).pathname).toBe('/api/cash');
-    expect(cash.total_cents).toBe(18430000);
+    expect(cash.total).toBe('184300.00');
   });
 });
 
@@ -175,7 +175,7 @@ describe('createProduct and createSale (S4)', () => {
 
     await createProduct({
       name: 'Harina 000 Panda 1 kg',
-      list_price: 2500,
+      list_price: '25.00',
       unit: 'unit',
       initial_stock: 12
     });
@@ -185,23 +185,22 @@ describe('createProduct and createSale (S4)', () => {
     expect(init?.method).toBe('POST');
     expect(JSON.parse(String(init?.body))).toEqual({
       name: 'Harina 000 Panda 1 kg',
-      list_price: 2500,
+      list_price: '25.00',
       unit: 'unit',
       initial_stock: 12
     });
   });
 
   it('sends the sale exactly as given, with no client-side rescaling', async () => {
-    // A bonus line is a real zero-price line, and a gram product's price is
-    // cents per gram: the client must never divide or multiply either number.
+    // A bonus line is a real zero-price line; decimal amounts pass through unchanged.
     const fetchMock = vi.fn(async () => jsonResponse({ id: 's1' }, 201));
     vi.stubGlobal('fetch', fetchMock);
 
     await createSale({
       items: [
-        { product_id: 'p1', quantity: 3, unit_price: 2500 },
-        { product_id: 'p2', quantity: 500, unit_price: 1 },
-        { product_id: 'p3', quantity: 1, unit_price: 0 }
+        { product_id: 'p1', quantity: 3, unit_price: '25.00' },
+        { product_id: 'p2', quantity: 500, unit_price: '0.01' },
+        { product_id: 'p3', quantity: 1, unit_price: '0.00' }
       ]
     });
 
@@ -209,9 +208,9 @@ describe('createProduct and createSale (S4)', () => {
     expect(calledUrl(fetchMock).pathname).toBe('/api/sales');
     expect(JSON.parse(String(init?.body))).toEqual({
       items: [
-        { product_id: 'p1', quantity: 3, unit_price: 2500 },
-        { product_id: 'p2', quantity: 500, unit_price: 1 },
-        { product_id: 'p3', quantity: 1, unit_price: 0 }
+        { product_id: 'p1', quantity: 3, unit_price: '25.00' },
+        { product_id: 'p2', quantity: 500, unit_price: '0.01' },
+        { product_id: 'p3', quantity: 1, unit_price: '0.00' }
       ]
     });
   });
@@ -220,7 +219,7 @@ describe('createProduct and createSale (S4)', () => {
     const fetchMock = vi.fn(async () => jsonResponse({ id: 's1' }, 201));
     vi.stubGlobal('fetch', fetchMock);
 
-    await createSale({ items: [{ product_id: 'p1', quantity: 1, unit_price: 100 }] });
+    await createSale({ items: [{ product_id: 'p1', quantity: 1, unit_price: '1.00' }] });
 
     const body = JSON.parse(String(calledInit(fetchMock)?.body));
     expect(body).not.toHaveProperty('customer_id');

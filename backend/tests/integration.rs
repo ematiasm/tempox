@@ -99,8 +99,15 @@ async fn v1_schema_seeds_walkin_customers() {
     assert_eq!(name.0, "walk-in");
 }
 
-// v1 units + history guards: quantities are integers in the product's base
-// unit, and the database enforces the immutability rules.
+// v1 units + history guards, as amended by 0006: quantities are integers in the
+// product's base unit, the unit itself is decorative, and the database enforces
+// the immutability rules.
+//
+// 0003 locked a product's unit once it had history, reasoning that its
+// movements and sale lines were "denominated in the old unit". 0006 dropped that
+// trigger because the unit no longer qualifies a price, so the assertions below
+// are inverted on purpose: a product WITH history may now change its unit, and
+// what remains guarded is the line/economics immutability.
 // Ignored by default: needs a live database.
 #[tokio::test]
 #[ignore]
@@ -118,12 +125,13 @@ async fn v1_units_and_history_guards() {
     .expect("unit column check");
     assert_eq!(has_unit.0, 1, "products.unit is missing");
 
-    // Scenario 1: a product WITH history cannot change its unit.
+    // Scenario 1: a product WITH history may change its unit (0006 removed the
+    // lock). The unit does not denominate anything, so no history is rewritten.
     // The transaction is dropped without commit, so it rolls back.
     {
         let mut tx = pool.begin().await.expect("begin");
         let pid: (uuid::Uuid,) = sqlx::query_as(
-            "INSERT INTO products (name, list_price, unit) VALUES ('guard-test-rice', 250, 'g')
+            "INSERT INTO products (name, list_price, unit) VALUES ('guard-test-rice', 2.50, 'g')
              RETURNING id",
         )
         .fetch_one(&mut *tx)
@@ -136,29 +144,33 @@ async fn v1_units_and_history_guards() {
         .execute(&mut *tx)
         .await
         .expect("insert movement");
-        let blocked = sqlx::query("UPDATE products SET unit = 'unit' WHERE id = $1")
+        let changed = sqlx::query("UPDATE products SET unit = 'unit' WHERE id = $1")
             .bind(pid.0)
             .execute(&mut *tx)
             .await;
-        assert!(blocked.is_err(), "unit changed despite history");
+        assert!(
+            changed.is_ok(),
+            "0006 removed guard_product_unit: the unit is decorative and must be changeable"
+        );
     }
 
-    // Scenario 2: a product WITHOUT history can change its unit.
+    // Scenario 2: the guard function is gone, and with it the trigger.
     {
-        let mut tx = pool.begin().await.expect("begin");
-        let pid: (uuid::Uuid,) = sqlx::query_as(
-            "INSERT INTO products (name, list_price, unit) VALUES ('guard-test-no-history', 100, 'unit')
-             RETURNING id",
-        )
-        .fetch_one(&mut *tx)
-        .await
-        .expect("insert product");
-        let allowed = sqlx::query("UPDATE products SET unit = 'g' WHERE id = $1")
-            .bind(pid.0)
-            .execute(&mut *tx)
-            .await;
-        assert!(allowed.is_ok(), "unit change blocked without history");
+        let trigger: (i64,) =
+            sqlx::query_as("SELECT count(*) FROM pg_trigger WHERE tgname = 'products_unit_guard'")
+                .fetch_one(&pool)
+                .await
+                .expect("trigger check");
+        assert_eq!(trigger.0, 0, "products_unit_guard still exists after 0006");
+        let function: (i64,) =
+            sqlx::query_as("SELECT count(*) FROM pg_proc WHERE proname = 'guard_product_unit'")
+                .fetch_one(&pool)
+                .await
+                .expect("function check");
+        assert_eq!(function.0, 0, "guard_product_unit still exists after 0006");
     }
+
+    // The `unit` columns themselves survive: the ledger still snapshots one.
 
     // Scenario 3: sale lines are immutable and a sale's economics are guarded.
     // Each expected failure runs inside a SAVEPOINT and rolls back to it:
@@ -167,7 +179,7 @@ async fn v1_units_and_history_guards() {
     // reason and the allowed transition would never get a fair check.
     let mut tx = pool.begin().await.expect("begin");
     let pid: (uuid::Uuid,) = sqlx::query_as(
-        "INSERT INTO products (name, list_price, unit) VALUES ('guard-test-rice-2', 250, 'g')
+        "INSERT INTO products (name, list_price, unit) VALUES ('guard-test-rice-2', 2.50, 'g')
          RETURNING id",
     )
     .fetch_one(&mut *tx)
@@ -175,14 +187,14 @@ async fn v1_units_and_history_guards() {
     .expect("insert product");
     let sid: (uuid::Uuid,) = sqlx::query_as(
         "INSERT INTO sales (customer_id, total)
-         VALUES ('00000000-0000-0000-0000-000000000001', 3750) RETURNING id",
+         VALUES ('00000000-0000-0000-0000-000000000001', 3750.00) RETURNING id",
     )
     .fetch_one(&mut *tx)
     .await
     .expect("insert sale");
     let iid: (uuid::Uuid,) = sqlx::query_as(
         "INSERT INTO sale_items (sale_id, product_id, product_name, quantity, unit_price, line_total, unit)
-         VALUES ($1, $2, 'guard-test-rice-2', 1500, 250, 3750, 'g') RETURNING id",
+         VALUES ($1, $2, 'guard-test-rice-2', 1500, 2.50, 3750.00, 'g') RETURNING id",
     )
     .bind(sid.0)
     .bind(pid.0)
@@ -222,9 +234,38 @@ async fn v1_units_and_history_guards() {
     );
     probe_denied!(
         "sale total change",
-        "UPDATE sales SET total = 1 WHERE id = $1",
+        "UPDATE sales SET total = 1.00 WHERE id = $1",
         sid.0
     );
+    probe_denied!(
+        "a price finer than a cent",
+        "INSERT INTO sale_items (sale_id, product_id, product_name, quantity, unit_price, line_total, unit)
+         VALUES ($1, $2, 'x', 1, 0.012, 0.012, 'g')",
+        sid.0,
+        pid.0
+    );
+    // A value finer than a cent has no bind parameter, so it is probed directly
+    // rather than through the macro (whose pattern requires one).
+    {
+        sqlx::query("SAVEPOINT probe")
+            .execute(&mut *tx)
+            .await
+            .expect("savepoint");
+        let result = sqlx::query(
+            "INSERT INTO sales (customer_id, total)
+             VALUES ('00000000-0000-0000-0000-000000000001', 1.235)",
+        )
+        .execute(&mut *tx)
+        .await;
+        sqlx::query("ROLLBACK TO SAVEPOINT probe")
+            .execute(&mut *tx)
+            .await
+            .expect("rollback to savepoint");
+        assert!(
+            result.is_err(),
+            "a sale total finer than a cent was allowed: the guard is not working"
+        );
+    }
     probe_denied!(
         "sale customer change",
         "UPDATE sales SET customer_id = $2 WHERE id = $1",
@@ -366,7 +407,7 @@ async fn v1_sale_of_bonus_lines_is_recorded() {
     let product: serde_json::Value = client
         .post(format!("{base}/api/products"))
         .json(&serde_json::json!({
-            "name": gift_name, "list_price": 250, "unit": "unit", "initial_stock": 10
+            "name": gift_name, "list_price": "2.50", "unit": "unit", "initial_stock": 10
         }))
         .send()
         .await
@@ -374,9 +415,13 @@ async fn v1_sale_of_bonus_lines_is_recorded() {
         .json()
         .await
         .expect("product json");
+    assert_eq!(
+        product["list_price"], "2.50",
+        "a decimal string with two decimals comes back"
+    );
 
-    let cash_before: (i64,) = sqlx::query_as(
-        "SELECT COALESCE(SUM(total), 0)::bigint FROM sales WHERE status = 'confirmed'",
+    let cash_before: (rust_decimal::Decimal,) = sqlx::query_as(
+        "SELECT COALESCE(SUM(total), 0)::numeric FROM sales WHERE status = 'confirmed'",
     )
     .fetch_one(&pool)
     .await
@@ -386,7 +431,7 @@ async fn v1_sale_of_bonus_lines_is_recorded() {
     let resp = client
         .post(format!("{base}/api/sales"))
         .json(&serde_json::json!({
-            "items": [{ "product_id": product["id"], "quantity": 3, "unit_price": 0 }]
+            "items": [{ "product_id": product["id"], "quantity": 3, "unit_price": "0" }]
         }))
         .send()
         .await
@@ -398,13 +443,14 @@ async fn v1_sale_of_bonus_lines_is_recorded() {
     );
     let sale: serde_json::Value = resp.json().await.expect("sale json");
 
-    // The sale exists and is worth nothing.
-    assert_eq!(sale["total"], 0, "a bonus sale totals zero");
+    // The sale exists and is worth nothing. Amounts are decimal strings: `0.00`
+    // is money, the number `0` would not be.
+    assert_eq!(sale["total"], "0.00", "a bonus sale totals zero");
     assert_eq!(sale["status"], "confirmed");
     let lines = sale["items"].as_array().expect("items");
     assert_eq!(lines.len(), 1);
-    assert_eq!(lines[0]["unit_price"], 0, "the bonus price is zero");
-    assert_eq!(lines[0]["line_total"], 0, "and so is its line total");
+    assert_eq!(lines[0]["unit_price"], "0.00", "the bonus price is zero");
+    assert_eq!(lines[0]["line_total"], "0.00", "and so is its line total");
 
     // The stock left the shop even though no money came in: that is the whole
     // point of recording a bonus line instead of silently ignoring it.
@@ -419,8 +465,8 @@ async fn v1_sale_of_bonus_lines_is_recorded() {
     assert_eq!(stock.0, 7, "10 in, 3 given away");
 
     // A zero-total sale contributes zero to cash, so the balance is untouched.
-    let cash_after: (i64,) = sqlx::query_as(
-        "SELECT COALESCE(SUM(total), 0)::bigint FROM sales WHERE status = 'confirmed'",
+    let cash_after: (rust_decimal::Decimal,) = sqlx::query_as(
+        "SELECT COALESCE(SUM(total), 0)::numeric FROM sales WHERE status = 'confirmed'",
     )
     .fetch_one(&pool)
     .await
@@ -442,7 +488,7 @@ async fn v1_create_sale_drops_stock_in_one_transaction() {
     let suffix = uuid::Uuid::new_v4().simple();
     let rice_name = format!("w3-rice-{suffix}");
     let rice: (uuid::Uuid,) = sqlx::query_as(
-        "INSERT INTO products (name, list_price, unit) VALUES ($1, 250, 'g') RETURNING id",
+        "INSERT INTO products (name, list_price, unit) VALUES ($1, 2.50, 'g') RETURNING id",
     )
     .bind(&rice_name)
     .fetch_one(&pool)
@@ -458,7 +504,7 @@ async fn v1_create_sale_drops_stock_in_one_transaction() {
 
     let beans_name = format!("w3-beans-{suffix}");
     let beans: (uuid::Uuid,) = sqlx::query_as(
-        "INSERT INTO products (name, list_price, unit) VALUES ($1, 100, 'unit') RETURNING id",
+        "INSERT INTO products (name, list_price, unit) VALUES ($1, 1.00, 'unit') RETURNING id",
     )
     .bind(&beans_name)
     .fetch_one(&pool)
@@ -473,8 +519,8 @@ async fn v1_create_sale_drops_stock_in_one_transaction() {
     .expect("beans initial stock");
 
     // Cash measured as a delta: prior runs' sales must not matter.
-    let cash_before: (i64,) = sqlx::query_as(
-        "SELECT COALESCE(SUM(total), 0)::bigint FROM sales WHERE status = 'confirmed'",
+    let cash_before: (rust_decimal::Decimal,) = sqlx::query_as(
+        "SELECT COALESCE(SUM(total), 0)::numeric FROM sales WHERE status = 'confirmed'",
     )
     .fetch_one(&pool)
     .await
@@ -487,7 +533,7 @@ async fn v1_create_sale_drops_stock_in_one_transaction() {
         .json(&serde_json::json!({
             "items": [
                 { "product_id": rice.0, "quantity": 1500 },
-                { "product_id": beans.0, "quantity": 3, "unit_price": 200 }
+                { "product_id": beans.0, "quantity": 3, "unit_price": "2.00" }
             ]
         }))
         .send()
@@ -496,20 +542,26 @@ async fn v1_create_sale_drops_stock_in_one_transaction() {
     assert_eq!(resp.status(), 201, "sale was not created");
     let sale: serde_json::Value = resp.json().await.expect("json");
 
-    // Header: total = 1500×250 + 3×200 = 375600 cents, confirmed, on the walk-in.
-    assert_eq!(sale["total"], 375600);
+    // Header: total = 1500 x $2.50 + 3 x $2.00 = $3756.00, confirmed, on the walk-in.
+    assert_eq!(sale["total"], "3756.00");
     assert_eq!(sale["status"], "confirmed");
     assert_eq!(sale["customer_id"], "00000000-0000-0000-0000-000000000001");
     let lines = sale["items"].as_array().expect("items array");
     assert_eq!(lines.len(), 2, "expected two sale lines");
 
-    // Lines snapshot name and unit; line totals follow the money rules.
+    // Lines snapshot name and unit; a line total is quantity x price, exactly.
+    use rust_decimal::prelude::FromPrimitive;
     for line in lines {
         let qty = line["quantity"].as_i64().expect("quantity");
-        let price = line["unit_price"].as_i64().expect("unit_price");
+        let price = line["unit_price"]
+            .as_str()
+            .expect("unit_price is a decimal string");
+        let price = rust_decimal::Decimal::from_str_exact(price).expect("decimal price");
+        let expected = price * rust_decimal::Decimal::from_i64(qty).expect("qty");
         assert_eq!(
-            line["line_total"].as_i64().expect("line_total"),
-            qty * price
+            line["line_total"].as_str().expect("line_total string"),
+            expected.round_dp(2).to_string(),
+            "line_total must be quantity x unit_price"
         );
     }
     assert!(
@@ -569,13 +621,17 @@ async fn v1_create_sale_drops_stock_in_one_transaction() {
     assert_eq!(beans_stock.0, 7);
 
     // Cash moved by exactly the sale total.
-    let cash_after: (i64,) = sqlx::query_as(
-        "SELECT COALESCE(SUM(total), 0)::bigint FROM sales WHERE status = 'confirmed'",
+    let cash_after: (rust_decimal::Decimal,) = sqlx::query_as(
+        "SELECT COALESCE(SUM(total), 0)::numeric FROM sales WHERE status = 'confirmed'",
     )
     .fetch_one(&pool)
     .await
     .expect("cash after");
-    assert_eq!(cash_after.0 - cash_before.0, 375600);
+    assert_eq!(
+        cash_after.0 - cash_before.0,
+        rust_decimal::Decimal::new(375600, 2),
+        "cash moved by $3756.00"
+    );
 }
 
 // v1 reads (work-unit 4): the read surface reflects what the writes put in.
@@ -595,7 +651,7 @@ async fn v1_read_endpoints_reflect_writes() {
     let resp = client
         .post(format!("{base}/api/products"))
         .json(&serde_json::json!({
-            "name": rice_name, "list_price": 250, "unit": "g", "initial_stock": 2000
+            "name": rice_name, "list_price": "2.50", "unit": "g", "initial_stock": 2000
         }))
         .send()
         .await
@@ -608,7 +664,7 @@ async fn v1_read_endpoints_reflect_writes() {
     let resp = client
         .post(format!("{base}/api/products"))
         .json(&serde_json::json!({
-            "name": beans_name, "list_price": 100, "unit": "unit", "initial_stock": 10
+            "name": beans_name, "list_price": "1.00", "unit": "unit", "initial_stock": 10
         }))
         .send()
         .await
@@ -634,7 +690,7 @@ async fn v1_read_endpoints_reflect_writes() {
         .json(&serde_json::json!({
             "customer_id": customer_id,
             "items": [
-                { "product_id": rice["id"], "quantity": 1500, "unit_price": 200 },
+                { "product_id": rice["id"], "quantity": 1500, "unit_price": "2.00" },
                 { "product_id": beans["id"], "quantity": 3 }
             ]
         }))
@@ -643,7 +699,8 @@ async fn v1_read_endpoints_reflect_writes() {
         .expect("post sale");
     assert_eq!(resp.status(), 201);
     let sale: serde_json::Value = resp.json().await.expect("sale json");
-    let expected_total: i64 = 1500 * 200 + 3 * 100;
+    // 1500 x $2.00 + 3 x $1.00 = $3003.00
+    let expected_total = "3003.00";
     assert_eq!(sale["total"], expected_total);
 
     // GET /api/products: derived stock reflects the ledger, not a stored field.
@@ -676,7 +733,7 @@ async fn v1_read_endpoints_reflect_writes() {
     let rice_read = read_product(rice_name.clone()).await;
     assert_eq!(rice_read["stock"], 500, "stock must be 2000 - 1500");
     assert_eq!(rice_read["unit"], "g");
-    assert_eq!(rice_read["list_price"], 250);
+    assert_eq!(rice_read["list_price"], "2.50");
     let beans_read = read_product(beans_name.clone()).await;
     assert_eq!(beans_read["stock"], 7, "stock must be 10 - 3");
 
@@ -723,10 +780,10 @@ async fn v1_read_endpoints_reflect_writes() {
     assert!(lines.iter().any(|l| l["product_name"] == beans_name));
 
     // GET /api/cash: the total moved by exactly this sale.
-    let cash_before: (i64,) = sqlx::query_as(
-        "SELECT COALESCE(SUM(total), 0)::bigint - $1 FROM sales WHERE status = 'confirmed'",
+    let cash_before: (rust_decimal::Decimal,) = sqlx::query_as(
+        "SELECT COALESCE(SUM(total), 0)::numeric - $1::numeric FROM sales WHERE status = 'confirmed'",
     )
-    .bind(expected_total)
+    .bind(rust_decimal::Decimal::new(300300, 2))
     .fetch_one(&pool)
     .await
     .expect("cash arithmetic");
@@ -738,7 +795,14 @@ async fn v1_read_endpoints_reflect_writes() {
         .json()
         .await
         .expect("cash json");
-    assert_eq!(cash["total_cents"], cash_before.0 + expected_total);
+    assert_eq!(
+        cash["total"],
+        format!(
+            "{:.2}",
+            cash_before.0 + rust_decimal::Decimal::new(300300, 2)
+        ),
+        "cash is a decimal string summing to the sales total"
+    );
 }
 
 // A product created without initial stock starts at 0 with no movement row.
@@ -755,7 +819,7 @@ async fn v1_product_without_initial_stock_starts_at_zero() {
 
     let product: serde_json::Value = client
         .post(format!("{base}/api/products"))
-        .json(&serde_json::json!({ "name": name, "list_price": 100 }))
+        .json(&serde_json::json!({ "name": name, "list_price": "1.00" }))
         .send()
         .await
         .expect("post product")
@@ -814,7 +878,7 @@ async fn v1a_sales_list_is_scoped_by_date_and_offset() {
         async move {
             let row: (uuid::Uuid,) = sqlx::query_as(
                 "INSERT INTO sales (customer_id, total, created_at)
-                 VALUES ('00000000-0000-0000-0000-000000000001', 100, $1::timestamptz) RETURNING id",
+                 VALUES ('00000000-0000-0000-0000-000000000001', 1.00, $1::timestamptz) RETURNING id",
             )
             .bind(created_at)
             .fetch_one(&pool)
@@ -998,7 +1062,7 @@ async fn v1a_products_list_is_searchable_and_paginated() {
             "INSERT INTO products (name, list_price, unit) VALUES ($1, $2, 'unit') RETURNING id",
         )
         .bind(name)
-        .bind(100 + idx as i64)
+        .bind(rust_decimal::Decimal::new(100 + idx as i64, 2))
         .execute(&pool)
         .await
         .expect("insert product");
@@ -1006,7 +1070,7 @@ async fn v1a_products_list_is_searchable_and_paginated() {
     // One more with the marker but a different substring, to prove the match
     // is on the whole name and not just the prefix.
     let decoy = format!("zzz-{marker}-Yerba");
-    sqlx::query("INSERT INTO products (name, list_price, unit) VALUES ($1, 100, 'unit')")
+    sqlx::query("INSERT INTO products (name, list_price, unit) VALUES ($1, 1.00, 'unit')")
         .bind(&decoy)
         .execute(&pool)
         .await
@@ -1101,7 +1165,7 @@ async fn v1a_products_list_is_searchable_and_paginated() {
     assert_eq!(row["stock"], 0, "a fresh product starts at zero stock");
     assert_eq!(row["unit"], "unit");
     assert_eq!(
-        row["list_price"], 100,
+        row["list_price"], "1.00",
         "the list price reads back unchanged"
     );
     let movements: (i64,) = sqlx::query_as(

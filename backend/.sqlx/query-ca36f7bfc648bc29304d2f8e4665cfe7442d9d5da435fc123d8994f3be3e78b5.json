@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT p.id, p.name, p.list_price, p.unit, p.created_at,\n                  COALESCE(SUM(m.quantity), 0)::bigint AS \"stock!\"\n           FROM products p\n           LEFT JOIN stock_movements m ON m.product_id = p.id\n           WHERE ($1::text IS NULL OR p.name ILIKE '%' || $1 || '%' ESCAPE '\\')\n           GROUP BY p.id\n           ORDER BY p.name\n           LIMIT $2 OFFSET $3",
+  "query": "SELECT p.id, p.name, round(p.list_price, 2) AS \"list_price!\", p.unit, p.created_at,\n                  COALESCE(SUM(m.quantity), 0)::bigint AS \"stock!\"\n           FROM products p\n           LEFT JOIN stock_movements m ON m.product_id = p.id\n           WHERE ($1::text IS NULL OR p.name ILIKE '%' || $1 || '%' ESCAPE '\\')\n           GROUP BY p.id\n           ORDER BY p.name\n           LIMIT $2 OFFSET $3",
   "describe": {
     "columns": [
       {
@@ -27,14 +27,9 @@
       },
       {
         "ordinal": 2,
-        "name": "list_price",
-        "type_info": "Int8",
-        "origin": {
-          "Table": {
-            "table": "products",
-            "name": "list_price"
-          }
-        }
+        "name": "list_price!",
+        "type_info": "Numeric",
+        "origin": "Expression"
       },
       {
         "ordinal": 3,
@@ -75,11 +70,11 @@
     "nullable": [
       false,
       false,
-      false,
+      null,
       false,
       false,
       null
     ]
   },
-  "hash": "ee10ca335efc64efadfa6496c02221ef6b86549ae0f79e5f71fe2d0ed9000cc8"
+  "hash": "ca36f7bfc648bc29304d2f8e4665cfe7442d9d5da435fc123d8994f3be3e78b5"
 }

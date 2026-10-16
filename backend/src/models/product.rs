@@ -1,9 +1,10 @@
 use chrono::{DateTime, Utc};
+use rust_decimal::Decimal;
 use serde::Serialize;
 use sqlx::FromRow;
 use uuid::Uuid;
 
-/// A sellable product. The list price is stored in integer cents and is the
+/// A sellable product. The list price is a decimal currency amount and is the
 /// default a sale line prefills with; each line snapshots its own price.
 ///
 /// Not constructed anywhere yet: the product endpoints answer with
@@ -15,7 +16,7 @@ use uuid::Uuid;
 pub struct Product {
     pub id: Uuid,
     pub name: String,
-    pub list_price: i64,
+    pub list_price: Decimal,
     pub unit: String,
     pub created_at: DateTime<Utc>,
 }

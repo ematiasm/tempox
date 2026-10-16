@@ -11,7 +11,7 @@
    * belongs to that day's page, not to tomorrow's.
    */
   import { ApiError, getCash, listSales, dayRange, type SaleListItem } from '#lib/api.js';
-  import { formatCents, formatQuantity } from '#lib/money.js';
+  import { formatMoney, formatQuantity, sumAmounts } from '#lib/money.js';
   import { lang } from '#lib/i18n/index.svelte.js';
   import { SvelteSet } from 'svelte/reactivity';
   import Stamp from './Stamp.svelte';
@@ -31,7 +31,7 @@
   let dayStart = $state(new Date());
 
   let rows = $state<SaleListItem[]>([]);
-  let cash = $state<number | null>(null);
+  let cash = $state<string | null>(null);
   let loading = $state(true);
   let error = $state<string | null>(null);
   // `SvelteSet` rather than a plain `Set` in `$state`: it carries its own
@@ -62,9 +62,9 @@
   );
 
   /** The rows the page actually holds — pagination shows no total count (S10). */
-  const shownTotal = $derived(rows.reduce((sum, r) => sum + r.total, 0));
+  const shownTotal = $derived(sumAmounts(rows.map((r) => r.total)) ?? '0.00');
   const bonusLines = $derived(
-    rows.reduce((n, r) => n + r.items.filter((i) => i.unit_price === 0).length, 0)
+    rows.reduce((n, r) => n + r.items.filter((i) => i.unit_price === '0.00').length, 0)
   );
 
   $effect(() => {
@@ -95,7 +95,7 @@
     // the day's: it is labelled as such rather than implying a daily total.
     getCash()
       .then((c) => {
-        if (!cancelled) cash = c.total_cents;
+        if (!cancelled) cash = c.total;
       })
       .catch(() => {
         if (!cancelled) cash = null;
@@ -252,7 +252,7 @@
                 {/if}
               </td>
               <td class="num">
-                <span class="total figures" class:void={annulled}>{formatCents(row.total)}</span>
+                <span class="total figures" class:void={annulled}>{formatMoney(row.total)}</span>
               </td>
             </tr>
             {#if open}
@@ -274,15 +274,15 @@
                           <tr>
                             <td>
                               {item.product_name}
-                              {#if item.unit_price === 0}
+                              {#if item.unit_price === '0.00'}
                                 <span class="gift">— {lang.t.sales_bonus}</span>
                               {/if}
                             </td>
                             <td class="num figures">{formatQuantity(item.quantity, item.unit)}</td>
                             <td class="num figures">
-                              {formatCents(item.unit_price)}<span class="per">/{item.unit}</span>
+                              {formatMoney(item.unit_price)}<span class="per">/{item.unit}</span>
                             </td>
-                            <td class="num figures">{formatCents(item.line_total)}</td>
+                            <td class="num figures">{formatMoney(item.line_total)}</td>
                           </tr>
                         {/each}
                       </tbody>
@@ -301,12 +301,12 @@
   <div class="footings">
     <div class="fig">
       <span class="label">{lang.t.sales_cash_on_hand}</span>
-      <span class="value figures">{cash === null ? '—' : formatCents(cash)}</span>
+      <span class="value figures">{cash === null ? '—' : formatMoney(cash)}</span>
       <span class="note">{lang.t.sales_cash_note}</span>
     </div>
     <div class="fig">
       <span class="label">{lang.t.sales_shown_sales}</span>
-      <span class="value figures">{formatCents(shownTotal)}</span>
+      <span class="value figures">{formatMoney(shownTotal)}</span>
       <span class="note">{lang.t.sales_shown_note}</span>
     </div>
     <div class="fig">

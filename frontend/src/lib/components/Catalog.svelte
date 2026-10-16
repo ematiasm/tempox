@@ -8,7 +8,7 @@
    * recorded event.
    */
   import { ApiError, createProduct, listProducts, type Product, type Unit } from '#lib/api.js';
-  import { formatCents, formatQuantity, parseAmountToCents, parseQuantity } from '#lib/money.js';
+  import { formatMoney, formatQuantity, parseAmount, parseQuantity } from '#lib/money.js';
   import { lang } from '#lib/i18n/index.svelte.js';
 
   const PAGE = 50;
@@ -21,9 +21,9 @@
   let pageError = $state<string | null>(null);
 
   // The create form. Unit is `unit` only in v1a: `g` and `ml` stay valid in the
-  // database and the API, but a gram product's price is cents per gram, so the
-  // finest price the schema can express is 1¢/g = $10.00/kg. Offering `g` here
-  // would let someone create a product whose real price cannot be stored.
+  // database and the API, but a gram product's price is a currency amount, so
+  // the finest price the schema can express is 1 cent. Offering `g` here would
+  // let someone create a product whose real price cannot be stored.
   let name = $state('');
   let priceText = $state('');
   let stockText = $state('');
@@ -59,11 +59,11 @@
     offset = 0;
   }
 
-  const priceCents = $derived(parseAmountToCents(priceText));
+  const priceAmount = $derived(parseAmount(priceText));
   const stockValue = $derived(stockText.trim() === '' ? 0 : parseQuantity(stockText));
-  const priceBad = $derived(priceText.trim() !== '' && priceCents === null);
+  const priceBad = $derived(priceText.trim() !== '' && priceAmount === null);
   const stockBad = $derived(stockText.trim() !== '' && stockValue === null);
-  const canCreate = $derived(name.trim() !== '' && priceCents !== null && !stockBad && !creating);
+  const canCreate = $derived(name.trim() !== '' && priceAmount !== null && !stockBad && !creating);
 
   /** The price label declares the unit, so the number can never be misread. */
   function priceLabel(unit: Unit) {
@@ -78,7 +78,7 @@
     try {
       const product = await createProduct({
         name: name.trim(),
-        list_price: priceCents as number,
+        list_price: priceAmount as string,
         unit: 'unit',
         initial_stock: stockValue ?? 0
       });
@@ -202,7 +202,7 @@
               <span class="unit-chip figures">{product.unit}</span>
             </td>
             <td class="num">
-              <span class="faces figures">{formatCents(product.list_price)}</span>
+              <span class="faces figures">{formatMoney(product.list_price)}</span>
               <span class="per">{priceLabel(product.unit)}</span>
             </td>
             <td class="num">

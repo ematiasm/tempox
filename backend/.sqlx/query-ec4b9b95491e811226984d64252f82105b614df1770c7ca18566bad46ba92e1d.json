@@ -18,7 +18,7 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Int8"
+        "Numeric"
       ]
     },
     "nullable": [

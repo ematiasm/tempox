@@ -6,9 +6,8 @@
    * action and the ledger stays visible behind it, because the cashier checks
    * what just landed against what they are typing.
    *
-   * The sheet holds no money of its own: every figure shown comes from
-   * `lineTotal` and the sum of those, so the total on screen and the total the
-   * server computes cannot drift.
+   * The live draft preview is summed as integer cents internally; the recorded
+   * total always comes from the server response.
    */
   import {
     createSale,
@@ -17,7 +16,7 @@
     type Customer,
     type Product
   } from '#lib/api.js';
-  import { formatCents, lineTotal, parseAmountToCents, parseQuantity } from '#lib/money.js';
+  import { formatMoney, lineTotalAmount, parseAmount, parseQuantity } from '#lib/money.js';
   import { lang } from '#lib/i18n/index.svelte.js';
   import ProductPicker from './ProductPicker.svelte';
   import Stamp from './Stamp.svelte';
@@ -56,7 +55,7 @@
   let error = $state<string | null>(null);
   /** Set when a name already existed and was selected instead of created (S7). */
   let notice = $state<string | null>(null);
-  let justRecorded = $state<{ id: string; total: number } | null>(null);
+  let justRecorded = $state<{ id: string; total: string } | null>(null);
   let creatingCustomer = $state(false);
   let newCustomerName = $state('');
 
@@ -83,16 +82,23 @@
     lines.map((l) => ({
       product: l.product,
       quantity: parseQuantity(l.qtyText),
-      unitPrice: parseAmountToCents(l.priceText)
+      unitPrice: parseAmount(l.priceText)
     }))
   );
 
   /** A line counts only when both of its fields parse; a half-typed line is not money. */
   const complete = $derived(parsed.filter((l) => l.quantity !== null && l.unitPrice !== null));
 
-  const total = $derived(
-    complete.reduce((sum, l) => sum + lineTotal(l.quantity as number, l.unitPrice as number), 0)
-  );
+  const total = $derived.by(() => {
+    const cents = complete.reduce((sum, line) => {
+      const lineTotal = lineTotalAmount(line.quantity as number, line.unitPrice as string);
+      if (lineTotal === null) return sum;
+      const [whole, fraction] = lineTotal.split('.');
+      return sum + BigInt(whole) * 100n + BigInt(fraction);
+    }, 0n);
+    const digits = cents.toString().padStart(3, '0');
+    return `${digits.slice(0, -2)}.${digits.slice(-2)}`;
+  });
 
   const canRecord = $derived(complete.length > 0 && !submitting);
 
@@ -112,7 +118,7 @@
   );
 
   const unitCount = $derived(complete.reduce((sum, l) => sum + (l.quantity as number), 0));
-  const bonusCount = $derived(complete.filter((l) => (l.unitPrice as number) === 0).length);
+  const bonusCount = $derived(complete.filter((l) => (l.unitPrice as string) === '0.00').length);
 
   function addProduct(product: Product) {
     // The price is prefilled from the list price but stays overridable: a
@@ -123,7 +129,7 @@
         id: `l${nextLineId++}`,
         product,
         qtyText: '1',
-        priceText: (product.list_price / 100).toFixed(2)
+        priceText: product.list_price
       }
     ];
     justRecorded = null;
@@ -182,7 +188,7 @@
         items: complete.map((l) => ({
           product_id: l.product.id,
           quantity: l.quantity as number,
-          unit_price: l.unitPrice as number
+          unit_price: l.unitPrice as string
         }))
       });
       lines = [];
@@ -217,7 +223,7 @@
     {#if justRecorded}
       <span class="recorded">
         <Stamp label={lang.t.sales_confirmed} size="cell" land />
-        <span class="figures">{formatCents(justRecorded.total)}</span>
+        <span class="figures">{formatMoney(justRecorded.total)}</span>
       </span>
     {:else}
       <span class="hint">{lang.t.sales_draft_hint}</span>
@@ -272,8 +278,8 @@
       <tbody>
         {#each lines as line, i (line.id)}
           {@const qty = parseQuantity(line.qtyText)}
-          {@const price = parseAmountToCents(line.priceText)}
-          {@const lt = qty !== null && price !== null ? lineTotal(qty, price) : null}
+          {@const price = parseAmount(line.priceText)}
+          {@const lt = qty !== null && price !== null ? lineTotalAmount(qty, price) : null}
           <tr>
             <td class="pname">
               {line.product.name}
@@ -302,7 +308,7 @@
                 <span class="per">/{line.product.unit}</span>
               </div>
             </td>
-            <td class="num figures linetotal">{lt === null ? '—' : formatCents(lt)}</td>
+            <td class="num figures linetotal">{lt === null ? '—' : formatMoney(lt)}</td>
             <td class="num">
               <button
                 type="button"
@@ -338,7 +344,7 @@
         {/if}
       </span>
     </div>
-    <div class="total figures">{formatCents(total)}</div>
+    <div class="total figures">{formatMoney(total)}</div>
   </div>
 
   <div class="actions">
