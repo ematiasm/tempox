@@ -9,7 +9,7 @@
    * and `aria-activedescendant` follows the highlight.
    */
   import { listProducts, type Product } from '#lib/api.js';
-  import { formatCents } from '#lib/money.js';
+  import { formatMoney } from '#lib/money.js';
 
   interface Props {
     onpick: (product: Product) => void;
@@ -125,7 +125,7 @@
             <button type="button" onmousedown={() => pick(product)} tabindex="-1">
               <span class="name">{product.name}</span>
               <span class="figures meta">
-                {formatCents(product.list_price)}/{product.unit} · {product.stock} in stock
+                {formatMoney(product.list_price)}/{product.unit} · {product.stock} in stock
               </span>
             </button>
           </li>

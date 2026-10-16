@@ -1,62 +1,49 @@
 import { describe, expect, it } from 'vitest';
 import {
-  formatCents,
+  formatMoney,
   formatQuantity,
-  lineTotal,
-  parseAmountToCents,
-  parseQuantity
+  lineTotalAmount,
+  parseAmount,
+  parseQuantity,
+  sumAmounts
 } from '#lib/money.js';
 
-describe('formatCents', () => {
-  it('renders integer cents as en-US money', () => {
-    expect(formatCents(2500)).toBe('$25.00');
-    expect(formatCents(1)).toBe('$0.01');
-    expect(formatCents(0)).toBe('$0.00');
-    expect(formatCents(18430000)).toBe('$184,300.00');
-  });
-
-  it('keeps a negative amount readable, for the cash foot', () => {
-    expect(formatCents(-720000)).toBe('-$7,200.00');
+describe('formatMoney', () => {
+  it('renders exact decimal amounts as en-US currency', () => {
+    expect(formatMoney('25.00')).toBe('$25.00');
+    expect(formatMoney('0.01')).toBe('$0.01');
+    expect(formatMoney('0.00')).toBe('$0.00');
+    expect(formatMoney('184300.00')).toBe('$184,300.00');
+    expect(formatMoney('-7200.00')).toBe('-$7,200.00');
   });
 });
 
-describe('parseAmountToCents', () => {
-  it('reads what a cashier types as whole cents', () => {
-    expect(parseAmountToCents('25')).toBe(2500);
-    expect(parseAmountToCents('25.00')).toBe(2500);
-    expect(parseAmountToCents('25.5')).toBe(2550);
-    expect(parseAmountToCents('0.01')).toBe(1);
-    expect(parseAmountToCents('0')).toBe(0);
-    expect(parseAmountToCents('1,234.56')).toBe(123456);
-    expect(parseAmountToCents(' 25.00 ')).toBe(2500);
+describe('parseAmount', () => {
+  it('normalizes valid cashier input to a two-decimal amount', () => {
+    expect(parseAmount('25')).toBe('25.00');
+    expect(parseAmount('25.00')).toBe('25.00');
+    expect(parseAmount('25.5')).toBe('25.50');
+    expect(parseAmount('0.01')).toBe('0.01');
+    expect(parseAmount('0')).toBe('0.00');
+    expect(parseAmount('1,234.56')).toBe('1234.56');
+    expect(parseAmount(' 25.00 ')).toBe('25.00');
+    expect(parseAmount('0.00')).toBe('0.00');
   });
 
-  it('accepts zero, because a bonus line is a real line', () => {
-    // plan-v1a, S12: `unit_price: 0` is recorded and contributes nothing to
-    // cash. A validator that rejects zero makes the regalo undeliverable.
-    expect(parseAmountToCents('0.00')).toBe(0);
+  it('rejects sub-cent amounts under the API contract, not a display rule', () => {
+    expect(parseAmount('0.005')).toBeNull();
+    expect(parseAmount('1.999')).toBeNull();
   });
 
-  it('refuses a sub-cent amount instead of rounding it away silently', () => {
-    // Prices are integer cents per base unit. $0.005 is not expressible, and
-    // quietly turning it into $0.01 or $0.00 would record a price the cashier
-    // never typed.
-    expect(parseAmountToCents('0.005')).toBeNull();
-    expect(parseAmountToCents('1.999')).toBeNull();
+  it('rejects text that is not an amount', () => {
+    for (const text of ['', '   ', 'abc', '2.5.0', '-5', '1e3']) {
+      expect(parseAmount(text)).toBeNull();
+    }
   });
 
-  it('refuses anything that is not an amount', () => {
-    expect(parseAmountToCents('')).toBeNull();
-    expect(parseAmountToCents('   ')).toBeNull();
-    expect(parseAmountToCents('abc')).toBeNull();
-    expect(parseAmountToCents('2.5.0')).toBeNull();
-    expect(parseAmountToCents('-5')).toBeNull();
-    expect(parseAmountToCents('1e3')).toBeNull();
-  });
-
-  it('round-trips every formatted value', () => {
-    for (const cents of [0, 1, 99, 100, 2500, 123456, 18430000]) {
-      expect(parseAmountToCents(formatCents(cents))).toBe(cents);
+  it('round-trips amount strings through display formatting', () => {
+    for (const amount of ['0.00', '0.01', '0.99', '1.00', '25.00', '1234.56', '184300.00']) {
+      expect(parseAmount(formatMoney(amount))).toBe(amount);
     }
   });
 });
@@ -69,8 +56,6 @@ describe('parseQuantity', () => {
   });
 
   it('refuses a fraction, because quantities are whole base units', () => {
-    // 1.5 does not exist: a gram product's quantity is 1 or 2 grams, and a
-    // unit product's is 1 or 2 pieces.
     expect(parseQuantity('1.5')).toBeNull();
     expect(parseQuantity('0.5')).toBeNull();
   });
@@ -87,23 +72,40 @@ describe('parseQuantity', () => {
   });
 });
 
-describe('lineTotal', () => {
-  it('multiplies quantity by the per-base-unit price', () => {
-    expect(lineTotal(3, 2500)).toBe(7500);
-    expect(lineTotal(500, 1)).toBe(500);
+describe('lineTotalAmount', () => {
+  it('multiplies quantity by a decimal-string unit price exactly', () => {
+    expect(lineTotalAmount(3, '2.50')).toBe('7.50');
   });
 
-  it('is zero for a bonus line, and never negative', () => {
-    expect(lineTotal(9, 0)).toBe(0);
-    expect(lineTotal(-1, 100)).toBe(0);
-    expect(lineTotal(1, -100)).toBe(0);
+  it('supports bonus lines and rejects non-positive quantity or negative price', () => {
+    expect(lineTotalAmount(9, '0.00')).toBe('0.00');
+    expect(lineTotalAmount(0, '2.50')).toBeNull();
+    expect(lineTotalAmount(-1, '2.50')).toBeNull();
+    expect(lineTotalAmount(1, '-1.00')).toBeNull();
+  });
+});
+
+describe('sumAmounts', () => {
+  it('adds amounts exactly, as whole cents', () => {
+    expect(sumAmounts(['2.50', '7.50'])).toBe('10.00');
+    expect(sumAmounts(['0.00', '0.00'])).toBe('0.00');
+    expect(sumAmounts([])).toBe('0.00');
+    // 0.10 + 0.20 is 0.30000000000000004 in float; as cents it is 0.30.
+    expect(sumAmounts(['0.10', '0.20'])).toBe('0.30');
+  });
+
+  it('keeps the ledger footing readable for a negative sum', () => {
+    expect(sumAmounts(['-1.00', '0.50'])).toBe('-0.50');
+  });
+
+  it('refuses an amount that is not one, instead of summing garbage', () => {
+    expect(sumAmounts(['2.50', 'nope'])).toBeNull();
+    expect(sumAmounts(['2.5'])).toBeNull();
   });
 });
 
 describe('formatQuantity with its unit', () => {
-  it('renders the backend unit verbatim, with no kg or L conversion', () => {
-    // S4: `1500 g` displays as `1500 g`. A client that converts to kilograms
-    // invents a unit the API never agreed to send.
+  it('renders the backend unit verbatim, with no conversion', () => {
     expect(formatQuantity(1500, 'g')).toBe('1,500 g');
     expect(formatQuantity(500, 'ml')).toBe('500 ml');
     expect(formatQuantity(3, 'unit')).toBe('3');

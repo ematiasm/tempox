@@ -4,9 +4,8 @@
  * Every call here is a thin, honest pass-through: the client builds the query
  * the caller asked for and returns what the server sent. It never rescales a
  * quantity, converts a price, or invents a default the backend already owns.
- * That restraint is deliberate — money is integer cents per base unit, and the
- * moment a client starts converting, two sources of truth exist for the price
- * of a gram.
+ * That restraint is deliberate — money is a decimal string, and the unit is a
+ * display label with no arithmetic consequence.
  */
 
 const BASE = (import.meta.env.PUBLIC_API_BASE as string | undefined) ?? 'http://localhost:3001';
@@ -29,8 +28,8 @@ export type Note = { id: string; text: string; created_at: string };
 export type Product = {
   id: string;
   name: string;
-  /** Integer cents **per base unit**. */
-  list_price: number;
+  /** Currency amount with two decimal places. */
+  list_price: string;
   unit: Unit;
   /** Derived from the movement ledger, never a stored field. */
   stock: number;
@@ -45,18 +44,18 @@ export type SaleItem = {
   product_id: string;
   /** Snapshot taken at sale time: renaming the product never rewrites history. */
   product_name: string;
-  /** Integer, in the product's base unit. */
+  /** Integer quantity; unit is a display label only. */
   quantity: number;
-  /** Integer cents per base unit. `0` is a bonus line. */
-  unit_price: number;
-  line_total: number;
+  /** Currency amount with two decimal places. `0.00` is a bonus line. */
+  unit_price: string;
+  line_total: string;
   unit: Unit;
 };
 
 export type Sale = {
   id: string;
   customer_id: string;
-  total: number;
+  total: string;
   payment_method: string;
   status: string;
   reversed_at: string | null;
@@ -65,7 +64,7 @@ export type Sale = {
 
 export type SaleListItem = Sale & { customer_name: string; items: SaleItem[] };
 
-export type Cash = { total_cents: number };
+export type Cash = { total: string };
 
 /** A local day, as the bounds the server understands. */
 export type DayRange = {
@@ -127,10 +126,10 @@ export async function listSales(params: ListSalesParams = {}): Promise<SaleListI
 
 export type NewSaleLine = {
   product_id: string;
-  /** Integer, in the product's base unit. */
+  /** Integer quantity; unit is a display label only. */
   quantity: number;
-  /** Integer cents per base unit, exactly as the field showed it. Omit to use the list price; `0` records a bonus line. */
-  unit_price?: number;
+  /** Currency amount with two decimal places. Omit to use the list price; `0.00` records a bonus line. */
+  unit_price?: string;
 };
 
 export type NewSale = {
@@ -175,8 +174,8 @@ export async function listProducts(params: ListProductsParams = {}): Promise<Pro
 
 export type NewProduct = {
   name: string;
-  /** Integer cents per base unit. */
-  list_price: number;
+  /** Currency amount with two decimal places. */
+  list_price: string;
   unit?: Unit;
   initial_stock?: number;
 };
