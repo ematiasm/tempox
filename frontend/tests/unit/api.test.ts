@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { sayHello } from '$lib/api';
+import { sayHello } from '#lib/api.js';
 
 describe('sayHello', () => {
   it('builds URL with name and returns parsed JSON', async () => {

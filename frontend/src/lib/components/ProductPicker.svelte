@@ -8,8 +8,8 @@
    * reaching for the mouse — so the listbox semantics are real, not decorative,
    * and `aria-activedescendant` follows the highlight.
    */
-  import { listProducts, type Product } from '$lib/api';
-  import { formatCents } from '$lib/money';
+  import { listProducts, type Product } from '#lib/api.js';
+  import { formatCents } from '#lib/money.js';
 
   interface Props {
     onpick: (product: Product) => void;

@@ -1,6 +1,6 @@
 <script lang="ts">
   import '../app.css';
-  import { lang } from '$lib/i18n/index.svelte';
+  import { lang } from '#lib/i18n/index.svelte.js';
   import { page } from '$app/state';
 
   let { children } = $props();

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { createNote, deleteNote, listNotes, type Note } from '$lib/api';
-  import { lang } from '$lib/i18n/index.svelte';
+  import { createNote, deleteNote, listNotes, type Note } from '#lib/api.js';
+  import { lang } from '#lib/i18n/index.svelte.js';
 
   let notes = $state<Note[]>([]);
   let text = $state('');

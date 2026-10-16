@@ -10,9 +10,9 @@
    * means the shop's today, not UTC's — a sale recorded at 22:00 in Argentina
    * belongs to that day's page, not to tomorrow's.
    */
-  import { ApiError, getCash, listSales, dayRange, type SaleListItem } from '$lib/api';
-  import { formatCents, formatQuantity } from '$lib/money';
-  import { lang } from '$lib/i18n/index.svelte';
+  import { ApiError, getCash, listSales, dayRange, type SaleListItem } from '#lib/api.js';
+  import { formatCents, formatQuantity } from '#lib/money.js';
+  import { lang } from '#lib/i18n/index.svelte.js';
   import Stamp from './Stamp.svelte';
 
   interface Props {
