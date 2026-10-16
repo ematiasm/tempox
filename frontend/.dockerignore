@@ -1,0 +1,35 @@
+# What the Docker build context excludes.
+#
+# Docker does not read .gitignore, so this is a separate list for the same
+# idea: what is generated rather than authored never enters the image. The
+# image generates its own, so the build depends only on what is committed.
+#
+# The test is "does a tool generate this?", not "is it large". Two people with
+# the same commit and different local directories must build the same image.
+
+# The `deps` stage installs this from the lockfile. Copying the developer's
+# tree here would overwrite that install with whatever is on the machine --
+# measured: a sentinel file placed in the context's node_modules reaches the
+# image through `COPY . .`. 187 MB on a normal checkout.
+node_modules
+
+# SvelteKit's generated types and routes, written by `svelte-kit sync`. Vite
+# regenerates it on start, so the container never needs the host's copy, and a
+# stale one from an older SvelteKit would be read instead of being rebuilt.
+.svelte-kit
+
+# The adapter's output. The container runs `vite dev`, which does not read it.
+# Keeping it out also means a future switch to `node build/index.js` cannot
+# silently serve a build produced on someone's laptop.
+build
+
+# Vite's own cache, when it exists.
+.vite
+
+# Artifacts of a test run, including failure screenshots and traces.
+test-results
+playwright-report
+blob-report
+
+# Local tool state, not part of the project.
+.atl
