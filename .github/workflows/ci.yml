@@ -254,7 +254,7 @@ jobs:
       # `html` reporter alone, which nothing here enables. The old path
       # therefore matched no file at all, and the step uploaded nothing while
       # still reporting success: "No files were found with the provided path".
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: playwright-test-results
