@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - Docker + Docker Compose 2.24+
-- (Optional, for local dev without Docker) Rust 1.89+, Node 24+, PostgreSQL 18
+- (Optional, for local dev without Docker) Rust 1.89+, Node 26+, PostgreSQL 18
 
 ## First run
 

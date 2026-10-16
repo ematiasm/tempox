@@ -1,4 +1,4 @@
-FROM node:24-bookworm-slim AS deps
+FROM node:26-bookworm-slim AS deps
 WORKDIR /app
 # The lockfile is copied with the manifest, and `npm ci` installs from it
 # rather than resolving the ranges again. Without this the image could build a
@@ -11,7 +11,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
 
-FROM node:24-bookworm-slim
+FROM node:26-bookworm-slim
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 # `COPY . .` is safe only because .dockerignore keeps generated artifacts out:
