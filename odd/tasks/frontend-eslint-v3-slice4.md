@@ -54,10 +54,10 @@ S10. Once this slice is merged, #31 and #32 are closed with a pointer to it, fol
 | T3 | Fix the parser config for `*.svelte.ts` | S3 | done | L9 |
 | T4 | Fix the two code findings (`Ledger.svelte`, `+layout.svelte`) | S4, S5 | done | L9, L10 |
 | T5 | Verify: five checks, `check` at 0 errors, and the lock guards of S7 | S6, S7 | done | L10, L11 |
-| T6 | Commit, push, open the PR | S9 | in progress | `34b8bfb` |
-| T7 | CI green on the PR | S6 | pending | — |
-| T8 | Independent read-only verification (risk item 5: dependency + lint-config change) | all | pending | — |
-| T9 | Merge, then close #31 and #32 with pointers | S10 | pending | — |
+| T6 | Commit, push, open the PR | S9 | done | `34b8bfb` work unit + `0a86fbc` docs, PR #37 |
+| T7 | CI green on the PR | S6 | done | L12 |
+| T8 | Independent read-only verification (risk item 5: dependency + lint-config change) | all | done | L13 |
+| T9 | Merge, then close #31 and #32 with pointers | S10 | done | L14 |
 
 ## Log
 
@@ -249,3 +249,88 @@ test was added. The e2e half is the one that matters for S4 and S5, and it passe
 
 L11 (delivery, 2026-10-16, T6): work unit `34b8bfb` — `build(deps): move the frontend to eslint 10 and
 eslint-plugin-svelte 3` — carrying all five files together (S9: no split leaves a green intermediate).
+
+L12 (evidence, 2026-10-16, T7): CI passed on the PR's first run. Run `38902615719` on `0a86fbc`, all four jobs
+`success`:
+
+| job | result | the part that matters here |
+|---|---|---|
+| Frontend (SvelteKit) | pass 40s | `node-version: 26`, and `added 270 packages` on a clean runner |
+| Frontend image (Docker) | pass 24s | the image builds with the new lock |
+| End to end (Playwright) | pass 1m32s | the 6 e2e tests, on the runner's own stack |
+| Backend (Rust) | pass 1m9s | unaffected by the move |
+
+Why the Frontend job is the load-bearing one here: it runs `npm install` (not `npm ci`) followed by `lint`,
+`check`, `test:unit` and `build` on a tree with **no** pre-existing `node_modules`. So its green is the first
+evidence that the three fixes hold on a from-scratch install of the new dependency pair rather than on the
+working tree that produced them. `npm ci` is exercised by the image job, which fails loudly if the manifest and
+the lock disagree.
+
+One note on a near-miss worth recording: the PR body originally read "Closes Dependabot's #31 and #32", and
+GitHub does **not** treat that as a closing keyword for a pull request, so nothing was auto-closed — confirmed:
+both stayed `OPEN` with `closingIssuesReferences: 0`. It was reworded anyway, because a reader could take it as
+a closure already declared and skip the manual step S10 requires.
+
+L13 (independent verification, 2026-10-16, T8 — `gentle-ai-verify`, read-only, separate context): **zero
+defects, S1-S9 PASS**, every claim reproduced with observed output rather than accepted. This is the
+verification the change's risk class requires (item 5), and it ran before the merge.
+
+What it reproduced rather than took on trust, which is the part that matters:
+
+- **The pair claim, by construction.** It built a fresh project and installed `eslint@10.12.0` beside
+  `eslint-plugin-svelte@2.46.1`: `npm error code ERESOLVE`, exit 1. S1's "neither can land alone" is now a
+demonstrated fact, not an inference from peer ranges.
+- **The parser root cause, from both tarballs** (`npm pack`, not documentation): v3's `flat/base.js` has the
+  `setup-for-svelte-script` block with `files: ['*.svelte.js','*.svelte.ts','**/*.svelte.js','**/*.svelte.ts']`
+  and a bare parser; v2's has only `files: ['*.svelte','**/*.svelte']` and no such block. It then isolated the
+  cause by cross-swapping: new dependencies + `main`'s config → exactly the one parsing error on line 3; branch
+  config + `main`'s code → the parsing error gone, three code findings left. That is L4 confirmed as a
+configuration gap rather than a source defect, established by experiment rather than by reading.
+- **S2's claim, negatively.** It deleted `@eslint/js` from a scratch copy and resolved: the package vanishes
+  from the lock while eslint stays at 10.12.0. The bump really does remove a module the config imports.
+- **S7's 59, counted from the trees:** 25 version-changed + 11 added + 23 removed = 59, with
+  `@playwright/test` at 1.64.0 and the identical `resolved` URL — the guard this strategy exists for.
+- **S6's negative claim:** `git diff main -- frontend/tests/` empty, both e2e specs byte-identical.
+- `npm ci` from the committed lock, both in the worktree and in a clean `git archive 34b8bfb` scratch: exit 0.
+
+One correction to my own analysis, recorded because it was a gap in L8 rather than a nicety: my reachability
+trace left **4** entries unexplainable — the nested
+`@typescript-eslint/typescript-estree/node_modules/{minimatch,brace-expansion,balanced-match}` and
+`@typescript-eslint/visitor-keys/node_modules/eslint-visitor-keys`. I had accepted them on the strength of the
+other 55. The verifier explained them: they are **dedup hoists** from the moved subtree. `eslint@10` requires
+`minimatch ^10.2.5` and `@eslint/config-array@0.23.5` requires `^10.2.4`, which unify with
+`typescript-estree`'s `^10.2.2` at 10.2.6, so `main`'s nested older copies are no longer needed; the same for
+`eslint-visitor-keys` 4→5. So the trace's conclusion was right and its method was incomplete, which is worth
+writing down: "55 of 59 reachable" is not the same evidence as "59 of 59 accounted for".
+
+Both of its durable-probe suggestions are **recorded as follow-ups and deliberately not taken**, because they
+add tests and S6 scopes this slice to no new tests: (1) a lockfile guard test asserting the lock root's
+`devDependencies` deep-equal `package.json`'s and `@playwright/test === '1.64.0'`, which would have caught a
+regenerated lock; (2) keeping the staged-config lint probe as CI discipline. They are decisions for the owner,
+not for this slice.
+
+L14 (closing, 2026-10-16, T9 — the merge, and who actually closed #31 and #32): PR #37 merged as **`fb540de`**
+with the repository's convention (a merge commit, matching #18, #19, #20, #21 and the Node 26 slice). `main`'s
+own run `38904312397` on that sha came back **success**, all four jobs.
+
+S10 said #31 and #32 are closed *after* the merge with a pointer. They **were not closed by hand**, and the way
+that resolved is worth recording because a state read taken too early looks exactly like a refuted prediction:
+
+| read | #31 | #32 |
+|---|---|---|
+| immediately after the merge (12:58) | OPEN | OPEN |
+| ~2 minutes later (13:00) | **CLOSED** | **CLOSED** |
+
+Both were closed by `dependabot[bot]` itself — verified from the issue events, not assumed — each with its own
+comment:
+
+```
+#32 CLOSED 2026-10-16T13:00:25Z  "Looks like eslint-plugin-svelte is up-to-date now, so this is no longer needed."
+#31 CLOSED 2026-10-16T13:00:27Z  "Looks like eslint is up-to-date now, so this is no longer needed."
+```
+
+So no manual close was needed or made, and S10's intent (that they stop being proposed once the replacement is
+on `main`) is satisfied by Dependabot's own post-merge bookkeeping. `odd/tasks/frontend-sveltekit3-slice2.md`
+L11 records the identical lesson from the SvelteKit 3 slice: reading the Dependabot PRs seconds after a merge
+shows `OPEN` and is **premature**, not contradictory. The honest move was to say what the read showed and
+re-read, which is what happened here.
