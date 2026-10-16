@@ -44,10 +44,10 @@ S11. After this slice is merged, PR #30 is merged and `main` is verified green w
 | T2 | Move the runtime declaration: `ci.yml` (2 sites), `Dockerfile` (2 sites), `getting-started.md` (1 site) | S1, S2, S3 | done | L5 |
 | T3 | Guard check: no declaration below 26 survives, and the four action-runtime comment lines are byte-identical to `main` | S4, S5 | done | L6 |
 | T4 | Verify on the branch: five checks under Node 26, plus the image builds and serves `/sales` | S7, S8 | done | L7 |
-| T5 | Commit, push, open the PR | S10 | pending | — |
+| T5 | Commit, push, open the PR | S10 | done | `ae5f23b` work unit + `ca343b9` docs, branch `chore/node26`, PR #35 |
 | T6 | CI green on the PR | S7, S8 | done | L8 |
 | T8 | Independent read-only verification of the diff (risk item 5) | all | done | L9 |
-| T7 | Merge the slice, then merge #30 and verify `main` | S11 | pending | — |
+| T7 | Merge the slice, then merge #30 and verify `main` | S11 | done | L12 |
 
 ## Log
 
@@ -227,8 +227,40 @@ combination that did not exist before this slice, since 26 types on a Node 24 ru
 
 A rebase was requested on #30 so the merge gets real CI on the current base rather than the 16-commit-old green.
 
-## Remaining work
+L12 (evidence + closing, 2026-10-16, T7 — the merge order held): the slice landed first, then the types, which
+is the only order in which this change means anything.
 
-T7 only: merge #30 (with CI on the rebased head), then verify `main` green with `@types/node` on 26. Independent
-verification returned clean (L9); #30 rehearsed on the real base (L11). Evidence is appended to `## Log` as each
-task produces it.
+| step | result |
+|---|---|
+| #35 merged | `15f723a`; `main`'s run `38898310312` on that sha: success |
+| rebase requested on #30 | Dependabot moved head `8b64cdca` → **`4e708398`**, base `743f3802` → **`15f723ab`** |
+| rebased head re-checked before merging | diff still exactly 2 files / +9−9; `@types/node` 26.6.5; #28's `typescript-eslint` 8.71.2 and #29's `prettier-plugin-svelte` 4.1.1 intact |
+| #30's CI on the rebased head | run `38898696398`: all four jobs `success` |
+| #30 merged | `fd17ae2` |
+| `main`'s own run after #30 | run `38898941663` on `fd17ae2`: **conclusion success**, all four jobs |
+
+The state S11 asked for, read from `main` itself rather than from either branch:
+
+```
+frontend/package.json   "@types/node": "^26.6.5"      (declared)
+frontend/package-lock   node_modules/@types/node 26.6.5 (resolved)
+ci.yml             L140/L275  node-version: "26"
+frontend/Dockerfile L1/L14    node:26-bookworm-slim
+docs/en/getting-started.md:6  Node 26+
+```
+
+Declaration and runtime now agree. Before this slice the declared runtime was 24 while the types described 26 —
+the mismatch that started it — and #30 could not have landed first without recreating exactly that split.
+
+What this slice still does not do, stated so the closure is not read as broader than it is: **nothing enforces
+the declaration.** With no `engines.node` in `frontend/package.json` and no `.nvmrc`, a developer on Node 22
+gets a working install and learns about it from CI. That is the S5 follow-up, named and not taken, and it is a
+decision rather than an oversight.
+
+Done: T1-T8, every spec S1-S11.
+
+## Closed
+
+S11 is satisfied (L12) and the slice is closed. The one follow-up it names and does not take is S5's: nothing
+enforces the Node version — no `engines.node`, no `.nvmrc` — so a developer on Node 22 gets a working install
+and finds out from CI. That is recorded as a decision, not left as an oversight.
