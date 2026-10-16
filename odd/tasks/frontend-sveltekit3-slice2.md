@@ -262,3 +262,33 @@ Two further points the verifier raised and this document accepts:
 
 `test:e2e` (6 passed) and the npm install summary are reported as writer-run; the verifier re-ran the other four
 checks itself and they matched.
+
+L10 (evidence, 2026-10-15, T7/T8): **CI passed on the first run.** PR
+[#21](https://github.com/ematiasm/tempox/pull/21), branch `chore/sveltekit-3` → `main`, labels `dependencies` +
+`enhancement`, commits `bef1d81` (the migration) and `af69ddb` (this document).
+
+```
+✓ Frontend (SvelteKit)     in 35s
+✓ Backend (Rust)           in 1m14s
+✓ End to end (Playwright)  in 1m29s     run 38828733914, `6 passed (10.8s)`
+```
+
+**T8 is deliberately not executed as written, and the reason is new information.** S10 says to close the
+standalone dependabot PRs with a pointer to this one. Doing that *now* would be premature, because at this
+moment PR #21 is green but **unmerged**:
+
+- Closing #9 (kit) and #6 (adapter-node) before the merge destroys the working alternatives while the replacement
+  is still only a proposal. If #21 is not merged, those two PRs were the fallback.
+- Once #21 **is** merged, dependabot detects that the updates it proposed have been applied on the default branch
+  and closes those PRs itself — the behaviour documented for it, and the shape the closed sqlx PR #2 already has
+  in this repository. A manual close is then redundant rather than harmful, but still not the parent's call to
+  make on the owner's behalf.
+- **#7 is different and needs a decision, not a close.** It proposes `typescript@7.0.2`, which nothing in the
+  stack accepts (L3), and it is failing CI on `main` today. Closing a dependabot PR makes it stop proposing *that
+  release*, but it does not stop future major proposals — a durable fix is an `ignore` rule in
+  `.github/dependabot.yml` (`dependency-name: typescript` with `update-types: [version-update:semver-major]`, or
+  a version range). That is a standing policy change to the owner's dependency automation, so it is raised rather
+  than applied.
+
+So S10's intent — that all three PRs end up accounted for, not lost — is preserved; the sequencing is corrected
+against what the evidence says, and the remaining actions are put to the owner.
