@@ -2,6 +2,7 @@
   import '../app.css';
   import { lang } from '#lib/i18n/index.svelte.js';
   import { page } from '$app/state';
+  import { resolve } from '$app/paths';
 
   let { children } = $props();
 
@@ -9,23 +10,28 @@
   // as the walking-skeleton proof, but it is not a destination: the shop does
   // not sell notes, and a nav that lists everything it can reach is a map of
   // the repo rather than of the job.
+  // The route ids, not the resolved paths: `resolve()` runs at the three places
+  // that actually render or compare a URL, so a configured `paths.base` would
+  // reach the rail without the comparison and the href ever disagreeing.
+  // `as const` keeps them as literals, which is what `resolve()` requires: it is
+  // typed to the app's own route ids, not to any string.
   const tabs = $derived([
     { href: '/sales', label: lang.t.nav_sales },
     { href: '/products', label: lang.t.nav_products }
-  ]);
+  ] as const);
 </script>
 
 <div class="app">
   <nav class="rail" aria-label="Main">
-    <a class="brand" href="/sales">Tempox</a>
+    <a class="brand" href={resolve('/sales')}>Tempox</a>
     <ul class="tabs">
       {#each tabs as tab (tab.href)}
         <li>
           <a
             class="tab"
-            class:is-active={page.url.pathname.startsWith(tab.href)}
-            href={tab.href}
-            aria-current={page.url.pathname.startsWith(tab.href) ? 'page' : undefined}
+            class:is-active={page.url.pathname.startsWith(resolve(tab.href))}
+            href={resolve(tab.href)}
+            aria-current={page.url.pathname.startsWith(resolve(tab.href)) ? 'page' : undefined}
           >
             {tab.label}
           </a>

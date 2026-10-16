@@ -13,6 +13,7 @@
   import { ApiError, getCash, listSales, dayRange, type SaleListItem } from '#lib/api.js';
   import { formatCents, formatQuantity } from '#lib/money.js';
   import { lang } from '#lib/i18n/index.svelte.js';
+  import { SvelteSet } from 'svelte/reactivity';
   import Stamp from './Stamp.svelte';
 
   interface Props {
@@ -33,7 +34,10 @@
   let cash = $state<number | null>(null);
   let loading = $state(true);
   let error = $state<string | null>(null);
-  let expanded = $state<Set<string>>(new Set<string>());
+  // `SvelteSet` rather than a plain `Set` in `$state`: it carries its own
+  // reactivity, so `has`/`add`/`delete` register as reads and writes directly and
+  // the expanded rows stay in step with the set without reassigning it.
+  let expanded = new SvelteSet<string>();
 
   const range = $derived(dayRange(dayStart));
   /**
@@ -78,7 +82,7 @@
       .then((r) => {
         if (cancelled) return;
         rows = r;
-        expanded = new Set<string>();
+        expanded.clear();
       })
       .catch((e: unknown) => {
         if (!cancelled) error = e instanceof ApiError ? `${e.message} (${e.status})` : String(e);
@@ -107,10 +111,8 @@
   }
 
   function toggle(id: string) {
-    const next = new Set(expanded);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    expanded = next;
+    if (expanded.has(id)) expanded.delete(id);
+    else expanded.add(id);
   }
 
   /** A cancelled sale is struck through, never crimson: it is a correction, not an alarm. */
