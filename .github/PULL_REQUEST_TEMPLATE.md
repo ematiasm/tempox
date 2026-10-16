@@ -4,6 +4,12 @@
 
 ## Type of change
 
+<!-- Mark exactly one. There is no automation that applies labels to pull
+     requests, so add the matching label by hand after opening this PR:
+     bug fix -> `bug`, new feature -> `enhancement`, breaking change -> `enhancement`,
+     documentation -> `documentation`, refactoring -> `ci` (or none if it does not fit).
+     Also add the area label: `backend`, `frontend` or `database`. -->
+
 - [ ] Bug fix (non-breaking change which fixes an issue)
 - [ ] New feature (non-breaking change which adds functionality)
 - [ ] Breaking change (fix or feature that would cause existing functionality to not work as expected)
@@ -13,12 +19,16 @@
 
 ## Checklist
 
+<!-- An unverified box is worse than an empty one: check a box only when you
+     actually ran that check. `make test` needs the stack up (`make dev`). -->
+
 - [ ] My code follows the project's style
 - [ ] I have added tests for my changes
 - [ ] Existing tests pass locally (`make test`)
 - [ ] Linter passes locally (`make lint`)
 - [ ] I have updated documentation if needed
 - [ ] My commits follow [Conventional Commits](https://www.conventionalcommits.org/)
+- [ ] I added a type label and an area label (`backend` / `frontend` / `database`)
 
 ## Screenshots (if UI change)
 

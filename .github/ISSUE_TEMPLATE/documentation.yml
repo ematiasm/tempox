@@ -1,0 +1,30 @@
+name: Documentation
+description: A doc is wrong, missing, or describes behaviour the code no longer has
+title: "[Docs]: "
+labels: ["documentation"]
+body:
+  - type: textarea
+    id: where
+    attributes:
+      label: Which document
+      description: The file or page, and the section or line if you know it.
+      placeholder: "README.md, the endpoint list"
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is wrong with it
+      description: |
+        Quote the text that is wrong, missing or misleading, and say what the
+        code actually does. Doc drift is worth a bug report when it would make
+        someone write the wrong thing.
+    validations:
+      required: true
+  - type: textarea
+    id: fix
+    attributes:
+      label: What it should say
+      description: The correction, if you already know it. Leave blank if not.
+    validations:
+      required: false
