@@ -7,7 +7,8 @@
 <!-- Mark exactly one. There is no automation that applies labels to pull
      requests, so add the matching label by hand after opening this PR:
      bug fix -> `bug`, new feature -> `enhancement`, breaking change -> `enhancement`,
-     documentation -> `documentation`, refactoring -> `ci` (or none if it does not fit).
+     documentation -> `documentation`, refactoring -> `ci`,
+     maintenance/tooling -> `ci` (or none if it does not fit).
      Also add the area label: `backend`, `frontend` or `database`. -->
 
 - [ ] Bug fix (non-breaking change which fixes an issue)
@@ -16,6 +17,7 @@
 - [ ] Documentation update
 - [ ] Refactoring (no functional change)
 - [ ] Test improvement
+- [ ] Maintenance / tooling (CI, dependencies, repository configuration)
 
 ## Checklist
 
