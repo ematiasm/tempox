@@ -1,0 +1,84 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT si.product_id, si.product_name, si.quantity, si.unit_price, si.unit,\n                    COALESCE(SUM(cni.quantity), 0)::int AS \"refunded!\"\n             FROM sale_items si\n             LEFT JOIN credit_note_items cni ON cni.sale_item_id = si.id\n             WHERE si.id = $1 AND si.sale_id = $2\n             GROUP BY si.product_id, si.product_name, si.quantity, si.unit_price, si.unit",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "product_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "sale_items",
+            "name": "product_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "product_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sale_items",
+            "name": "product_name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "quantity",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "sale_items",
+            "name": "quantity"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "unit_price",
+        "type_info": "Numeric",
+        "origin": {
+          "Table": {
+            "table": "sale_items",
+            "name": "unit_price"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "unit",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sale_items",
+            "name": "unit"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "refunded!",
+        "type_info": "Int4",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "f4bf818f126896c03f8005f83a17f27c2c33894c5954cb8c2a582725fcddda1f"
+}

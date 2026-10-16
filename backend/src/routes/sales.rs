@@ -1,6 +1,6 @@
 use axum::{
     Json, Router,
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     routing::{get, post},
 };
@@ -10,7 +10,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::AppState;
-use crate::models::{sale::Sale, sale_item::SaleItem};
+use crate::models::{
+    credit_note::CreditNote, credit_note_item::CreditNoteItem, sale::Sale, sale_item::SaleItem,
+};
 use crate::money::{self, LineInput};
 
 /// The customer seeded by the migration: the default for sales with no named
@@ -23,6 +25,7 @@ const MAX_LIST_LIMIT: i64 = 200;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/sales", post(create_sale).get(list_sales))
+        .route("/sales/{id}/credit-notes", post(create_credit_note))
         .route("/cash", get(cash_total))
 }
 
@@ -52,13 +55,40 @@ pub struct SaleWithItems {
     pub items: Vec<SaleItem>,
 }
 
-/// A sale in list form: the sale, its customer's name, and its lines.
+/// A sale in list form: the sale, its customer's name, its lines, and every
+/// credit note issued against it.
 #[derive(Debug, Serialize)]
 pub struct SaleListItem {
     #[serde(flatten)]
     pub sale: Sale,
     pub customer_name: String,
     pub items: Vec<SaleItem>,
+    /// Oldest first. Empty when the sale was never corrected — an empty array,
+    /// never an absent field, so the client never has to guess.
+    pub credit_notes: Vec<CreditNoteWithItems>,
+}
+
+/// A credit note with its lines, which is how every endpoint returns one.
+#[derive(Debug, Serialize)]
+pub struct CreditNoteWithItems {
+    #[serde(flatten)]
+    pub note: CreditNote,
+    pub items: Vec<CreditNoteItem>,
+}
+
+/// The body of a refund: how much of each sale line comes back.
+#[derive(Debug, Deserialize)]
+pub struct NewCreditNote {
+    pub items: Vec<NewCreditNoteItem>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct NewCreditNoteItem {
+    /// The line being corrected. Must belong to the sale in the path.
+    pub sale_item_id: Uuid,
+    /// How many units come back. May be less than the quantity sold: a partial
+    /// refund is the normal case, and several notes may follow.
+    pub quantity: i32,
 }
 
 /// The cash balance: the sum of confirmed sales, as a currency amount.
@@ -245,6 +275,249 @@ async fn create_sale(
     Ok((StatusCode::CREATED, Json(SaleWithItems { sale, items })))
 }
 
+async fn create_credit_note(
+    State(state): State<AppState>,
+    Path(sale_id): Path<Uuid>,
+    Json(body): Json<NewCreditNote>,
+) -> Result<(StatusCode, Json<CreditNoteWithItems>), StatusCode> {
+    // Shape first: an empty refund, or one asking for a quantity of zero or
+    // less, is a 400 with nothing opened and nothing locked.
+    if body.items.is_empty() || body.items.iter().any(|item| item.quantity <= 0) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let mut tx = state.db.begin().await.map_err(|e| {
+        tracing::error!(?e, "tx begin failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    // Serialize refunds of this sale, and prove it exists. Two concurrent
+    // notes would otherwise both read the same refunded sums, both find room on
+    // a line, and both write — over-refunding it. The row lock is taken before
+    // any read of those sums, which is what makes the guard a guard.
+    let locked: Option<Uuid> =
+        sqlx::query_scalar!("SELECT id FROM sales WHERE id = $1 FOR UPDATE", sale_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| {
+                tracing::error!(?e, "sale lock failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+    if locked.is_none() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    // Resolve every refund against the sale line it corrects: the line must
+    // belong to this sale, and what it already gives back plus what is asked
+    // for now must not exceed what was sold on it.
+    //
+    // The running total is summed *in this loop*, not read again per entry from
+    // the database, because the write has not happened yet: two entries naming
+    // the same line would each read the same pre-existing sum and each pass on
+    // their own, over-refunding the line in one request. That hole was measured
+    // before this comment was written — `[{same line, 6}, {same line, 6}]`
+    // against a line of 10 was accepted and returned 12.
+    struct RefundLine {
+        product_id: Uuid,
+        product_name: String,
+        unit_price: Decimal,
+        unit: String,
+        quantity: i32,
+    }
+    let mut lines: Vec<RefundLine> = Vec::with_capacity(body.items.len());
+    let mut requested: std::collections::HashMap<Uuid, i64> = std::collections::HashMap::new();
+    for item in &body.items {
+        let line = sqlx::query!(
+            "SELECT si.product_id, si.product_name, si.quantity, si.unit_price, si.unit,
+                    COALESCE(SUM(cni.quantity), 0)::int AS \"refunded!\"
+             FROM sale_items si
+             LEFT JOIN credit_note_items cni ON cni.sale_item_id = si.id
+             WHERE si.id = $1 AND si.sale_id = $2
+             GROUP BY si.product_id, si.product_name, si.quantity, si.unit_price, si.unit",
+            item.sale_item_id,
+            sale_id
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| {
+            tracing::error!(?e, "sale line lookup failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+        // A line of another sale is not a conflict: it is the wrong document.
+        let line = line.ok_or(StatusCode::NOT_FOUND)?;
+        // What this line would be refunded in total if the request went
+        // through: what is already on record, plus every entry naming it.
+        let already = requested
+            .entry(item.sale_item_id)
+            .or_insert(line.refunded as i64);
+        *already += item.quantity as i64;
+        if *already > line.quantity as i64 {
+            return Err(StatusCode::CONFLICT);
+        }
+        lines.push(RefundLine {
+            product_id: line.product_id,
+            product_name: line.product_name,
+            unit_price: line.unit_price,
+            unit: line.unit,
+            quantity: item.quantity,
+        });
+    }
+
+    // Money before any write: an invalid line is a 400 with nothing persisted.
+    // The note totals what was actually charged for the returned units, at the
+    // price snapshotted on the sale line — a refund returns what the customer
+    // paid, not the catalog's current price.
+    let mut note_total = Decimal::ZERO;
+    let mut line_totals = Vec::with_capacity(lines.len());
+    for line in &lines {
+        let total =
+            money::line_total(line.quantity, line.unit_price).ok_or(StatusCode::BAD_REQUEST)?;
+        note_total = note_total
+            .checked_add(total)
+            .filter(|sum| money::is_whole_cents(*sum))
+            .ok_or(StatusCode::BAD_REQUEST)?;
+        line_totals.push(total);
+    }
+    note_total.rescale(money::MONEY_SCALE);
+
+    let note_id = sqlx::query_scalar!(
+        "INSERT INTO credit_notes (sale_id, total) VALUES ($1, $2) RETURNING id",
+        sale_id,
+        note_total
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| {
+        tracing::error!(?e, "credit note insert failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    // One line and one POSITIVE stock movement per refunded line: the mirror
+    // image of the sale path, which writes negative ones. The sale's own
+    // movements are never touched — a reversal appends, it does not edit.
+    let mut items = Vec::with_capacity(lines.len());
+    for (idx, line) in lines.iter().enumerate() {
+        let line_total = line_totals[idx];
+        let item_id = sqlx::query_scalar!(
+            "INSERT INTO credit_note_items
+                (credit_note_id, sale_item_id, product_id, product_name, quantity,
+                 unit_price, line_total, unit)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id",
+            note_id,
+            body.items[idx].sale_item_id,
+            line.product_id,
+            line.product_name,
+            line.quantity,
+            line.unit_price,
+            line_total,
+            line.unit
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| {
+            tracing::error!(?e, "credit note item insert failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+        sqlx::query!(
+            "INSERT INTO stock_movements (product_id, quantity, reason, sale_id, credit_note_id)
+             VALUES ($1, $2, 'credit_note', $3, $4)",
+            line.product_id,
+            line.quantity,
+            sale_id,
+            note_id
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            tracing::error!(?e, "reversal movement insert failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+        items.push(CreditNoteItem {
+            id: item_id,
+            credit_note_id: note_id,
+            sale_item_id: body.items[idx].sale_item_id,
+            product_id: line.product_id,
+            product_name: line.product_name.clone(),
+            quantity: line.quantity,
+            unit_price: line.unit_price,
+            line_total,
+            unit: line.unit.clone(),
+        });
+    }
+
+    // Read the persisted note so the response carries the server's created_at
+    // rather than the caller's assumption about it.
+    let note = sqlx::query_as!(
+        CreditNote,
+        "SELECT id, sale_id, round(total, 2) AS \"total!\", created_at
+         FROM credit_notes WHERE id = $1",
+        note_id
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| {
+        tracing::error!(?e, "credit note readback failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    tx.commit().await.map_err(|e| {
+        tracing::error!(?e, "tx commit failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(CreditNoteWithItems { note, items }),
+    ))
+}
+
+/// Every credit note of one sale, oldest first, each with its lines.
+///
+/// Two queries per note, bounded by how many times a sale was corrected —
+/// which is normally zero or one.
+async fn credit_notes_for(
+    db: &sqlx::PgPool,
+    sale_id: Uuid,
+) -> Result<Vec<CreditNoteWithItems>, StatusCode> {
+    // `ORDER BY created_at, id`: two notes of the same sale can share a
+    // `now()` (it is transaction time), and an unstable order would make the
+    // day's rendering flicker between reloads.
+    let notes = sqlx::query_as!(
+        CreditNote,
+        "SELECT id, sale_id, round(total, 2) AS \"total!\", created_at
+         FROM credit_notes WHERE sale_id = $1 ORDER BY created_at, id",
+        sale_id
+    )
+    .fetch_all(db)
+    .await
+    .map_err(|e| {
+        tracing::error!(?e, "credit notes read failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let mut with_items = Vec::with_capacity(notes.len());
+    for note in notes {
+        let items = sqlx::query_as!(
+            CreditNoteItem,
+            "SELECT id, credit_note_id, sale_item_id, product_id, product_name, quantity,
+                    round(unit_price, 2) AS \"unit_price!\",
+                    round(line_total, 2) AS \"line_total!\", unit
+             FROM credit_note_items WHERE credit_note_id = $1",
+            note.id
+        )
+        .fetch_all(db)
+        .await
+        .map_err(|e| {
+            tracing::error!(?e, "credit note items read failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+        with_items.push(CreditNoteWithItems { note, items });
+    }
+    Ok(with_items)
+}
+
 async fn list_sales(
     State(state): State<AppState>,
     Query(params): Query<SalesQuery>,
@@ -310,6 +583,7 @@ async fn list_sales(
             },
             customer_name: row.customer_name,
             items,
+            credit_notes: credit_notes_for(&state.db, row.id).await?,
         });
     }
 
@@ -317,8 +591,13 @@ async fn list_sales(
 }
 
 async fn cash_total(State(state): State<AppState>) -> Result<Json<Cash>, StatusCode> {
+    // Net of the corrections. A refund is money leaving the till, and a figure
+    // called "cash on hand" that ignored it would be wrong in the one direction
+    // that matters. Both sums are `numeric` and both are COALESCEd, so an empty
+    // ledger and a ledger with no notes behave identically.
     let total = sqlx::query_scalar!(
-        "SELECT COALESCE(SUM(total), 0)::numeric AS \"total!\" FROM sales WHERE status = 'confirmed'"
+        "SELECT (COALESCE((SELECT SUM(total) FROM sales WHERE status = 'confirmed'), 0)
+               - COALESCE((SELECT SUM(total) FROM credit_notes), 0))::numeric AS \"total!\""
     )
     .fetch_one(&state.db)
     .await

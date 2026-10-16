@@ -1,0 +1,114 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, credit_note_id, sale_item_id, product_id, product_name, quantity,\n                    round(unit_price, 2) AS \"unit_price!\",\n                    round(line_total, 2) AS \"line_total!\", unit\n             FROM credit_note_items WHERE credit_note_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "credit_note_items",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "credit_note_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "credit_note_items",
+            "name": "credit_note_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "sale_item_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "credit_note_items",
+            "name": "sale_item_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "product_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "credit_note_items",
+            "name": "product_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "product_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "credit_note_items",
+            "name": "product_name"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "quantity",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "credit_note_items",
+            "name": "quantity"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "unit_price!",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "line_total!",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 8,
+        "name": "unit",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "credit_note_items",
+            "name": "unit"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null,
+      null,
+      false
+    ]
+  },
+  "hash": "1a84b050fe94d2a1fc2034c4edfcfb7b77d59876b33013d3c245487bd41ffdbe"
+}
