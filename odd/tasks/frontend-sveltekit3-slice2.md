@@ -292,3 +292,29 @@ moment PR #21 is green but **unmerged**:
 
 So S10's intent — that all three PRs end up accounted for, not lost — is preserved; the sequencing is corrected
 against what the evidence says, and the remaining actions are put to the owner.
+
+L11 (evidence, 2026-10-16, closure): PR #21 was merged by the owner as merge commit **`e5b82cc`**
+(`Merge pull request #21 from ematiasm/chore/sveltekit-3`), with the repository's own convention — a merge commit,
+not a squash, matching #18, #19 and #20.
+
+**L10's prediction held, and the way it looked wrong at first is worth recording.** Immediately after the merge,
+a check of the three dependabot PRs returned `OPEN / OPEN / OPEN`, which reads as a refuted prediction. It was
+not: dependabot's post-merge run on `main` (2026-10-16T00:31:40Z) had not finished its bookkeeping yet, and by
+00:32:22Z and 00:32:36Z it had closed both itself, each with its own comment:
+
+```
+#9  CLOSED 2026-10-16T00:32:36Z   "Looks like @sveltejs/kit is up-to-date now, so this is no longer needed."
+#6  CLOSED 2026-10-16T00:32:22Z   "Looks like @sveltejs/adapter-node is up-to-date now, so this is no longer needed."
+```
+
+So #9 and #6 closed on their own exactly as L10 said they would, and no manual close was needed or made. The
+lesson is narrower than "the prediction was right": **a state read taken seconds after a merge can be
+premature**, and the honest thing was to say what the read showed and re-read rather than to insist on the
+prediction.
+
+**#7 remains open by decision.** It proposes `typescript@7.0.2`, which nothing in this stack accepts (L3), and it
+is failing CI. It stays open pending the owner's call on an `ignore` rule in `.github/dependabot.yml` — the
+durable fix — rather than a close that only suppresses this one release.
+
+Cleanup performed: branch `chore/sveltekit-3` deleted local and remote, and the already-merged
+`chore/vite8-slice1` deleted remote. `main` is `e5b82cc`; working tree clean.
