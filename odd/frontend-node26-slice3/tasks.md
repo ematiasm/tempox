@@ -4,8 +4,9 @@ Feature: **the frontend runtime moves to Node 26** — CI, the frontend image an
 declared runtime and the real one agree again.
 Document: `odd/tasks/frontend-node26-slice3.md` (specs authority; owner scope L1).
 
-Status: **in progress.** Branch `chore/node26`, PR [#35](https://github.com/ematiasm/tempox/pull/35) open.
-T1-T6 and T8 done and measured; T7 open (merge the slice, then PR #30).
+Status: **closed.** Branch `chore/node26` merged as `15f723a` (PR [#35](https://github.com/ematiasm/tempox/pull/35));
+PR #30 (`@types/node` → `^26.6.5`) merged on top as `fd17ae2`; `main` verified green. Closure record in
+PR [#36](https://github.com/ematiasm/tempox/pull/36).
 
 ## Tasks
 
@@ -22,12 +23,13 @@ T1-T6 and T8 done and measured; T7 open (merge the slice, then PR #30).
   with "The image serves the app" success (S7, S8)
 - T8 done — independent `gentle-ai-verify`: **zero defects, S1-S6 PASS**, with the `engines` scan and the five
   checks reproduced offline in a separate context (risk item 5)
-- T7 pending — merge the slice, then merge #30, verify `main` green with `@types/node` on 26 (S11)
+- T7 done — slice merged (`15f723a`), then #30 merged (`fd17ae2`) after a rebase onto the real base; `main`'s own
+  run `38898941663` on `fd17ae2` green; declared types and declared runtime now agree (S11)
 
 ## Scope
 
-`@types/node` is deliberately **not** touched here (S6): that is PR #30, merged after this slice so each change
-is reviewable alone. `frontend/package.json` gains no `engines` field (S5): this slice makes existing
+`@types/node` was deliberately **not** touched by the slice itself (S6): that was PR #30, merged after it so each
+change was reviewable alone. `frontend/package.json` gains no `engines` field (S5): this slice makes existing
 declarations agree, it does not add a new enforcement mechanism.
 
 The hazard this slice guards against is S4: a blanket 24→26 sweep would have rewritten three `ci.yml` comments
@@ -55,3 +57,11 @@ main document's L10 — including a real arithmetic error of mine ("six lines" f
 - L8 evidence: CI green on the PR's first run, all four jobs.
 - L9 independent verification: zero defects, S1-S6 PASS; two measurements reproduced rather than trusted.
 - L10 correction: the "six lines" arithmetic fixed to five; loose range phrasing tightened; this mirror resynced.
+- L11 rehearsal: #30's green belonged to a base 16 commits behind, so the merge was rehearsed on the real base
+  and a rebase was requested instead of trusting it.
+- L12 closing: slice first, then types; `main` green on `fd17ae2`; declaration and runtime agree.
+
+## Not taken
+
+S5's follow-up: nothing enforces the Node version (no `engines.node`, no `.nvmrc`), so a developer on Node 22
+gets a working install and finds out from CI. Recorded as a decision, not an oversight.

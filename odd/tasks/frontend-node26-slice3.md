@@ -44,10 +44,10 @@ S11. After this slice is merged, PR #30 is merged and `main` is verified green w
 | T2 | Move the runtime declaration: `ci.yml` (2 sites), `Dockerfile` (2 sites), `getting-started.md` (1 site) | S1, S2, S3 | done | L5 |
 | T3 | Guard check: no declaration below 26 survives, and the four action-runtime comment lines are byte-identical to `main` | S4, S5 | done | L6 |
 | T4 | Verify on the branch: five checks under Node 26, plus the image builds and serves `/sales` | S7, S8 | done | L7 |
-| T5 | Commit, push, open the PR | S10 | pending | — |
+| T5 | Commit, push, open the PR | S10 | done | `ae5f23b` work unit + `ca343b9` docs, branch `chore/node26`, PR #35 |
 | T6 | CI green on the PR | S7, S8 | done | L8 |
 | T8 | Independent read-only verification of the diff (risk item 5) | all | done | L9 |
-| T7 | Merge the slice, then merge #30 and verify `main` | S11 | pending | — |
+| T7 | Merge the slice, then merge #30 and verify `main` | S11 | done | L12 |
 
 ## Log
 
@@ -142,9 +142,25 @@ new base tag, and the runtime inside it reports 26 — so the Dockerfile half of
 itself, not by reading the file. `npm ci` matters separately here, because it fails loudly when the lock and the
 manifest disagree; it is the check that would catch a base-image move that quietly changed resolved versions.
 
-## Remaining work
+L8 (evidence, 2026-10-16, T6): CI passed on the PR's first run. Run `38897304773` on `ca343b9`, all four jobs
+`success`:
 
-T7 is open (merge the slice, then #30). Independent verification returned clean (L9); T8 is closed.
+| job | result | the part that matters here |
+|---|---|---|
+| Backend (Rust) | pass 1m12s | unaffected by the move |
+| Frontend (SvelteKit) | pass 37s | the log shows `node-version: 26` |
+| Frontend image (Docker) | pass 27s | loaded `node:26-bookworm-slim`; step "The image serves the app" `success` |
+| End to end (Playwright) | pass 1m36s | the log shows `node-version: 26`, then `node: v26.12.0` |
+
+The image job is the one that justifies this run existing separately from the local work: it pulls
+`node:26-bookworm-slim` from the registry on a clean runner, which is the only thing that proves the tag
+resolves outside the owner's machine. The local `docker manifest inspect` said the tag exists; this says the
+build actually uses it.
+
+S8 therefore holds twice over, locally and in CI. The one step of interest that did **not** run is
+`Run actions/upload-artifact@v7` (`skipped`, as designed: it is `if: failure()`, and E2E passed), so this run
+still does not exercise the artifact upload path — unchanged from the earlier note, and not something this slice
+can fix.
 
 L9 (independent verification, 2026-10-16, T8 — `gentle-ai-verify`, read-only, separate context): **zero defects,
 S1-S6 PASS.** This is the verification the change's risk class requires (item 5), and it was run before the
@@ -182,27 +198,69 @@ pointer to this entry. Also: `@sveltejs/vite-plugin-svelte` is `^20.19 || ^22.12
 `^20.19.0 || >=22.12.0`, so "all `>=24`" was loose for those two (the substance held), and the mirror was
 re-synchronised.
 
-## Remaining work
+L11 (evidence, 2026-10-16, T7 — why #30's green CI could not be reused, and the trial merge that replaced it):
+#35 merged as `15f723a` and `main`'s own run `38898310312` came back **success** on that sha, so the slice
+itself is validated on `main` and not only on the branch.
 
-T7 only (merge the slice, then #30). Independent verification returned clean (L9). Evidence is appended to
-`## Log` as each task produces it.
+The interesting part is what it took to validate PR #30 on top of it. #30's checks were all `pass`, but they
+belong to run `38838741034`, created at `2026-10-16T02:06:51Z` against base `743f3802` — **16 commits behind**
+the `main` it would land on. That base predates #26-#29 and predates Node 26 entirely, so those three green
+checks were evidence about a tree that no longer exists. Merging on that basis would have been trusting a
+result for a different input, which is the same failure this whole slice was about.
 
-L8 (evidence, 2026-10-16, T6): CI passed on the PR's first run. Run `38897304773` on `ca343b9`, all four jobs
-`success`:
+So the merge was rehearsed instead, on the real target, before anything was merged (via
+`git merge --no-commit --no-ff` on a throwaway branch, then aborted):
 
-| job | result | the part that matters here |
-|---|---|---|
-| Backend (Rust) | pass 1m12s | unaffected by the move |
-| Frontend (SvelteKit) | pass 37s | the log shows `node-version: 26` |
-| Frontend image (Docker) | pass 27s | loaded `node:26-bookworm-slim`; step "The image serves the app" `success` |
-| End to end (Playwright) | pass 1m36s | the log shows `node-version: 26`, then `node: v26.12.0` |
+| step | result |
+|---|---|
+| textual merge of #30 onto `main` @ `15f723a` | clean, no conflict; 2 files, 9 insertions, 9 deletions |
+| `package.json` spec vs lock root | all consistent |
+| `@types/node` resolved | **26.6.5** (`undici-types` 8.9.0) |
+| `typescript-eslint` (from #28) | still **8.71.2** |
+| `prettier-plugin-svelte` (from #29) | still **4.1.1** |
+| `npm ci` / `lint` / `check` / `test:unit` / `build` under Node 26 | 0 · 0 · 0 errors · **32/32** · 0 |
 
-The image job is the one that justifies this run existing separately from the local work: it pulls
-`node:26-bookworm-slim` from the registry on a clean runner, which is the only thing that proves the tag
-resolves outside the owner's machine. The local `docker manifest inspect` said the tag exists; this says the
-build actually uses it.
+The last three rows are the ones that matter for this slice specifically: #30 rewrites `frontend/package-lock.json`,
+the same file #28 and #29 rewrote, so the risk was that a clean textual merge would silently drop one of those
+two bumps. Both survived, and the checks pass with `@types/node@26.6.5` actually installed — which is the
+combination that did not exist before this slice, since 26 types on a Node 24 runtime was the mismatch.
 
-S8 therefore holds twice over, locally and in CI. The one step of interest that did **not** run is
-`Run actions/upload-artifact@v7` (`skipped`, as designed: it is `if: failure()`, and E2E passed), so this run
-still does not exercise the artifact upload path — unchanged from the earlier note, and not something this slice
-can fix.
+A rebase was requested on #30 so the merge gets real CI on the current base rather than the 16-commit-old green.
+
+L12 (evidence + closing, 2026-10-16, T7 — the merge order held): the slice landed first, then the types, which
+is the only order in which this change means anything.
+
+| step | result |
+|---|---|
+| #35 merged | `15f723a`; `main`'s run `38898310312` on that sha: success |
+| rebase requested on #30 | Dependabot moved head `8b64cdca` → **`4e708398`**, base `743f3802` → **`15f723ab`** |
+| rebased head re-checked before merging | diff still exactly 2 files / +9−9; `@types/node` 26.6.5; #28's `typescript-eslint` 8.71.2 and #29's `prettier-plugin-svelte` 4.1.1 intact |
+| #30's CI on the rebased head | run `38898696398`: all four jobs `success` |
+| #30 merged | `fd17ae2` |
+| `main`'s own run after #30 | run `38898941663` on `fd17ae2`: **conclusion success**, all four jobs |
+
+The state S11 asked for, read from `main` itself rather than from either branch:
+
+```
+frontend/package.json   "@types/node": "^26.6.5"      (declared)
+frontend/package-lock   node_modules/@types/node 26.6.5 (resolved)
+ci.yml             L140/L275  node-version: "26"
+frontend/Dockerfile L1/L14    node:26-bookworm-slim
+docs/en/getting-started.md:6  Node 26+
+```
+
+Declaration and runtime now agree. Before this slice the declared runtime was 24 while the types described 26 —
+the mismatch that started it — and #30 could not have landed first without recreating exactly that split.
+
+What this slice still does not do, stated so the closure is not read as broader than it is: **nothing enforces
+the declaration.** With no `engines.node` in `frontend/package.json` and no `.nvmrc`, a developer on Node 22
+gets a working install and learns about it from CI. That is the S5 follow-up, named and not taken, and it is a
+decision rather than an oversight.
+
+Done: T1-T8, every spec S1-S11.
+
+## Closed
+
+S11 is satisfied (L12) and the slice is closed. The one follow-up it names and does not take is S5's: nothing
+enforces the Node version — no `engines.node`, no `.nvmrc` — so a developer on Node 22 gets a working install
+and finds out from CI. That is recorded as a decision, not left as an oversight.
