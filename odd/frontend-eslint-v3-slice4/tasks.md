@@ -5,8 +5,8 @@ the v3 config expects for `*.svelte.ts` is wired up, and the four findings v3 ra
 than suppressed.
 Document: `odd/tasks/frontend-eslint-v3-slice4.md` (specs authority; owner scope L1).
 
-Status: **in progress.** Branch `chore/eslint-v3` off `main` at `e735f8b`. T1-T9 all pending; exploration and
-plan are recorded (L2-L6) but nothing has been written yet.
+Status: **closed.** Branch `chore/eslint-v3` merged as **`fb540de`** (PR [#37](https://github.com/ematiasm/tempox/pull/37));
+`main`'s own run `38904312397` green on that sha; Dependabot closed #31 and #32 itself on its post-merge pass.
 
 ## Why one slice and not two rebases
 
@@ -20,15 +20,25 @@ Dependabot's #31 (`eslint` 10) and #32 (`eslint-plugin-svelte` 3) look independe
 
 ## Tasks
 
-- T1 pending — branch; baseline on v2 (lint green) and the RED
-- T2 pending — move `eslint` + `eslint-plugin-svelte` together, declare `@eslint/js`, update the lock surgically
-- T3 pending — fix the parser globs so `*.svelte.ts` is parsed as TypeScript
-- T4 pending — fix `Ledger.svelte` (`SvelteSet`) and `+layout.svelte` (two `resolve()` calls)
-- T5 pending — five checks green, `check` at 0 errors, S7's lock guards
-- T6 pending — one work-unit commit, pushed, PR opened
-- T7 pending — CI green on the PR
-- T8 pending — independent read-only verification (risk item 5)
-- T9 pending — merge, then close #31 and #32 with pointers
+- T1 done — baseline on `main` at `e735f8b`: `npm run lint` exit 0 on plugin v2, `@playwright/test` 1.64.0,
+  335 lock entries (S6)
+- T2 done — `eslint ^10.12.0` + `eslint-plugin-svelte ^3.23.1` moved together, `@eslint/js ^10.0.1` declared, lock
+  updated surgically: **59 entries, every one traced to the eslint subtree, 0 outside**, `@playwright/test` held
+  at 1.64.0 (S1, S2, S7)
+- T3 done — `eslint.config.js` parser globs gain `**/*.svelte.ts` and `**/*.svelte.js`; the parsing error on
+  `index.svelte.ts:3` disappears and only the three code findings remain (S3)
+- T4 done — `Ledger.svelte` uses `SvelteSet` (reset via `.clear()`, toggle in place); `+layout.svelte` routes both
+  links through `resolve()`, with `tabs` kept as literals via `as const` because `resolve()` is typed to this
+  app's route ids (S4, S5)
+- T5 done — five checks green: `lint` 0, `check` 0 errors, `test:unit` 32/32, `build` 0, `test:e2e` 6 passed;
+  `git diff main -- frontend/tests/` empty (S6, S7)
+- T6 done — work unit `34b8bfb` (5 files) + docs `0a86fbc`, pushed, PR #37 opened (S9)
+- T7 done — CI green on the first run (run `38902615719`, 4/4 jobs)
+- T8 done — independent `gentle-ai-verify`: **zero defects, S1-S9 PASS**; it built the ERESOLVE by hand, read both
+  plugin tarballs, cross-swapped config and code to isolate the parser cause, and counted the 59 lock entries
+  from the trees (risk item 5)
+- T9 done — #37 merged as `fb540de` (merge commit, repo convention); `main` run `38904312397` green 4/4; #31 and
+  #32 closed by `dependabot[bot]` ~2 minutes after the merge, each with its own comment (S10)
 
 ## The finding worth reading
 
@@ -62,3 +72,22 @@ README documents, not a change to the file that fails.
   claimed the file. The config globs are wrong, not the source file.
 - L5 exploration: `@eslint/js` resolves only transitively from `eslint@9` and is absent from `eslint@10`.
 - L6 plan: branch, the five files, the RED to observe, and the surgical lock strategy.
+- L7 measurement: baseline lint 0 on v2; the RED after the move, four findings at the predicted locations.
+- L8 measurement: the surgical lock; 59 entries changed, every one traced to the eslint subtree, guard packages
+  held (`@playwright/test` 1.64.0).
+- L9 measurement: T3 alone clears the parsing error (4 → 3); the `resolve(tab.href)` type error and its `as const`
+  fix.
+- L10 verification: five checks green, tests directory diff empty, e2e 6/6 on the real stack.
+- L11/L12 delivery and CI: work unit `34b8bfb`, CI green 4/4 on the first run.
+- L13 independent verification: zero defects, S1-S9 PASS; corrected this document's own reachability gap on the
+  4 dedup-hoisted lock entries.
+- L14 closing: `fb540de` on `main`, run green 4/4. #31 and #32 were closed by Dependabot itself, not by hand —
+  the read taken immediately after the merge showed `OPEN` and was premature, exactly as slice 2's L11 recorded
+  for the SvelteKit 3 slice.
+
+## Not taken
+
+Two durable probes the verifier proposed, recorded as decisions for the owner rather than folded in, because
+S6 scopes this slice to no new tests: a lockfile guard test (lock root `devDependencies` deep-equal
+`package.json`, `@playwright/test === '1.64.0'`) that would have caught a regenerated lock, and keeping the
+staged-config lint probe as CI discipline.
