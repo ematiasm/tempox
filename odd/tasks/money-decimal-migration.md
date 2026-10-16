@@ -106,12 +106,67 @@ S16. Work lands on branch `feat/money-decimal` as three work units (Conventional
 | T1 | Branch `feat/money-decimal`; capture the pre-change baseline (backend tests, frontend unit/lint/check/e2e green on `main`) | S16 | done | L9 (11+12 backend, 32 unit, 6 e2e, lint/check clean) |
 | T2 | Migration `0006_money_numeric.sql`: retype the four columns to `NUMERIC(14,6)` with `CHECK (v = round(v, 2))`, drop `guard_product_unit` and its trigger | S1, S8, S15 | done | L7 (guard measured live), L10 |
 | T3 | Backend: `money.rs` returns `Decimal` with the S3 assertion; models, routes and `cash_total` move to `Decimal`; serde string; regenerate `.sqlx`; unit + integration tests | S2–S5, S9, S10, S13, S14 | done | L10 (16 unit + 12 integration green) |
-| T4 | Design contract: rewrite `plan-v1.md` (money section, schema tables, cash, decisions 3/10/13), `PLAN.md` modeling row and currency fact, `README.md` if it repeats the format | S11, S12 | pending | — |
-| T5 | Frontend: rewrite `money.ts` (`formatMoney`, `parseAmount`, keep `formatQuantity`); update the 5 components and `api.ts`; rewrite `money.test.ts`; update `plan-v1a.md` pricing semantics and delete the resolution limit | S5–S7, S12 | pending | — |
-| T6 | Full checks once (backend + frontend + e2e), then close the slice in this document | S16 | pending | — |
+| T4 | Design contract: rewrite `plan-v1.md` (money section, schema tables, cash, decisions 3/10/13), `PLAN.md` modeling row and currency fact, `README.md` if it repeats the format | S11, S12 | done | L10, L14 |
+| T5 | Frontend: rewrite `money.ts` (`formatMoney`, `parseAmount`, keep `formatQuantity`); update the 5 components and `api.ts`; rewrite `money.test.ts`; update `plan-v1a.md` pricing semantics and delete the resolution limit | S5–S7, S12 | done | L15, L16 |
+| T6 | Full checks once (backend + frontend + e2e), then close the slice in this document | S16 | done | L17 |
 
-Commit mapping: T2+T3 = unit 1; T4 = unit 1 as well when it describes the schema (docs travel with the
-behavior); T5 = unit 2; T6 = unit 3 (the closing commit).
+Commit mapping: `18ba602` = migration + backend + design contract (T2, T3, T4); `6695c60` = frontend (T5).
+The migration and the Rust code cannot be committed apart — `sqlx::query!` verifies SQL against the live schema
+at compile time, so a migration-only commit leaves the crate uncompilable — which is why the first commit is
+larger than the ~400-line guidance; see L12.
+
+## Close
+
+**Closed 2026-10-17.** Money is a decimal currency amount end to end: `NUMERIC(14,6)` with
+`CHECK (v = round(v, 2))` in the database, `rust_decimal::Decimal` in Rust with an explicit
+`serialize_amount` at every boundary, and a two-decimal string on the wire. The product `unit` is a display
+label and `guard_product_unit` is gone.
+
+**Verified, all on the final commit `6695c60`:** 16 backend unit tests, 12 backend integration tests against a
+live PostgreSQL and the running API, 33 frontend unit tests, 6 Playwright e2e tests, `cargo fmt --check`,
+`cargo clippy --all-targets -- -D warnings`, `make sqlx-check` (the offline cache CI verifies), `npm run lint`,
+and `npm run check` — all green.
+
+**The three bugs this slice actually found**, none of which reading the schema would have revealed:
+1. A declared scale of 2 makes the precision guard unenforceable: PostgreSQL rounds before any `CHECK` runs, so
+   the first implementation accepted sub-cent values silently while passing every unit test.
+2. PostgreSQL returns a `NUMERIC` at the column's declared scale, so amounts left the API as `"3756.000000"`.
+3. sqlx decodes PostgreSQL's zero as `Decimal::ZERO` (scale 0) — the server sends an empty digit array — so a
+   zero amount left as `"0"` while every other amount left as `"25.00"`. Fixed with `serialize_amount`.
+
+**Carried forward, deliberately not done here:** `sales.total = SUM(sale_items.line_total)` is still only a
+write-path invariant; the database-level check is deferred to the v1.5 reversal work (S9).
+
+**Not in any commit, and needs the owner's call:** `plan-v1.md`, `plan-v1a.md` and `PLAN.md` are listed in
+`.gitignore` (lines 44-46). Their content was updated — `plan-v1a.md` in particular had its "resolution limit"
+paragraph deleted, and the files on disk now describe the new contract — but because they are ignored, those
+edits exist only in the working tree and would be lost by a clean checkout. The tracked specification of
+record is this document. Whether to un-ignore them is an owner decision and was not taken here.
+
+L14 — T4 evidence (2026-10-17): `plan-v1.md` rewritten — the `## Money` section replaced with the decimal
+  contract (including why the column declares 6 and stores 2), the four schema rows, the `/api/cash` row,
+  the Verification wording, and decision 22 added; decisions 3, 10 and 13 amended in place. `PLAN.md`'s Money
+  row rewritten and its currency fact recorded (S11). `README.md` checked with `grep` and does not repeat the
+  wire format, so it needed no change.
+
+L15 — T5 executed by `gentle-ai-worker`. It delivered the migration but overreached twice, and both were
+  reverted by the parent: it **deleted the ledger's "On this page" footing** (a visible figure, not in any
+  spec) and it changed the catalog's price label and the per-unit price separator. The footing was restored
+  with a new exact `sumAmounts` helper (BigInt cents, no float) plus its own tests, and the labels were put
+  back. The worker self-reported that it did not run RED before implementing, which is a process deviation
+  from S16 and is recorded rather than glossed.
+
+L16 — T5 evidence after the parent's corrections (2026-10-17): 33 frontend unit tests, 6 e2e, lint and
+  `svelte-check` clean. `formatMoney` formats by splitting on the decimal point so `Intl` never sees a float;
+  `parseAmount` replaced `parseAmountToCents` and never calls `parseFloat`. The only arithmetic left in the
+  client is `lineTotalAmount` (draft preview) and `sumAmounts` (page footing), both exact BigInt cents, both
+  named as derived figures — the recorded total always comes from the server response.
+
+L17 — T6 evidence (2026-10-17), on commit `6695c60`: 16 backend unit, 12 backend integration, 33 frontend
+  unit, 6 e2e, `cargo fmt --check`, `clippy -D warnings`, `make sqlx-check`, `npm run lint`, `npm run check`.
+  `cargo fmt --check` failed on the first pass — the one check that CI runs and that no test would have caught
+  — and the formatting was folded into the commit that introduced it with a `--fixup` + `--autosquash` rebase,
+  so the branch has two clean commits rather than three with a formatting tail.
 
 ## Log
 
@@ -200,7 +255,21 @@ L10 — T2 and T3 evidence (2026-10-17):
   CI installs `^0.9`; the local CLI was updated to 0.9.0 before regenerating, so the cache is not written by a
   generation CI will refuse.
 
-L11 — Open point carried into T5 (not a blocker, decided here so it is visible): the sale form previews a live
+L12 — Slice boundary, recorded because the tool flagged it (2026-10-17). Commit `26da7ad` is **912 authored
+  changed lines**, over the ~400-line guidance. It was committed as one unit deliberately, and the reason is
+  mechanical rather than a wish to bundle: `sqlx::query!` verifies every query against the live schema *while
+  the crate compiles*, so a commit carrying only the migration leaves the crate uncompilable and a commit
+  carrying only the Rust changes points at columns that no longer exist. Migration, models, routes and the
+  regenerated `.sqlx/` cache are one indivisible reviewable change. Two things soften the count and are worth
+  naming so the number is not read as more hand-written code than it is:
+- `odd/tasks/money-decimal-migration.md` (208 lines) is the specification document itself.
+- `backend/.sqlx/*.json` (10 files) is tool-generated query metadata, required for the offline build and
+  checked by CI.
+  The remaining work is genuinely separable and stays that way: T5 (frontend) is its own commit, and T6 closes
+  the feature. No further slicing is possible without breaking the compile, which is the honest statement of
+  the trade-off rather than a preference for large commits.
+
+L13 — Open point carried into T5 (not a blocker, decided here so it is visible): the sale form previews a live
   total before the sale is recorded (`plan-v1a.md` scope; `SaleDraft.svelte:94` sums `lineTotal` over the
   draft). With amounts as strings the client cannot sum them as text. The decision: the preview sums in
   **integer cents internally and never lets that value leave the browser** — it is a preview of an unrecorded
