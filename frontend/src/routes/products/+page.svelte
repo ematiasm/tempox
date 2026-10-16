@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { lang } from '$lib/i18n/index.svelte';
-  import Catalog from '$lib/components/Catalog.svelte';
+  import { lang } from '#lib/i18n/index.svelte.js';
+  import Catalog from '#lib/components/Catalog.svelte';
 </script>
 
 <header class="band">

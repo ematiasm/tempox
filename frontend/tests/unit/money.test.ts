@@ -5,7 +5,7 @@ import {
   lineTotal,
   parseAmountToCents,
   parseQuantity
-} from '$lib/money';
+} from '#lib/money.js';
 
 describe('formatCents', () => {
   it('renders integer cents as en-US money', () => {

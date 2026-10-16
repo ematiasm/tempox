@@ -16,9 +16,9 @@
     findOrCreateCustomer,
     type Customer,
     type Product
-  } from '$lib/api';
-  import { formatCents, lineTotal, parseAmountToCents, parseQuantity } from '$lib/money';
-  import { lang } from '$lib/i18n/index.svelte';
+  } from '#lib/api.js';
+  import { formatCents, lineTotal, parseAmountToCents, parseQuantity } from '#lib/money.js';
+  import { lang } from '#lib/i18n/index.svelte.js';
   import ProductPicker from './ProductPicker.svelte';
   import Stamp from './Stamp.svelte';
 

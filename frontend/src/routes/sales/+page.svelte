@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { lang } from '$lib/i18n/index.svelte';
-  import SaleDraft from '$lib/components/SaleDraft.svelte';
-  import Ledger from '$lib/components/Ledger.svelte';
+  import { lang } from '#lib/i18n/index.svelte.js';
+  import SaleDraft from '#lib/components/SaleDraft.svelte';
+  import Ledger from '#lib/components/Ledger.svelte';
 
   // Bumping the token tells the ledger a sale was just recorded, so the day
   // reloads and the new document appears with its stamp.

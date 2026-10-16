@@ -9,7 +9,7 @@ import {
   listCustomers,
   listProducts,
   listSales
-} from '$lib/api';
+} from '#lib/api.js';
 
 /** The URL the client actually called, as a URL object. */
 function calledUrl(mock: ReturnType<typeof vi.fn>, index = 0): URL {

@@ -7,9 +7,9 @@
    * this screen can only ever report it — the one place stock changes is a
    * recorded event.
    */
-  import { ApiError, createProduct, listProducts, type Product, type Unit } from '$lib/api';
-  import { formatCents, formatQuantity, parseAmountToCents, parseQuantity } from '$lib/money';
-  import { lang } from '$lib/i18n/index.svelte';
+  import { ApiError, createProduct, listProducts, type Product, type Unit } from '#lib/api.js';
+  import { formatCents, formatQuantity, parseAmountToCents, parseQuantity } from '#lib/money.js';
+  import { lang } from '#lib/i18n/index.svelte.js';
 
   const PAGE = 50;
 
