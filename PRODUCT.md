@@ -27,8 +27,8 @@ Back office at a fixed PC in the shop: desktop-first, keyboard-friendly, mobile 
 - v1 backend shipped and tested: multi-item sales with snapshot lines, products (list price + base unit + initial stock), customers (name-only, seeded `walk-in`), derived cash, derived stock.
 - The database enforces: decimal money with an exact whole-cents guard, exact totals, immutable events (no edit/delete — a mistaken sale is reversed by a credit note, in whole or in part, never edited).
 - Compile-time checked queries; the image build verifies them against the live database.
-- **Terminology and UI in English until the es-AR i18n layer lands** (user decision; `walk-in` displays as "Consumidor Final" later).
-- Undecided: auth and roles (v5 staff), the es-AR locale (the other half of v1.5), purchases/expenses/accounting (v2–v6).
+- **The UI speaks es-AR by default, with an English side** (v1.5). Money is ARS written `$ 1.234,56`, the ledger's day is the shop's own (server-side, `SHOP_TIMEZONE`), and `walk-in` displays as "Consumidor Final" while the stored value stays `walk-in`. The language choice is not persisted: the shop opens in its own language every time.
+- Undecided: auth and roles (v5 staff), purchases/expenses/accounting (v2–v6), multi-currency.
 
 ## Brand Commitments
 

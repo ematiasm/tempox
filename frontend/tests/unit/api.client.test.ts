@@ -5,6 +5,7 @@ import {
   createProduct,
   createSale,
   dayRange,
+  fetchDay,
   findOrCreateCustomer,
   getCash,
   listCustomers,
@@ -263,6 +264,37 @@ describe('createCreditNote (S3, S7)', () => {
     ).rejects.toMatchObject({
       status: 409
     });
+  });
+});
+
+describe('fetchDay (S8)', () => {
+  it('sends the scoped instant as an ISO string and returns the server range', async () => {
+    const range = {
+      from: '2026-10-14T03:00:00Z',
+      to: '2026-10-15T03:00:00Z',
+      prev: '2026-10-13T03:00:00Z',
+      next: '2026-10-15T03:00:00Z'
+    };
+    const fetchMock = vi.fn(async () => jsonResponse(range));
+    vi.stubGlobal('fetch', fetchMock);
+    const at = new Date('2026-10-14T16:42:00-03:00');
+
+    await expect(fetchDay(at)).resolves.toEqual(range);
+
+    const url = calledUrl(fetchMock);
+    expect(url.pathname).toBe('/api/day');
+    expect(url.searchParams.get('at')).toBe('2026-10-14T19:42:00.000Z');
+  });
+
+  it('throws ApiError carrying the status on failure', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('nope', { status: 500 }))
+    );
+
+    const error = await fetchDay(new Date('2026-10-14T19:42:00.000Z')).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).status).toBe(500);
   });
 });
 

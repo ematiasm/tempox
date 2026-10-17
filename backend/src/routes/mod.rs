@@ -3,6 +3,7 @@ use axum::Router;
 use crate::AppState;
 
 pub mod customers;
+pub mod day;
 pub mod health;
 pub mod hello;
 pub mod notes;
@@ -16,6 +17,7 @@ pub fn router() -> Router<AppState> {
             .merge(notes::routes())
             .merge(sales::routes())
             .merge(products::routes())
-            .merge(customers::routes()),
+            .merge(customers::routes())
+            .merge(day::routes()),
     )
 }

@@ -106,7 +106,7 @@ export type CreditNote = {
 
 export type Cash = { total: string };
 
-/** A local day, as the bounds the server understands. */
+/** A shop day, as the server resolved it. */
 export type DayRange = {
   /** Inclusive, ISO-8601 UTC. */
   from: string;
@@ -116,6 +116,14 @@ export type DayRange = {
   prev: string;
   /** The local day after `to`, for paging forwards. */
   next: string;
+  /**
+   * The IANA zone the window was computed in, when the server supplied one.
+   *
+   * The browser-side `dayRange` below cannot know it and leaves it undefined;
+   * `fetchDay` always fills it. It exists so a document's time can be rendered
+   * in the shop's zone rather than the machine's (S19).
+   */
+  zone?: string;
 };
 
 async function request<T>(url: URL, init?: RequestInit): Promise<T> {
@@ -306,6 +314,13 @@ export function dayRange(at: Date = new Date()): DayRange {
     prev: new Date(y, m, d - 1, 0, 0, 0, 0).toISOString(),
     next: new Date(y, m, d + 1, 0, 0, 0, 0).toISOString()
   };
+}
+
+/** The shop-local day containing `at`, as determined by the server. */
+export async function fetchDay(at: Date): Promise<DayRange> {
+  const url = new URL('/api/day', BASE);
+  url.searchParams.set('at', at.toISOString());
+  return request<DayRange>(url);
 }
 
 // ── The walking skeleton (kept, not extended) ────────────────────────────────

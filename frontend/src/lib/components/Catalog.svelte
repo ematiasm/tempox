@@ -67,7 +67,7 @@
 
   /** The price label declares the unit, so the number can never be misread. */
   function priceLabel(unit: Unit) {
-    return unit === 'unit' ? lang.t.sales_price_unit : `$/${unit}`;
+    return lang.fmt.priceUnit(unit);
   }
 
   async function create() {
@@ -199,7 +199,7 @@
           <tr>
             <td class="pname">{product.name}</td>
             <td>
-              <span class="unit-chip figures">{product.unit}</span>
+              <span class="unit-chip figures">{lang.fmt.unit(product.unit)}</span>
             </td>
             <td class="num">
               <span class="faces figures">{formatMoney(product.list_price)}</span>
@@ -262,18 +262,18 @@
       <label class="label" for="new-unit">{lang.t.products_unit}</label>
       <!-- One option, deliberately: see the note above the script. -->
       <select class="control" id="new-unit">
-        <option value="unit">unit</option>
+        <option value="unit">{lang.fmt.unit('unit')}</option>
       </select>
     </div>
     <div class="field">
-      <label class="label" for="new-price">{lang.t.sales_price_unit}</label>
+      <label class="label" for="new-price">{lang.fmt.priceUnit('unit')}</label>
       <input
         class="control figures"
         id="new-price"
         bind:value={priceText}
         class:bad={priceBad}
         inputmode="decimal"
-        placeholder="0.00"
+        placeholder={lang.fmt.amountHint()}
       />
     </div>
     <div class="field">

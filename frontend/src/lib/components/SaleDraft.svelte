@@ -129,7 +129,11 @@
         id: `l${nextLineId++}`,
         product,
         qtyText: '1',
-        priceText: product.list_price
+        // The field is read back in the active language, so it is *filled* in
+        // the active language too. Pre-filling the wire form (`25.00`) into an
+        // es-AR field would make the line refuse to parse on arrival, and the
+        // sale would be silently unrecordable (S5).
+        priceText: lang.fmt.amountInput(product.list_price)
       }
     ];
     justRecorded = null;
@@ -145,7 +149,7 @@
   }
 
   function priceHint(product: Product) {
-    return product.unit === 'unit' ? lang.t.sales_price_unit : `$/${product.unit}`;
+    return lang.fmt.priceUnit(product.unit);
   }
 
   async function addCustomer() {
@@ -272,7 +276,7 @@
           <th scope="col" class="num">{lang.t.sales_qty}</th>
           <th scope="col" class="num">{lang.t.sales_price}</th>
           <th scope="col" class="num">{lang.t.sales_line}</th>
-          <th scope="col"><span class="sr">Remove</span></th>
+          <th scope="col"><span class="sr">{lang.t.sales_remove_column}</span></th>
         </tr>
       </thead>
       <tbody>
@@ -283,7 +287,7 @@
           <tr>
             <td class="pname">
               {line.product.name}
-              <span class="unit-note">· {line.product.unit}</span>
+              <span class="unit-note">· {lang.fmt.unit(line.product.unit)}</span>
             </td>
             <td class="num">
               <input
@@ -305,7 +309,7 @@
                   inputmode="decimal"
                   aria-label="{lang.t.sales_price} {priceHint(line.product)} — {line.product.name}"
                 />
-                <span class="per">/{line.product.unit}</span>
+                <span class="per">/{lang.fmt.unit(line.product.unit)}</span>
               </div>
             </td>
             <td class="num figures linetotal">{lt === null ? '—' : formatMoney(lt)}</td>
@@ -340,7 +344,7 @@
         {complete.length === 1 ? lang.t.sales_line_one : lang.t.sales_lines}
         {#if unitCount}· {unitCount} {lang.t.sales_pieces}{/if}
         {#if bonusCount}
-          <br />{lang.t.sales_bonus_note}
+          <br />{lang.t.sales_bonus_note(formatMoney('0.00'))}
         {/if}
       </span>
     </div>

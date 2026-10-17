@@ -5,20 +5,26 @@
    * The composition puts the day on the page itself rather than behind a
    * separate view, so this reads as the book the sheet stands at the head of.
    *
-   * The scope is a local calendar day, and the browser computes its bounds and
-   * sends them explicitly (S8). The server stays timezone-agnostic and "today"
-   * means the shop's today, not UTC's — a sale recorded at 22:00 in Argentina
-   * belongs to that day's page, not to tomorrow's.
+   * The scope is an instant interpreted by the server in the shop's timezone
+   * (S8), so a sale belongs to the shop-local day rather than the browser's.
    */
   import {
     ApiError,
     createCreditNote,
     getCash,
     listSales,
-    dayRange,
+    fetchDay,
+    type DayRange,
     type SaleListItem
   } from '#lib/api.js';
-  import { formatMoney, formatQuantity, parseQuantity, sumAmounts } from '#lib/money.js';
+  import {
+    formatDay,
+    formatMoney,
+    formatQuantity,
+    formatTime,
+    parseQuantity,
+    sumAmounts
+  } from '#lib/money.js';
   import { lang } from '#lib/i18n/index.svelte.js';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import Stamp from './Stamp.svelte';
@@ -32,10 +38,13 @@
 
   const PAGE = 50;
 
-  // `dayStart` is the local midnight the page is scoped to. Paging moves it by
-  // whole local days rather than by an offset into a global list: the ledger is
-  // a book of days, and "older" means yesterday's page, not row 51.
-  let dayStart = $state(new Date());
+  // Keep the instant the page is scoped to; the server resolves its local day.
+  let scopeInstant = $state(new Date());
+  let range = $state<DayRange | null>(null);
+  let todayFrom = $state<string | null>(null);
+  // The shop's own zone, as the server names it. Every time on the page is
+  // rendered in it: the day is the shop's (S8), so its hours must be too (S19).
+  let shopZone = $state<string | undefined>(undefined);
 
   let rows = $state<SaleListItem[]>([]);
   let cash = $state<string | null>(null);
@@ -56,26 +65,18 @@
   let refunding = $state<string | null>(null);
   let refundError = $state<string | null>(null);
 
-  const range = $derived(dayRange(dayStart));
-  /**
-   * Whether the page is showing the shop's current day.
-   *
-   * Computed from calendar fields rather than by calling `setHours` on
-   * `dayStart`: that method mutates the Date in place, so using it inside a
-   * derived would silently rewrite the state the derived is reading, and the
-   * scope controls would drift a day on every re-evaluation.
-   */
-  const isToday = $derived.by(() => {
-    const now = new Date();
-    return (
-      dayStart.getFullYear() === now.getFullYear() &&
-      dayStart.getMonth() === now.getMonth() &&
-      dayStart.getDate() === now.getDate()
-    );
-  });
+  // The server's current-day boundary is the sole authority for this state.
+  const isToday = $derived(range !== null && todayFrom !== null && range.from === todayFrom);
 
+  // The chip and the times carry the active language (S6). They read from the
+  // same formatters the money does, so a language switch cannot leave the dates
+  // behind in the previous one.
+  // The chip names the day the server resolved, not the one the browser thinks it
+  // is. `range.from` is that day's first instant and `shopZone` says which clock
+  // to read it on; using `scopeInstant` here labels the page with the machine's
+  // date, which is a day late on a UTC browser (S19).
   const scopeLabel = $derived(
-    dayStart.toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' })
+    range ? formatDay(new Date(range.from), shopZone) : formatDay(scopeInstant, shopZone)
   );
 
   /** The rows the page actually holds — pagination shows no total count (S10). */
@@ -90,18 +91,23 @@
   $effect(() => {
     // Read the reactive inputs so the effect re-runs when the day or the
     // refresh token changes.
-    const { from, to } = range;
+    const at = scopeInstant;
     void refreshToken;
     let cancelled = false;
 
     loading = true;
     error = null;
-    // The bounds are sent explicitly; an absent bound would mean an unscoped
-    // list, which is not what a day page shows.
-    listSales({ from, to, limit: PAGE, offset: 0 })
-      .then((r) => {
+    // Resolve both scoped and current-day boundaries through the server before
+    // requesting sales; a failed day lookup must never invent a client range.
+    Promise.all([fetchDay(at), fetchDay(new Date())])
+      .then(async ([day, today]) => {
         if (cancelled) return;
-        rows = r;
+        range = day;
+        todayFrom = today.from;
+        shopZone = day.zone;
+        const sales = await listSales({ from: day.from, to: day.to, limit: PAGE, offset: 0 });
+        if (cancelled) return;
+        rows = sales;
         expanded.clear();
       })
       .catch((e: unknown) => {
@@ -126,8 +132,19 @@
     };
   });
 
+  /**
+   * Pages to the adjacent day the *server* named.
+   *
+   * The old version shifted the instant by one local calendar day on the
+   * browser's clock, which is not one shop day: in a zone whose DST change
+   * crosses midnight (Santiago, Havana) a single click could skip a day or land
+   * two back. `range.prev` and `range.next` are already the neighbouring days'
+   * first instants, computed by the same calendar that scoped the page.
+   */
   function shiftDay(delta: number) {
-    dayStart = new Date(dayStart.getFullYear(), dayStart.getMonth(), dayStart.getDate() + delta);
+    if (!range) return;
+    const target = delta < 0 ? range.prev : range.next;
+    scopeInstant = new Date(target);
   }
 
   function toggle(id: string) {
@@ -219,6 +236,7 @@
       refundError = lang.t.sales_refund_invalid;
       return;
     }
+    if (!range) return;
     refunding = row.id;
     refundError = null;
     try {
@@ -249,7 +267,7 @@
     </div>
     <div class="scope">
       <div class="segmented" role="group" aria-label={lang.t.sales_scope}>
-        <button type="button" aria-pressed={isToday} onclick={() => (dayStart = new Date())}>
+        <button type="button" aria-pressed={isToday} onclick={() => (scopeInstant = new Date())}>
           {lang.t.sales_today}
         </button>
         <button type="button" aria-pressed={!isToday} onclick={() => shiftDay(-1)}>
@@ -327,11 +345,7 @@
             {@const annulled = isAnnulled(row) || isFullyRefunded(row)}
             <tr class="doc">
               <td class="figures time">
-                {new Date(row.created_at).toLocaleTimeString('en-US', {
-                  hour: '2-digit',
-                  minute: '2-digit',
-                  hour12: false
-                })}
+                {formatTime(new Date(row.created_at), shopZone)}
               </td>
               <td>
                 <button
@@ -403,7 +417,9 @@
                             </td>
                             <td class="num figures">{formatQuantity(item.quantity, item.unit)}</td>
                             <td class="num figures">
-                              {formatMoney(item.unit_price)}<span class="per">/{item.unit}</span>
+                              {formatMoney(item.unit_price)}<span class="per"
+                                >/{lang.fmt.unit(item.unit)}</span
+                              >
                             </td>
                             <td class="num figures">{formatMoney(item.line_total)}</td>
                             <td class="num return-cell">
@@ -411,7 +427,7 @@
                                 <input
                                   type="text"
                                   inputmode="numeric"
-                                  aria-label="Return {item.product_name}"
+                                  aria-label={lang.t.sales_return_line(item.product_name)}
                                   value={refundText(row.id, item.id, remaining)}
                                   oninput={(event) =>
                                     setRefundText(row.id, item.id, event.currentTarget.value)}
@@ -435,13 +451,7 @@
                         <div class="note-head">
                           <span>{lang.t.sales_credit_note} NC-#{note.id.slice(0, 8)}</span>
                           <span class="note-total figures">−{formatMoney(note.total)}</span>
-                          <time
-                            >{new Date(note.created_at).toLocaleTimeString('en-US', {
-                              hour: '2-digit',
-                              minute: '2-digit',
-                              hour12: false
-                            })}</time
-                          >
+                          <time>{formatTime(new Date(note.created_at), shopZone)}</time>
                         </div>
                         <table>
                           <thead>
@@ -461,7 +471,7 @@
                                 >
                                 <td class="num figures"
                                   >{formatMoney(item.unit_price)}<span class="per"
-                                    >/{item.unit}</span
+                                    >/{lang.fmt.unit(item.unit)}</span
                                   ></td
                                 >
                                 <td class="num figures">{formatMoney(item.line_total)}</td>
@@ -528,7 +538,7 @@
     <div class="fig">
       <span class="label">{lang.t.sales_bonus_lines}</span>
       <span class="value figures">{bonusLines}</span>
-      <span class="note">{lang.t.sales_bonus_lines_note}</span>
+      <span class="note">{lang.t.sales_bonus_lines_note(formatMoney('0.00'))}</span>
     </div>
     <div class="fig">
       <span class="label">{lang.t.sales_refunded}</span>

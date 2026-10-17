@@ -6,6 +6,7 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
 
+mod day;
 mod db;
 mod models;
 mod money;
@@ -14,6 +15,10 @@ mod routes;
 #[derive(Clone)]
 pub struct AppState {
     pub db: sqlx::PgPool,
+    /// The shop's timezone. A shop day is a local calendar fact, and the
+    /// machine's own timezone is not a reliable statement about where the shop
+    /// is — a rebuilt PC defaults to UTC. Configured once, read by `/api/day`.
+    pub shop_timezone: chrono_tz::Tz,
 }
 
 #[tokio::main]
@@ -39,7 +44,17 @@ async fn main() -> anyhow::Result<()> {
 
     sqlx::migrate!("./migrations").run(&db).await?;
 
-    let state = AppState { db };
+    // Where the shop is, for the calendar. A named zone rather than a fixed
+    // offset, so a future DST rule travels with the tz database instead of with
+    // this code. An unparseable zone fails the boot: silently falling back to
+    // UTC would file every late-evening sale under the wrong day, which is the
+    // defect `/api/day` exists to prevent.
+    let shop_timezone: chrono_tz::Tz = std::env::var("SHOP_TIMEZONE")
+        .unwrap_or_else(|_| "America/Argentina/Buenos_Aires".into())
+        .parse()
+        .map_err(|e| anyhow::anyhow!("SHOP_TIMEZONE is not an IANA timezone name: {e}"))?;
+
+    let state = AppState { db, shop_timezone };
 
     let cors = CorsLayer::new()
         .allow_origin(Any)

@@ -94,7 +94,7 @@ docs/        Documentation (en)
 - **Sales slice (v1)**: multi-item sales with stock and cash derived from an append-only movement ledger — API surface in [`docs/en/architecture.md`](./docs/en/architecture.md)
 - **Sales reversal (v1.5)**: a mistaken sale is annulled by a credit note, in whole or in part — a second document that returns stock and money while the sale stays exactly as recorded. `POST /api/sales/{id}/credit-notes`, and `/api/cash` is net of the refunds
 - SvelteKit pages `/sales` (the ledger and the draft sheet) and `/products` (the catalog); `/` redirects to `/sales`, and `/notes` stays reachable by URL
-- FR/EN i18n via a runes-backed store
+- **es-AR / en** i18n via a runes-backed store: one `Dict` type, two complete dictionaries, and a per-language formatter bundle (money, quantities, dates). The shop's language is the default and the choice is not persisted; a reload always returns to es-AR
 
 ## Docs
 
