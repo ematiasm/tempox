@@ -3,7 +3,7 @@
 Full document: `odd/tasks/v1.5-credit-note.md` (specs authority, verbatim user log).
 Engram topic key: `tempox/odd/v1.5-credit-note/tasks`.
 
-**State: closed.** T1–T8 done with their work-unit commits; T9 closed with the native review as an **accepted risk** the owner chose explicitly (document L20). Branch `feat/v1.5-credit-note`, 8 commits on `23a2b67`. Nothing pushed: push and PR creation remain the owner's decision.
+**State: closed.** T1–T8 done with their work-unit commits; T9 closed with the native review as an **accepted risk** the owner chose explicitly (document L20). Branch `feat/v1.5-credit-note`, 8 commits on `23a2b67`. **Delivered as PR #42 (`feat/v1.5-credit-note-backend`) and PR #43 (`feat/v1.5-credit-note-ui`), both merged 2026-10-17 → `03abbd9`**, with CI green on all four checks; the branches are deleted and `main` is level with `origin/main`. The pre-repair commits named throughout the log (`97a8f49`, `f6d850e`, `91f996b`, `523015b`, `5514c2e`, `49a259e`, `2ecc646`) were rebuilt before delivery: the code that shipped is `f135f7d` (backend) and `42d34d0` (UI), byte-identical to what was verified.
 
 ## Specs (one line each — the document is authoritative)
 
