@@ -25,6 +25,10 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-skilluv}:${POSTGRES_PASSWORD:-skilluv}@postgres:5432/${POSTGRES_DB:-skilluv}
       BACKEND_PORT: 3001
       RUST_LOG: ${RUST_LOG:-info}
+      # The shop's calendar zone. `/api/day` answers from this, never from the
+      # browser's clock: a rebuilt PC defaults to UTC, and the shop's day must
+      # not move because of it.
+      SHOP_TIMEZONE: ${SHOP_TIMEZONE:-America/Argentina/Buenos_Aires}
     ports:
       - "3001:3001"
     depends_on:

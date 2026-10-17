@@ -2108,3 +2108,165 @@ async fn v1_5_repeated_line_is_decided_on_the_exact_boundary() {
     );
     assert_eq!(cash_before, cash(&base).await, "and cash is unmoved");
 }
+
+// ── v1.5 es-AR locale: the shop's day (S7, S9) ──────────────────────────────
+//
+// The day boundary is the one piece of the locale the server owns, because the
+// browser's timezone is whatever the machine happens to be configured with.
+// These tests pin the wire contract the ledger depends on: four ISO instants, a
+// half-open window, and a refusal rather than a guess for a malformed instant.
+
+/// Reads `GET /api/day` for one instant and returns the parsed body.
+async fn shop_day(base: &str, at: &str) -> serde_json::Value {
+    let resp = reqwest::Client::new()
+        .get(format!("{base}/api/day"))
+        .query(&[("at", at)])
+        .send()
+        .await
+        .expect("get day");
+    assert_eq!(resp.status(), 200, "the day endpoint answers for {at}");
+    resp.json().await.expect("day json")
+}
+
+#[tokio::test]
+#[ignore]
+async fn v1_5_the_shop_day_is_half_open_and_adjacent_days_meet_at_midnight() {
+    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
+
+    let body = shop_day(&base, "2026-10-16T04:00:00Z").await;
+
+    // Five keys, and nothing invented: the shape is the contract.
+    let keys: Vec<&str> = body
+        .as_object()
+        .expect("an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        keys.len(),
+        5,
+        "exactly from/to/prev/next/zone, got {keys:?}"
+    );
+    // The zone travels with the window: the client renders every document's
+    // time in it, and a browser cannot know which zone the shop keeps (S19).
+    assert_eq!(
+        body["zone"], "America/Argentina/Buenos_Aires",
+        "the answering zone is named, not implied"
+    );
+    assert_eq!(
+        shop_day(&base, "2026-10-16T04:00:00Z").await["zone"],
+        body["zone"],
+        "the same shop answers with the same zone for any instant"
+    );
+    for key in ["from", "to", "prev", "next"] {
+        let value = body[key]
+            .as_str()
+            .unwrap_or_else(|| panic!("{key} is a string"));
+        assert!(
+            value.ends_with('Z') || value.contains('+'),
+            "{key} is an ISO 8601 instant with an offset, got {value:?}"
+        );
+        assert!(
+            chrono::DateTime::parse_from_rfc3339(value).is_ok(),
+            "{key} must parse as an instant: {value:?}"
+        );
+    }
+
+    let from = body["from"].as_str().unwrap();
+    let to = body["to"].as_str().unwrap();
+    assert_ne!(from, to, "a day has length");
+    assert_eq!(
+        body["next"], body["to"],
+        "next day's start is this day's exclusive end"
+    );
+
+    // The instant asked about falls inside the answer...
+    let asked: chrono::DateTime<chrono::Utc> = "2026-10-16T04:00:00Z".parse().unwrap();
+    let from_at: chrono::DateTime<chrono::Utc> = from.parse().unwrap();
+    let to_at: chrono::DateTime<chrono::Utc> = to.parse().unwrap();
+    assert!(
+        from_at <= asked && asked < to_at,
+        "the answer contains {asked}"
+    );
+
+    // ...and the next day's window starts exactly where this one ends, so a sale
+    // at midnight is counted once and not twice.
+    let next = shop_day(&base, body["to"].as_str().unwrap()).await;
+    assert_eq!(
+        next["from"], body["to"],
+        "adjacent days partition the ledger"
+    );
+
+    // Paging one day back lands on this day's start: the ledger walks local days.
+    let prev = shop_day(&base, body["prev"].as_str().unwrap()).await;
+    assert_eq!(prev["to"], body["from"], "prev's end is this day's start");
+}
+
+#[tokio::test]
+#[ignore]
+async fn v1_5_the_shop_day_puts_a_late_evening_sale_inside_its_own_day() {
+    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
+
+    // 22:30 on 16 Oct in Buenos Aires is already 01:30 on 17 Oct in UTC. A UTC
+    // day would file it under the wrong date, which is the defect this closes.
+    let body = shop_day(&base, "2026-10-17T01:30:00Z").await;
+    let from: chrono::DateTime<chrono::Utc> = body["from"].as_str().unwrap().parse().unwrap();
+    let to: chrono::DateTime<chrono::Utc> = body["to"].as_str().unwrap().parse().unwrap();
+    let asked: chrono::DateTime<chrono::Utc> = "2026-10-17T01:30:00Z".parse().unwrap();
+    assert!(
+        from <= asked && asked < to,
+        "the shop day must contain its own 22:30"
+    );
+
+    // The default zone is Argentina, whose offset is UTC-3 with no DST, so a
+    // local midnight is 03:00Z. The instant is UTC (that is the wire format);
+    // what makes it "midnight" is the zone the response names, and the two are
+    // checked together so neither can drift alone.
+    assert_eq!(
+        body["zone"], "America/Argentina/Buenos_Aires",
+        "the window is Buenos Aires', and it says so"
+    );
+    assert_eq!(
+        from.format("%H:%M").to_string(),
+        "03:00",
+        "local midnight in UTC-3 is 03:00Z, the instant the day starts at ({from})"
+    );
+    assert_eq!((to - from).num_hours(), 24, "an Argentine day is 24 hours");
+}
+
+#[tokio::test]
+#[ignore]
+async fn v1_5_a_malformed_day_is_a_refusal_not_a_guess() {
+    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
+    let client = reqwest::Client::new();
+
+    for raw in ["not-a-date", "2026-13-01T00:00:00Z", "16/10/2026", " "] {
+        let resp = client
+            .get(format!("{base}/api/day"))
+            .query(&[("at", raw)])
+            .send()
+            .await
+            .expect("get day");
+        assert_eq!(
+            resp.status(),
+            400,
+            "{raw:?} is not an instant; guessing one would file sales under a day the shop never chose"
+        );
+    }
+
+    // No `at` at all is not an error: the server answers for its own now.
+    let resp = client
+        .get(format!("{base}/api/day"))
+        .send()
+        .await
+        .expect("get day without at");
+    assert_eq!(resp.status(), 200, "an absent at means now");
+    let body: serde_json::Value = resp.json().await.expect("day json");
+    let from: chrono::DateTime<chrono::Utc> = body["from"].as_str().unwrap().parse().unwrap();
+    let to: chrono::DateTime<chrono::Utc> = body["to"].as_str().unwrap().parse().unwrap();
+    let now = chrono::Utc::now();
+    assert!(
+        from <= now && now < to,
+        "the answer to 'what day is it' must contain the moment it was asked"
+    );
+}
