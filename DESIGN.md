@@ -158,6 +158,19 @@ through, never crimson. An annulment is a correction, not an alarm; colouring it
 crimson would make a cancelled sale look like the worst thing on the page and
 would spend the accent that belongs to the confirmed stamp.
 
+The rule reaches the control that causes one. **Annul sale** is an ink control
+like every other: crimson is what the *hover* answers with, exactly as the draft
+sheet's remove control behaves. A filled crimson button would be a third role
+for the system's one accent — a commitment role spent on a correction.
+
+**The Reversal Is a Second Document Rule.** An annulled sale is not a state the
+sale carries. Reversing one emits a credit note: a document of its own, listed
+under the sale it corrects, with its own total and lines. The sale keeps its
+`confirmed` stamp; it wears `Anulado` only when every line has come back, and
+that is derived from its notes rather than written onto it. A partial refund
+therefore reads as what it is — a sale that still stands, with something
+returned.
+
 ## Typography
 
 **Display Font:** Fira Sans Condensed (with `ui-sans-serif, system-ui, sans-serif`)
