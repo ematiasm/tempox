@@ -1863,6 +1863,14 @@ async fn v1_5_credit_note_history_guards_are_enforced() {
 // S15 (preserve): the sale path, the list shape and the cash figure keep
 // behaving as they did. `/api/cash` is the one whose definition changed, so the
 // test states the new contract explicitly and proves nothing else moved with it.
+//
+// This test creates the credit note it needs instead of assuming one exists. The
+// first version asserted `!refunded.is_zero()` against whatever the database
+// happened to hold, so it passed on a development database carrying test residue
+// and failed on CI's clean one (measured: `this assertion is only meaningful once
+// a credit note exists`, on a database where no note had ever been written). A
+// test that needs the artifact it is measuring has to make that artifact, or it
+// is asserting on the state of someone else's machine.
 #[tokio::test]
 #[ignore]
 async fn v1_5_cash_still_counts_every_confirmed_sale_and_nothing_else() {
@@ -1870,6 +1878,28 @@ async fn v1_5_cash_still_counts_every_confirmed_sale_and_nothing_else() {
     let url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
     let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+
+    // A sale of our own, then a partial refund of it: the note this test measures
+    // against exists because the test made it, on a clean database or a dirty one.
+    let f = reversal_fixture(&base, &pool, "w5-preserve").await;
+    let partial = post_refund(
+        &base,
+        f.sale_id,
+        serde_json::json!([{ "sale_item_id": f.lines[0].0, "quantity": 50 }]),
+    )
+    .await;
+    assert_eq!(partial.status(), 201, "the fixture's own refund must land");
+    let note: serde_json::Value = partial.json().await.expect("note json");
+    let note_total = rust_decimal::Decimal::from_str_exact(
+        note["total"]
+            .as_str()
+            .expect("note total is a decimal string"),
+    )
+    .expect("decimal");
+    assert!(
+        note_total > rust_decimal::Decimal::ZERO,
+        "the fixture refunds a priced line"
+    );
 
     // The endpoint and the two sums it is defined as, read independently.
     let confirmed: rust_decimal::Decimal = sqlx::query_scalar(
@@ -1885,7 +1915,7 @@ async fn v1_5_cash_still_counts_every_confirmed_sale_and_nothing_else() {
             .expect("refunded sum");
     assert!(
         !refunded.is_zero(),
-        "this assertion is only meaningful once a credit note exists"
+        "the fixture's own refund must appear in the refunded sum"
     );
     assert_eq!(
         cash(&base).await,
@@ -1893,11 +1923,11 @@ async fn v1_5_cash_still_counts_every_confirmed_sale_and_nothing_else() {
         "cash on hand is confirmed sales net of every credit note"
     );
 
-    // And the sale path itself: recording a sale still moves cash up by its own
-    // total, exactly as it did before credit notes existed.
+    // And the sale path itself still only moves cash up: a second sale raises it
+    // by exactly its own total.
     let cash_before = cash(&base).await;
-    let f = reversal_fixture(&base, &pool, "w5-preserve").await;
-    let sale = find_sale(&base, f.sale_id).await;
+    let g = reversal_fixture(&base, &pool, "w5-preserve-2").await;
+    let sale = find_sale(&base, g.sale_id).await;
     let total = rust_decimal::Decimal::from_str_exact(
         sale["total"]
             .as_str()
