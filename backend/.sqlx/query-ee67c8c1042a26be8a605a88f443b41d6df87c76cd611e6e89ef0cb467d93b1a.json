@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO stock_movements (product_id, quantity, reason, sale_id, credit_note_id)\n             VALUES ($1, $2, 'credit_note', $3, $4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ee67c8c1042a26be8a605a88f443b41d6df87c76cd611e6e89ef0cb467d93b1a"
+}
