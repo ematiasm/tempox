@@ -10,6 +10,7 @@
    */
   import { listProducts, type Product } from '#lib/api.js';
   import { formatMoney } from '#lib/money.js';
+  import { lang } from '#lib/i18n/index.svelte.js';
 
   interface Props {
     onpick: (product: Product) => void;
@@ -92,24 +93,24 @@
     bind:value={query}
     oninput={() => (open = true)}
     {onkeydown}
-    placeholder="Search by name…"
+    placeholder={lang.t.picker_placeholder}
     role="combobox"
     aria-expanded={open}
     aria-controls="product-matches"
     aria-autocomplete="list"
-    aria-label="Product"
+    aria-label={lang.t.picker_label}
     autocomplete="off"
   />
 
   {#if open}
-    <ul class="matches" id="product-matches" role="listbox" aria-label="Product matches">
+    <ul class="matches" id="product-matches" role="listbox" aria-label={lang.t.picker_matches}>
       {#if error}
-        <li class="empty">Search failed — {error}</li>
+        <li class="empty">{lang.t.picker_search_failed}{error}</li>
       {:else if loading && matches.length === 0}
-        <li class="empty">Searching…</li>
+        <li class="empty">{lang.t.picker_searching}</li>
       {:else if matches.length === 0}
         <li class="empty">
-          {query.trim() ? 'No product matches that name' : 'No products yet — create the first one'}
+          {query.trim() ? lang.t.picker_no_match : lang.t.picker_empty}
         </li>
       {:else}
         {#each matches as product, i (product.id)}
@@ -125,7 +126,8 @@
             <button type="button" onmousedown={() => pick(product)} tabindex="-1">
               <span class="name">{product.name}</span>
               <span class="figures meta">
-                {formatMoney(product.list_price)}/{product.unit} · {product.stock} in stock
+                {formatMoney(product.list_price)}/{lang.fmt.unit(product.unit)} ·
+                {lang.t.picker_in_stock(lang.fmt.quantity(product.stock))}
               </span>
             </button>
           </li>
