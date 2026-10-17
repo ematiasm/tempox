@@ -3,9 +3,11 @@
 Full document: `odd/tasks/v1.5-es-ar-locale.md` (specs authority, verbatim user log).
 Engram topic key: `tempox/odd/v1.5-es-ar-locale/tasks`.
 
-**State: closed.** T1–T7 done, S1–S19 satisfied, every check green.
-Branch `feat/v1.5-es-ar-locale` off `main` (`03abbd9`). Nothing pushed: push, PR
-creation and merge are the owner's decisions.
+**State: merged.** T1–T7 done, S1–S19 satisfied, every check green.
+Branch `feat/v1.5-es-ar-locale` off `main` (`03abbd9`), merged 2026-10-17 as
+[PR #44](https://github.com/ematiasm/tempox/pull/44) → `70a5e20`. CI 4/4 green on
+the PR and on `main` after the merge; branches deleted, `main` level with
+`origin/main`.
 
 Scope: the es-AR locale half of v1.5 — UI language, ARS money and number
 formatting in both directions, dates, a server-owned day boundary with a real
