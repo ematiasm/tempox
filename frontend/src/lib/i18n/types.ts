@@ -1,13 +1,24 @@
-export type Lang = 'en' | 'fr';
+/**
+ * The languages the interface speaks.
+ *
+ * Two, and only two (S2): the shop's own language and the language the specs and
+ * the code are written in. `fr` was the placeholder that proved the i18n slot
+ * worked; it was never a product requirement, and a third hand-maintained
+ * dictionary is a cost with no reader.
+ */
+export type Lang = 'es-AR' | 'en';
 
 export interface Dict {
   notes_title: string;
   notes_placeholder: string;
   notes_add: string;
   notes_empty: string;
-  lang_switch: string;
   nav_sales: string;
   nav_products: string;
+  /** Assistive-technology label for the rail (`Main`). */
+  nav_main: string;
+  /** Assistive-technology label for the language toggle. */
+  lang_toggle: string;
   sales_title: string;
   sales_tagline: string;
   sales_action: string;
@@ -34,7 +45,8 @@ export interface Dict {
   sales_line_one: string;
   sales_lines: string;
   sales_pieces: string;
-  sales_bonus_note: string;
+  /** Receives the already-formatted amount, so the locale owns the figure (S12). */
+  sales_bonus_note: (amount: string) => string;
   sales_clear: string;
   sales_invalid: string;
   sales_error_title: string;
@@ -69,7 +81,8 @@ export interface Dict {
   sales_shown_sales: string;
   sales_shown_note: string;
   sales_bonus_lines: string;
-  sales_bonus_lines_note: string;
+  /** Receives the already-formatted amount, so the locale owns the figure (S12). */
+  sales_bonus_lines_note: (amount: string) => string;
   sales_refund_action: string;
   sales_refund_confirm: string;
   sales_refund_yes: string;
@@ -105,4 +118,17 @@ export interface Dict {
   products_creating: string;
   products_created: (name: string) => string;
   products_create_error: string;
+  /** The product picker: field label, listbox label, and its four states. */
+  picker_placeholder: string;
+  picker_label: string;
+  picker_matches: string;
+  picker_searching: string;
+  picker_search_failed: string;
+  picker_no_match: string;
+  picker_empty: string;
+  picker_in_stock: (stock: string) => string;
+  /** The draft's sr-only remove-column header. */
+  sales_remove_column: string;
+  /** The refund field's accessible name, which names the line it corrects. */
+  sales_return_line: (name: string) => string;
 }

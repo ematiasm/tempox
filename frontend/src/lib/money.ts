@@ -1,46 +1,48 @@
+/**
+ * Money, quantities and dates, at the call site components already use.
+ *
+ * The implementations live in `locale.ts`, one per language, because formatting
+ * is a property of the language on screen and not of the app. These exports are
+ * the active locale's functions, so a component never has to thread a language
+ * through a computation to get the right `$ 1.234,56`.
+ *
+ * What stays here and not in `locale.ts` is the arithmetic: a line total and a
+ * sum are exact decimal operations on the wire format, and they are the same
+ * operation in every language. Formatting happens once, at the edge, on the
+ * string that arithmetic produced.
+ */
+import { lang } from './i18n/index.svelte.js';
+import type { Amount } from './locale';
 import type { Unit } from './api';
 
-const WHOLE_AMOUNT = new Intl.NumberFormat('en-US');
+export type { Amount };
 
-const COUNT = new Intl.NumberFormat('en-US');
-
-/** A decimal string with exactly two decimals, as the API sends and accepts. */
-export type Amount = string;
-
-/** Formats an exact decimal amount as en-US currency without converting it to a number. */
+/** Formats an exact decimal amount as currency, in the active language. */
 export function formatMoney(amount: Amount): string {
-  const negative = amount.startsWith('-');
-  const unsigned = negative ? amount.slice(1) : amount;
-  const [whole, fraction] = unsigned.split('.');
-  const formattedWhole = WHOLE_AMOUNT.format(BigInt(whole));
-  return `${negative ? '-$' : '$'}${formattedWhole}.${fraction}`;
+  return lang.fmt.money(amount);
 }
 
-/** Validates and normalizes cashier-entered text to the API's two-decimal amount string. */
+/** Validates and normalizes cashier-entered text to the API's amount string. */
 export function parseAmount(text: string): Amount | null {
-  const normalized = text.trim().replace(/^\$/, '');
-  const match = /^(\d+|\d{1,3}(?:,\d{3})+)(?:\.(\d{1,2}))?$/.exec(normalized);
-  if (!match) return null;
-
-  const whole = match[1].replace(/,/g, '').replace(/^0+(?=\d)/, '');
-  const fraction = (match[2] ?? '').padEnd(2, '0');
-  return `${whole}.${fraction}`;
+  return lang.fmt.parseAmount(text);
 }
 
 /** A whole, positive count of base units — or `null`. */
 export function parseQuantity(text: string): number | null {
   const normalized = text.trim();
   // No decimal point: a gram product's quantity is 1 or 2 grams, never 1.5.
+  // Every language writes a quantity as digits, so this does not depend on the
+  // active locale -- and it must not: a stray thousands separator here would be
+  // a quantity nobody typed.
   if (!/^\d+$/.test(normalized)) return null;
   const value = Number(normalized);
   if (!Number.isSafeInteger(value) || value < 1) return null;
   return value;
 }
 
-/** A quantity with the backend's unit, rendered verbatim. */
+/** A quantity with the backend's unit, rendered in the active language. */
 export function formatQuantity(quantity: number, unit: Unit): string {
-  const count = COUNT.format(quantity);
-  return unit === 'unit' ? count : `${count} ${unit}`;
+  return lang.fmt.quantityWithUnit(quantity, unit);
 }
 
 /** Computes an exact draft-sale line total; this preview is not the recorded total. */
@@ -78,4 +80,26 @@ export function sumAmounts(amounts: readonly Amount[]): Amount | null {
   const negative = cents < 0n;
   const digits = (negative ? -cents : cents).toString().padStart(3, '0');
   return `${negative ? '-' : ''}${digits.slice(0, -2)}.${digits.slice(-2)}`;
+}
+
+/**
+ * A calendar day for the ledger's scope chip, in the active language.
+ *
+ * `zone` is the shop's IANA timezone. Pass it whenever it is known: the chip
+ * names the shop's day, and a browser on UTC would otherwise label it a day late
+ * (S19).
+ */
+export function formatDay(date: Date, zone?: string): string {
+  return lang.fmt.day(date, zone);
+}
+
+/**
+ * A wall-clock time for a document's stamp, in the active language.
+ *
+ * `zone` is the shop's IANA timezone, as `GET /api/day` reported it. Pass it:
+ * the ledger's day is the shop's day, so its hours must be the shop's hours
+ * (S19).
+ */
+export function formatTime(date: Date, zone?: string): string {
+  return lang.fmt.time(date, zone);
 }

@@ -1,5 +1,5 @@
-// The lang_switch value shows the label of the OTHER language (so when EN is
-// active the button offers to switch to FR).
+// The English side. The toggle offers the other language's label, so there is no
+// `lang_switch` key: both names live in one place (`i18n/index.svelte.ts`).
 import type { Dict } from './types';
 
 const en: Dict = {
@@ -7,9 +7,10 @@ const en: Dict = {
   notes_placeholder: 'Write a note…',
   notes_add: 'Add',
   notes_empty: 'No notes yet.',
-  lang_switch: 'FR',
   nav_sales: 'Sales',
   nav_products: 'Products',
+  nav_main: 'Main',
+  lang_toggle: 'Switch language',
   sales_title: 'Record a sale',
   sales_tagline: 'Stock and cash update together, from the one entry',
   sales_action: 'Record sale',
@@ -24,7 +25,7 @@ const en: Dict = {
     "Search runs server-side on name; the sale form's type-ahead uses the same query",
   sales_product: 'Product',
   sales_customer: 'Customer',
-  sales_walkin: 'Walk-in — Consumidor Final',
+  sales_walkin: 'Walk-in',
   sales_new_customer: 'New customer',
   sales_new_customer_placeholder: 'Name of the new customer…',
   sales_customer_existing: (name: string) =>
@@ -38,7 +39,7 @@ const en: Dict = {
   sales_line_one: 'line',
   sales_lines: 'lines',
   sales_pieces: 'base units',
-  sales_bonus_note: 'includes a bonus line at $0.00',
+  sales_bonus_note: (amount) => `includes a bonus line at ${amount}`,
   sales_clear: 'Clear',
   sales_invalid: 'A field does not hold a valid number — fix it before recording.',
   sales_error_title: 'Not recorded: ',
@@ -64,7 +65,7 @@ const en: Dict = {
   sales_items: 'Lines',
   sales_status: 'Status',
   sales_total: 'Total',
-  sales_annulled: 'Anulado',
+  sales_annulled: 'Annulled',
   sales_lines_of: 'Lines of',
   sales_unit_price: 'Unit price',
   sales_bonus: 'regalo',
@@ -73,7 +74,7 @@ const en: Dict = {
   sales_shown_sales: 'On this page',
   sales_shown_note: 'The documents shown above',
   sales_bonus_lines: 'Bonus lines',
-  sales_bonus_lines_note: 'Recorded at $0.00; the stock still moved',
+  sales_bonus_lines_note: (amount) => `Recorded at ${amount}; the stock still moved`,
   sales_refund_action: 'Annul sale…',
   sales_refund_confirm: 'The listed units go back to stock, and cash drops by what comes back.',
   sales_refund_yes: 'Yes, annul',
@@ -109,7 +110,17 @@ const en: Dict = {
   products_create: 'Create product',
   products_creating: 'Creating…',
   products_created: (name: string) => `Created “${name}”.`,
-  products_create_error: 'Not created: '
+  products_create_error: 'Not created: ',
+  picker_placeholder: 'Search by name…',
+  picker_label: 'Product',
+  picker_matches: 'Product matches',
+  picker_searching: 'Searching…',
+  picker_search_failed: 'Search failed — ',
+  picker_no_match: 'No product matches that name',
+  picker_empty: 'No products yet — create the first one',
+  picker_in_stock: (stock) => `${stock} in stock`,
+  sales_remove_column: 'Remove',
+  sales_return_line: (name) => `Return ${name}`
 };
 
 export default en;

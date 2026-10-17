@@ -6,6 +6,14 @@
 
   let { children } = $props();
 
+  // The document's language follows the interface's (S14). Without it a screen
+  // reader keeps announcing Spanish text with an English voice, and the browser
+  // keeps offering to translate a page that is already in the shop's language.
+  // `app.html` pins the pre-hydration value; this keeps it true afterwards.
+  $effect(() => {
+    document.documentElement.lang = lang.current;
+  });
+
   // The rail carries Sales and Products only. `/notes` stays reachable by URL
   // as the walking-skeleton proof, but it is not a destination: the shop does
   // not sell notes, and a nav that lists everything it can reach is a map of
@@ -22,7 +30,7 @@
 </script>
 
 <div class="app">
-  <nav class="rail" aria-label="Main">
+  <nav class="rail" aria-label={lang.t.nav_main}>
     <a class="brand" href={resolve('/sales')}>Tempox</a>
     <ul class="tabs">
       {#each tabs as tab (tab.href)}
@@ -39,10 +47,10 @@
       {/each}
     </ul>
     <div class="rail-foot">
-      <button class="lang" onclick={() => lang.toggle()} aria-label="Switch language">
-        {lang.t.lang_switch}
+      <button class="lang" onclick={() => lang.toggle()} aria-label={lang.t.lang_toggle}>
+        {lang.other}
       </button>
-      <span class="version">v1a</span>
+      <span class="version">v1.5</span>
     </div>
   </nav>
 
