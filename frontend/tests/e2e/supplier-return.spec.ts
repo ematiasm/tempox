@@ -98,7 +98,14 @@ test('a return takes stock out and brings money back, and the purchase stands', 
   );
 });
 
-test('a return beyond what is left is refused and writes nothing (S8, S9)', async ({ page }) => {
+test('more than a line has left is refused on the screen, and no request leaves (S6)', async ({
+  page
+}) => {
+  // What this proves, precisely: the form refuses a plan the server would answer
+  // 409 to, and sends NOTHING. It does not prove that a rejected return writes
+  // nothing server-side (S9) -- no request reaches the server here, so there is
+  // nothing for the server to reject. S9 is pinned where it belongs, by the
+  // backend's own integration tests.
   const name = `e2e-overreturn-${Date.now().toString(36)}`;
 
   await page.goto('/products');
@@ -131,9 +138,16 @@ test('a return beyond what is left is refused and writes nothing (S8, S9)', asyn
 
   await expect(doc.getByRole('alert')).toContainText('no es válida');
 
+  // The stock cell, not the row. A row-level `toContainText('3')` also matches
+  // the product NAME, which is generated from a base36 timestamp and therefore
+  // contains a digit like '3' some of the time -- measured at 6.3% of runs. Such
+  // an assertion passes because the name happens to hold the digit, not because
+  // the stock is right, and it would keep passing if the stock were 0.
   await page.goto('/products');
   await page.locator('#catalog-search').fill(name);
-  await expect(page.locator('table.catalog tbody tr', { hasText: name })).toContainText('3');
+  const catalogRow = page.locator('table.catalog tbody tr', { hasText: name });
+  await expect(catalogRow).toBeVisible();
+  await expect(catalogRow.locator('.stock')).toHaveText('3');
 });
 
 test('a return of one line leaves the other line alone, which is the normal case (S6)', async ({
