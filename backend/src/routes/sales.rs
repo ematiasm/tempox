@@ -596,8 +596,18 @@ async fn cash_total(State(state): State<AppState>) -> Result<Json<Cash>, StatusC
     // that matters. Both sums are `numeric` and both are COALESCEd, so an empty
     // ledger and a ledger with no notes behave identically.
     let total = sqlx::query_scalar!(
+        // Money in the till: sales, minus what was refunded, minus what was
+        // spent buying stock. The shape of the answer did not change when
+        // purchases arrived (still one decimal string), but its meaning did, so
+        // the comment says what the figure is rather than what it used to be.
+        //
+        // `sales` filters `status = 'confirmed'` and `purchases` filters nothing.
+        // That asymmetry is the design, not an oversight: a sale carries a
+        // reserved lifecycle whose `cancel` must not count, while a purchase has
+        // no status at all — if the row exists, it counts.
         "SELECT (COALESCE((SELECT SUM(total) FROM sales WHERE status = 'confirmed'), 0)
-               - COALESCE((SELECT SUM(total) FROM credit_notes), 0))::numeric AS \"total!\""
+               - COALESCE((SELECT SUM(total) FROM credit_notes), 0)
+               - COALESCE((SELECT SUM(total) FROM purchases), 0))::numeric AS \"total!\""
     )
     .fetch_one(&state.db)
     .await

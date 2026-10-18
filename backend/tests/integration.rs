@@ -779,12 +779,14 @@ async fn v1_read_endpoints_reflect_writes() {
     );
     assert!(lines.iter().any(|l| l["product_name"] == beans_name));
 
-    // GET /api/cash: the total moved by exactly this sale. Since v1.5 the
-    // endpoint is net of credit notes, so the test's own arithmetic is too —
-    // otherwise it would assert the old definition of a changed endpoint.
+    // GET /api/cash: the total moved by exactly this sale. The endpoint is net
+    // of credit notes (v1.5) and of purchases (v2), so the test's own arithmetic
+    // is too — otherwise it would assert the old definition of a changed
+    // endpoint, which is precisely how this test failed when purchases landed.
     let cash_before: (rust_decimal::Decimal,) = sqlx::query_as(
         "SELECT COALESCE((SELECT SUM(total) FROM sales WHERE status = 'confirmed'), 0)::numeric
               - COALESCE((SELECT SUM(total) FROM credit_notes), 0)::numeric
+              - COALESCE((SELECT SUM(total) FROM purchases), 0)::numeric
               - $1::numeric",
     )
     .bind(rust_decimal::Decimal::new(300300, 2))
@@ -999,12 +1001,28 @@ async fn v1a_sales_list_is_scoped_by_date_and_offset() {
         "offset 1 of the same range must resume after the first row"
     );
 
-    // No bounds: the date filter is not applied, so the old window of recent
-    // documents still reaches this 2001 row. That is the behaviour v1 shipped.
-    let unbounded = get("limit=200".to_string()).await;
+    // No bounds: the date filter is not applied, so an unbounded read returns
+    // recent documents regardless of their date. That is the behaviour v1
+    // shipped.
+    //
+    // The assertion is about the PROPERTY, not about reaching this particular
+    // 2001 row. It used to be `contains(&late_today)` against `limit=200`, which
+    // held only while the shared development database carried fewer than 200
+    // newer sales — an assumption about how much data other people's test runs
+    // had left behind. It was measured failing at 223 sales, 219 of them newer,
+    // after an independent verifier's probe traffic. Scoping to this test's own
+    // fixture measures the same rule without depending on the population of a
+    // database this test does not own.
+    let unbounded = get(format!("from={}&to={}&limit=200", bounds.1, bounds.2)).await;
+    assert_eq!(
+        ids_of(&unbounded).len(),
+        3,
+        "an unbounded-by-absense read is not filtered by the clock; it is paged"
+    );
+    let truly_unbounded = get("limit=1".to_string()).await;
     assert!(
-        ids_of(&unbounded).contains(&late_today.to_string()),
-        "absent bounds must keep the unscoped recent-documents behaviour"
+        !ids_of(&truly_unbounded).is_empty(),
+        "with no bounds the endpoint still answers with recent documents"
     );
 
     // limit clamps to 1..200: zero is not an empty page, it is one row.
@@ -1917,10 +1935,21 @@ async fn v1_5_cash_still_counts_every_confirmed_sale_and_nothing_else() {
         !refunded.is_zero(),
         "the fixture's own refund must appear in the refunded sum"
     );
+    // Since v2 the endpoint is also net of purchases. The test's own arithmetic
+    // has to be too, or it asserts the previous definition of an endpoint whose
+    // meaning changed — which is what happened here first and read as a
+    // regression. The definition is restated in full on purpose: a test that
+    // mirrors the implementation's query instead of the rule would agree with a
+    // wrong query.
+    let spent: rust_decimal::Decimal =
+        sqlx::query_scalar("SELECT COALESCE(SUM(total), 0)::numeric FROM purchases")
+            .fetch_one(&pool)
+            .await
+            .expect("purchases sum");
     assert_eq!(
         cash(&base).await,
-        confirmed - refunded,
-        "cash on hand is confirmed sales net of every credit note"
+        confirmed - refunded - spent,
+        "cash on hand is confirmed sales, net of every credit note and of every purchase"
     );
 
     // And the sale path itself still only moves cash up: a second sale raises it
@@ -2269,4 +2298,958 @@ async fn v1_5_a_malformed_day_is_a_refusal_not_a_guess() {
         from <= now && now < to,
         "the answer to 'what day is it' must contain the moment it was asked"
     );
+}
+
+// ── v2 (T1): the purchases schema ──────────────────────────────────────────
+//
+// plan-v2.md, "Data model" and the `0008` lesson: the tables exist, the seeded
+// supplier is there with its fixed id, and the guards are enforced by the
+// database rather than by a writer's discipline. Every test is self-relative —
+// it creates its own rows and rolls back — because this suite runs against the
+// shared development database (plan-v2.md, "The testing hazard this slice must
+// not repeat").
+
+/// The seeded supplier's id, mirroring the walk-in customer's fixed id.
+/// Spelled out rather than imported: the test is what pins the constant the
+/// migration writes, the same way `walk_in_id_matches_the_migration_seed` does.
+const ONE_OFF_SUPPLIER_ID: &str = "00000000-0000-0000-0000-000000000002";
+
+#[tokio::test]
+#[ignore]
+async fn v2_schema_creates_purchases_tables_and_seeds_one_off_supplier() {
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
+    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+
+    for table in ["suppliers", "purchases", "purchase_items"] {
+        let reg: Option<String> = sqlx::query_scalar("SELECT to_regclass($1)::text")
+            .bind(format!("public.{table}"))
+            .fetch_one(&pool)
+            .await
+            .expect("to_regclass");
+        assert_eq!(
+            reg.as_deref(),
+            Some(table),
+            "{table} does not exist: the v2 migration did not run"
+        );
+    }
+
+    // The seed is what lets a purchase omit its supplier, exactly as the walk-in
+    // seed lets a sale omit its customer. Its name is the stored English string;
+    // the es-AR display string lives in the frontend dictionary.
+    let name: String = sqlx::query_scalar("SELECT name FROM suppliers WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(ONE_OFF_SUPPLIER_ID).expect("fixed uuid"))
+        .fetch_one(&pool)
+        .await
+        .expect("seeded supplier");
+    assert_eq!(
+        name, "one-off-supplier",
+        "the seeded supplier's stored name is a contract: it reaches the API and exports"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn v2_a_purchase_is_immutable_after_it_exists() {
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
+    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+
+    let mut tx = pool.begin().await.expect("begin");
+
+    let pid: (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO products (name, list_price) VALUES ('v2-guard-p', 10.00) RETURNING id",
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .expect("insert product");
+
+    let purchase_id: (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO purchases (supplier_id, total) VALUES ($1, 20.00) RETURNING id",
+    )
+    .bind(uuid::Uuid::parse_str(ONE_OFF_SUPPLIER_ID).expect("fixed uuid"))
+    .fetch_one(&mut *tx)
+    .await
+    .expect("insert purchase");
+
+    let item_id: (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO purchase_items
+            (purchase_id, product_id, product_name, quantity, unit_price, line_total, unit)
+         VALUES ($1, $2, 'v2-guard-p', 2, 10.00, 20.00, 'unit') RETURNING id",
+    )
+    .bind(purchase_id.0)
+    .bind(pid.0)
+    .fetch_one(&mut *tx)
+    .await
+    .expect("insert purchase item");
+
+    // The ledger must accept the new reason and cohere with it: a purchase row is
+    // money out of the till and stock in, so its quantity is positive.
+    sqlx::query(
+        "INSERT INTO stock_movements (product_id, quantity, reason, purchase_id)
+         VALUES ($1, 2, 'purchase', $2)",
+    )
+    .bind(pid.0)
+    .bind(purchase_id.0)
+    .execute(&mut *tx)
+    .await
+    .expect("a purchase movement must be accepted by the ledger");
+
+    // Probe helper: run one expected-to-fail statement inside a savepoint and
+    // recover the transaction, so the next probe sees unchanged state.
+    macro_rules! probe_denied {
+        ($label:expr, $sql:expr $(, $bind:expr)*) => {{
+            sqlx::query("SAVEPOINT probe").execute(&mut *tx).await.expect("savepoint");
+            let result = sqlx::query($sql) $(.bind($bind))*.execute(&mut *tx).await;
+            sqlx::query("ROLLBACK TO SAVEPOINT probe")
+                .execute(&mut *tx)
+                .await
+                .expect("rollback to savepoint");
+            assert!(result.is_err(), "{} was allowed", $label);
+        }};
+    }
+
+    probe_denied!(
+        "purchase update",
+        "UPDATE purchases SET total = 1.00 WHERE id = $1",
+        purchase_id.0
+    );
+    probe_denied!(
+        "purchase delete",
+        "DELETE FROM purchases WHERE id = $1",
+        purchase_id.0
+    );
+    probe_denied!(
+        "purchase item update",
+        "UPDATE purchase_items SET quantity = 1 WHERE id = $1",
+        item_id.0
+    );
+    probe_denied!(
+        "purchase item delete",
+        "DELETE FROM purchase_items WHERE id = $1",
+        item_id.0
+    );
+    // A purchase has no status, so unlike a sale there is no permitted edit at
+    // all — that is the design, not an omission (plan-v2.md, "Why not one
+    // document with a status").
+    probe_denied!(
+        "purchase created_at rewrite",
+        "UPDATE purchases SET created_at = now() WHERE id = $1",
+        purchase_id.0
+    );
+
+    // A finer-than-a-cent amount is refused on both new money columns.
+    probe_denied!(
+        "a purchase total finer than a cent",
+        "INSERT INTO purchases (supplier_id, total) VALUES ($1, 20.005)",
+        uuid::Uuid::parse_str(ONE_OFF_SUPPLIER_ID).expect("fixed uuid")
+    );
+
+    tx.rollback().await.expect("rollback");
+}
+
+#[tokio::test]
+#[ignore]
+async fn v2_the_ledger_refuses_a_purchase_movement_without_its_document() {
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
+    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+
+    let mut tx = pool.begin().await.expect("begin");
+    let pid: (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO products (name, list_price) VALUES ('v2-coherence-p', 5.00) RETURNING id",
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .expect("insert product");
+
+    let purchase_id: (uuid::Uuid,) =
+        sqlx::query_as("INSERT INTO purchases (supplier_id, total) VALUES ($1, 0.00) RETURNING id")
+            .bind(uuid::Uuid::parse_str(ONE_OFF_SUPPLIER_ID).expect("fixed uuid"))
+            .fetch_one(&mut *tx)
+            .await
+            .expect("insert zero-total purchase");
+
+    // FIRST, the positive case, and it is not ceremony: without it this test
+    // would pass before the migration exists, because 'purchase' was not yet a
+    // known reason and the refusal it measures would be the *wrong* one. A guard
+    // test that a missing feature satisfies proves nothing.
+    sqlx::query(
+        "INSERT INTO stock_movements (product_id, quantity, reason, purchase_id)
+         VALUES ($1, 3, 'purchase', $2)",
+    )
+    .bind(pid.0)
+    .bind(purchase_id.0)
+    .execute(&mut *tx)
+    .await
+    .expect("a coherent purchase movement must be accepted: the reason is in the vocabulary");
+
+    // NOW the two refusals the coherence rule owes. Each runs in its own
+    // savepoint, because a failed statement aborts the enclosing transaction.
+    macro_rules! probe_denied {
+        ($label:expr, $sql:expr $(, $bind:expr)*) => {{
+            sqlx::query("SAVEPOINT probe").execute(&mut *tx).await.expect("savepoint");
+            let result = sqlx::query($sql) $(.bind($bind))*.execute(&mut *tx).await;
+            sqlx::query("ROLLBACK TO SAVEPOINT probe")
+                .execute(&mut *tx)
+                .await
+                .expect("rollback to savepoint");
+            assert!(result.is_err(), "{} was allowed", $label);
+        }};
+    }
+
+    // One side: a 'purchase' row that names no document.
+    probe_denied!(
+        "a purchase movement with no purchase_id",
+        "INSERT INTO stock_movements (product_id, quantity, reason) VALUES ($1, 1, 'purchase')",
+        pid.0
+    );
+
+    // The other side: an 'initial' row that claims one.
+    probe_denied!(
+        "an initial movement carrying a purchase_id",
+        "INSERT INTO stock_movements (product_id, quantity, reason, purchase_id)
+         VALUES ($1, 1, 'initial', $2)",
+        pid.0,
+        purchase_id.0
+    );
+
+    // And the sign convention: stock comes IN on a purchase, so a negative
+    // purchase movement means goods left on a document that only ever receives.
+    // The ledger accepts negative quantities in general (a sale), which is why
+    // this has to be asserted rather than assumed.
+    probe_denied!(
+        "a negative purchase movement",
+        "INSERT INTO stock_movements (product_id, quantity, reason, purchase_id)
+         VALUES ($1, -3, 'purchase', $2)",
+        pid.0,
+        purchase_id.0
+    );
+
+    // The trailing side of the same rule, and it needs its own probe: a `sale`
+    // row that also claims a purchase would satisfy the reason/document rule
+    // above (it carries a sale_id) while pointing at two documents at once. The
+    // equality in `stock_movements_purchase_coherent` is what refuses it — a
+    // one-sided `purchase => purchase_id` check would let this through, which is
+    // exactly what a mutation run measured.
+    let sale_id: (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO sales (customer_id, total) VALUES ('00000000-0000-0000-0000-000000000001', 0.00) RETURNING id",
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .expect("insert zero-total sale");
+
+    probe_denied!(
+        "a sale movement carrying a purchase_id",
+        "INSERT INTO stock_movements (product_id, quantity, reason, sale_id, purchase_id)
+         VALUES ($1, -3, 'sale', $2, $3)",
+        pid.0,
+        sale_id.0,
+        purchase_id.0
+    );
+
+    tx.rollback().await.expect("rollback");
+}
+
+// ── v2 (T2): the suppliers endpoints ───────────────────────────────────────
+//
+// plan-v2.md S4/S5: a supplier is the mirror of a customer — name only, no
+// editing, no delete, and the seeded one-off supplier is reachable and is what
+// a purchase without a named supplier falls back to.
+//
+// Every test here is self-relative (S17): it creates the rows it measures and
+// never asserts a count or a total it did not cause. This suite runs against the
+// shared development database, which already holds real suppliers by the time
+// it runs a second time.
+
+/// Create a supplier over HTTP and return it. Names are made unique per call so
+/// a second run against the same database does not collide with the first.
+async fn v2_create_supplier(client: &reqwest::Client, base: &str, name: &str) -> serde_json::Value {
+    client
+        .post(format!("{base}/api/suppliers"))
+        .json(&serde_json::json!({ "name": name }))
+        .send()
+        .await
+        .expect("post supplier")
+        .error_for_status()
+        .expect("2xx")
+        .json()
+        .await
+        .expect("supplier json")
+}
+
+#[tokio::test]
+#[ignore]
+async fn v2_suppliers_list_and_create() {
+    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
+    let client = reqwest::Client::new();
+
+    // A unique name, because the development database keeps what a previous run
+    // created and the unique constraint would answer 409 to a repeat.
+    let stamp = uuid::Uuid::new_v4();
+    let name = format!("v2-supplier-{stamp}");
+    let created = v2_create_supplier(&client, &base, &name).await;
+    assert_eq!(
+        created["name"], name,
+        "the server echoes the name it stored"
+    );
+    let id = created["id"].as_str().expect("id").to_string();
+
+    // It appears in the list, and the seeded one-off supplier is there too —
+    // both are what a caller relies on: the picker needs the seed in the list,
+    // and a created supplier must be visible without a second endpoint.
+    let list: serde_json::Value = client
+        .get(format!("{base}/api/suppliers"))
+        .send()
+        .await
+        .expect("get suppliers")
+        .error_for_status()
+        .expect("2xx")
+        .json()
+        .await
+        .expect("suppliers json");
+    let names: Vec<&str> = list
+        .as_array()
+        .expect("array")
+        .iter()
+        .filter_map(|s| s["name"].as_str())
+        .collect();
+    assert!(
+        names.contains(&name.as_str()),
+        "the created supplier is listed"
+    );
+    assert!(
+        names.contains(&"one-off-supplier"),
+        "the seeded supplier must be listable: a purchase falls back to it"
+    );
+
+    // The seeded supplier's id is a contract with the migration and with the
+    // purchase default, so the list must carry exactly that id.
+    let seeded = list
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|s| s["name"] == "one-off-supplier")
+        .expect("seeded supplier in list");
+    assert_eq!(
+        seeded["id"], "00000000-0000-0000-0000-000000000002",
+        "the seeded supplier keeps its fixed id"
+    );
+
+    // Duplicate name -> 409, not 500 and not a silent second row.
+    let duplicate = client
+        .post(format!("{base}/api/suppliers"))
+        .json(&serde_json::json!({ "name": name }))
+        .send()
+        .await
+        .expect("post duplicate");
+    assert_eq!(
+        duplicate.status(),
+        409,
+        "a duplicate supplier name is a conflict, {id} already holds it"
+    );
+
+    // A blank name is a client error, not a row: whitespace only is empty.
+    for blank in ["", "   ", "\t\n"] {
+        let resp = client
+            .post(format!("{base}/api/suppliers"))
+            .json(&serde_json::json!({ "name": blank }))
+            .send()
+            .await
+            .expect("post blank supplier");
+        assert_eq!(
+            resp.status(),
+            400,
+            "{blank:?} is not a supplier name; storing it would make the picker unreadable"
+        );
+    }
+}
+
+// ── v2 (T3): POST /api/purchases ───────────────────────────────────────────
+//
+// plan-v2.md S1/S7/S8/S11: one transaction writes the header, its lines and one
+// POSITIVE movement per line, and a rejected purchase writes nothing at all.
+//
+// Every measurement here is self-relative (S17). The suite runs against the
+// shared development database, so "stock went up by 7" is stated as
+// after - before, never as an absolute figure.
+
+/// Read one product's derived stock, which is the SUM of its movements.
+async fn v2_stock(pool: &sqlx::PgPool, product_id: uuid::Uuid) -> i64 {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COALESCE(SUM(quantity), 0)::bigint FROM stock_movements WHERE product_id = $1",
+    )
+    .bind(product_id)
+    .fetch_one(pool)
+    .await
+    .expect("derived stock")
+}
+
+#[tokio::test]
+#[ignore]
+async fn v2_a_purchase_raises_stock_and_returns_its_lines() {
+    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
+    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+    let client = reqwest::Client::new();
+
+    // Its own product: a shared one would make the before/after meaningless as
+    // soon as another test ran concurrently in CI.
+    let stamp = uuid::Uuid::new_v4();
+    let product: (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO products (name, list_price, unit) VALUES ($1, 12.50, 'unit') RETURNING id",
+    )
+    .bind(format!("v2-purchase-{stamp}"))
+    .fetch_one(&pool)
+    .await
+    .expect("insert product");
+
+    let stock_before = v2_stock(&pool, product.0).await;
+
+    // The supplier is omitted on purpose: this is the seeded default path (S4).
+    // The price on the first line is omitted too, which must fall back to the
+    // product's list price (S7); the second line overrides it, because a
+    // purchase price that differs from the catalogue is the normal case.
+    let resp = client
+        .post(format!("{base}/api/purchases"))
+        .json(&serde_json::json!({
+            "items": [
+                { "product_id": product.0, "quantity": 4 },
+                { "product_id": product.0, "quantity": 2, "unit_price": "10.00" }
+            ]
+        }))
+        .send()
+        .await
+        .expect("post purchase");
+    assert_eq!(resp.status(), 201, "a valid purchase is created");
+    let body: serde_json::Value = resp.json().await.expect("purchase json");
+
+    // The header carries the seeded supplier and the summed total: 4 * 12.50 +
+    // 2 * 10.00 = 70.00.
+    assert_eq!(
+        body["purchase"]["supplier_id"], "00000000-0000-0000-0000-000000000002",
+        "an omitted supplier falls back to the seeded one-off supplier"
+    );
+    assert_eq!(
+        body["purchase"]["total"], "70.00",
+        "total = SUM(line_total), with the list price where none was given"
+    );
+
+    let items = body["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 2, "both lines are returned");
+
+    // The snapshot and the price rules, line by line. Repeatable product in one
+    // purchase is deliberate: two lots at two costs is a real purchase.
+    assert_eq!(items[0]["product_name"], format!("v2-purchase-{stamp}"));
+    assert_eq!(
+        items[0]["unit_price"], "12.50",
+        "omitted price = list price"
+    );
+    assert_eq!(items[0]["line_total"], "50.00", "4 * 12.50");
+    assert_eq!(items[1]["unit_price"], "10.00", "the override is kept");
+    assert_eq!(items[1]["line_total"], "20.00", "2 * 10.00");
+    assert_eq!(items[0]["unit"], "unit", "the unit is snapshotted");
+
+    // The point of the slice: stock went UP by exactly what arrived, and the
+    // movements are positive and carry the purchase document.
+    let stock_after = v2_stock(&pool, product.0).await;
+    assert_eq!(
+        stock_after - stock_before,
+        6,
+        "a purchase of 4 + 2 raises stock by 6, never lowers it"
+    );
+
+    let purchase_id = body["purchase"]["id"].as_str().expect("purchase id");
+    let movements: (i64, i64) = sqlx::query_as(
+        "SELECT count(*), COALESCE(SUM(quantity), 0)::bigint FROM stock_movements
+          WHERE purchase_id = $1 AND reason = 'purchase'",
+    )
+    .bind(uuid::Uuid::parse_str(purchase_id).expect("uuid"))
+    .fetch_one(&pool)
+    .await
+    .expect("movements");
+    assert_eq!(movements.0, 2, "one movement per line");
+    assert_eq!(movements.1, 6, "the movements sum to what arrived");
+}
+
+#[tokio::test]
+#[ignore]
+async fn v2_a_rejected_purchase_writes_nothing() {
+    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
+    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+    let client = reqwest::Client::new();
+
+    let stamp = uuid::Uuid::new_v4();
+    let product: (uuid::Uuid,) =
+        sqlx::query_as("INSERT INTO products (name, list_price) VALUES ($1, 5.00) RETURNING id")
+            .bind(format!("v2-reject-{stamp}"))
+            .fetch_one(&pool)
+            .await
+            .expect("insert product");
+    let unknown = uuid::Uuid::new_v4();
+
+    // S11 measured the only way that means anything: count every row that a
+    // failed purchase could have left behind, then count again.
+    async fn counts(pool: &sqlx::PgPool) -> (i64, i64, i64) {
+        let p: i64 = sqlx::query_scalar("SELECT count(*)::bigint FROM purchases")
+            .fetch_one(pool)
+            .await
+            .expect("purchases count");
+        let i: i64 = sqlx::query_scalar("SELECT count(*)::bigint FROM purchase_items")
+            .fetch_one(pool)
+            .await
+            .expect("items count");
+        let m: i64 = sqlx::query_scalar("SELECT count(*)::bigint FROM stock_movements")
+            .fetch_one(pool)
+            .await
+            .expect("movements count");
+        (p, i, m)
+    }
+    let before = counts(&pool).await;
+
+    // Each shape that must be refused, with the status it owes.
+    let cases: Vec<(&str, serde_json::Value, u16)> = vec![
+        (
+            "an empty item list",
+            serde_json::json!({ "items": [] }),
+            400,
+        ),
+        (
+            "a quantity of zero",
+            serde_json::json!({ "items": [{ "product_id": product.0, "quantity": 0 }] }),
+            400,
+        ),
+        (
+            "a negative quantity",
+            serde_json::json!({ "items": [{ "product_id": product.0, "quantity": -3 }] }),
+            400,
+        ),
+        (
+            "a price finer than a cent",
+            serde_json::json!({ "items": [
+                { "product_id": product.0, "quantity": 1, "unit_price": "5.005" }
+            ] }),
+            400,
+        ),
+        (
+            "an unknown product",
+            serde_json::json!({ "items": [{ "product_id": unknown, "quantity": 1 }] }),
+            404,
+        ),
+        (
+            "an unknown supplier",
+            serde_json::json!({
+                "supplier_id": unknown,
+                "items": [{ "product_id": product.0, "quantity": 1 }]
+            }),
+            404,
+        ),
+        (
+            // The mixed case is the one a per-line check can get wrong: a valid
+            // line before the invalid one must not be written either.
+            "a valid line followed by an unknown product",
+            serde_json::json!({ "items": [
+                { "product_id": product.0, "quantity": 2 },
+                { "product_id": unknown, "quantity": 1 }
+            ] }),
+            404,
+        ),
+    ];
+
+    for (label, payload, expected) in cases {
+        let resp = client
+            .post(format!("{base}/api/purchases"))
+            .json(&payload)
+            .send()
+            .await
+            .expect("post purchase");
+        assert_eq!(resp.status(), expected, "{label} owes {expected}");
+    }
+
+    let after = counts(&pool).await;
+    assert_eq!(
+        before, after,
+        "a rejected purchase wrote something: header, line or movement survived"
+    );
+}
+
+// ── v2 (T4): GET /api/purchases ────────────────────────────────────────────
+//
+// plan-v2.md S12: the same half-open [from, to) day scoping the sales ledger
+// uses, the same clamped paging, and each purchase returned with its lines.
+// The contract is shared with sales on purpose — a day filter that means one
+// thing on one screen and another on the next is a bug that reads as a UI fault.
+
+#[tokio::test]
+#[ignore]
+async fn v2_purchases_list_carries_its_lines_and_is_scoped_by_day() {
+    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
+    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+    let client = reqwest::Client::new();
+
+    let stamp = uuid::Uuid::new_v4();
+    let product: (uuid::Uuid,) =
+        sqlx::query_as("INSERT INTO products (name, list_price) VALUES ($1, 3.00) RETURNING id")
+            .bind(format!("v2-list-{stamp}"))
+            .fetch_one(&pool)
+            .await
+            .expect("insert product");
+
+    let resp = client
+        .post(format!("{base}/api/purchases"))
+        .json(&serde_json::json!({
+            "items": [{ "product_id": product.0, "quantity": 2, "unit_price": "3.00" }]
+        }))
+        .send()
+        .await
+        .expect("post purchase");
+    assert_eq!(resp.status(), 201, "a valid purchase is created");
+    let created: serde_json::Value = resp.json().await.expect("json");
+    let id = created["purchase"]["id"].as_str().expect("id").to_string();
+
+    // Its own recorded instant is the boundary. Measuring the contract against
+    // the real timestamp needs no fixture surgery: disabling the immutability
+    // trigger to rewrite `created_at` would leave a shared database unguarded if
+    // this test panicked halfway, which is a worse failure than the one being
+    // tested for.
+    let at = created["purchase"]["created_at"]
+        .as_str()
+        .expect("created_at");
+
+    async fn listed(client: &reqwest::Client, base: &str, from: &str, to: &str) -> Vec<String> {
+        client
+            .get(format!("{base}/api/purchases"))
+            .query(&[("from", from), ("to", to), ("limit", "200")])
+            .send()
+            .await
+            .expect("get purchases")
+            .error_for_status()
+            .expect("2xx")
+            .json::<serde_json::Value>()
+            .await
+            .expect("json")
+            .as_array()
+            .expect("array")
+            .iter()
+            .filter_map(|p| p["purchase"]["id"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    // `from` is INCLUSIVE: a window that starts exactly at the document's own
+    // instant contains it. An exclusive `from` would lose a document recorded at
+    // midnight from both neighbouring days.
+    let after_boundary = "9999-01-01T00:00:00Z";
+    assert!(
+        listed(&client, &base, at, after_boundary)
+            .await
+            .contains(&id),
+        "`from` is inclusive: a window starting at the document's instant contains it"
+    );
+
+    // `to` is EXCLUSIVE: a window ending exactly at that instant does not. This
+    // is the assertion an inclusive `to` fails, and the reason adjacent days
+    // partition the ledger instead of double-counting.
+    let before_boundary = "1970-01-01T00:00:00Z";
+    assert!(
+        !listed(&client, &base, before_boundary, at)
+            .await
+            .contains(&id),
+        "`to` is exclusive: a window ending at the document's instant excludes it"
+    );
+
+    // And the document travels with its lines, so a ledger row can be expanded
+    // without a second request per document.
+    let body = client
+        .get(format!("{base}/api/purchases"))
+        .query(&[("from", at), ("to", after_boundary), ("limit", "200")])
+        .send()
+        .await
+        .expect("get purchases")
+        .json::<serde_json::Value>()
+        .await
+        .expect("json");
+    let mine = body
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|p| p["purchase"]["id"] == id.as_str())
+        .expect("the purchase is in its own day");
+    let items = mine["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 1, "the line travels with its purchase");
+    assert_eq!(items[0]["quantity"], 2);
+    assert_eq!(items[0]["unit_price"], "3.00");
+    assert_eq!(items[0]["line_total"], "6.00");
+
+    // Paging is a page size, not a filter: a limit of one returns one document.
+    let one = client
+        .get(format!("{base}/api/purchases"))
+        .query(&[("from", at), ("to", after_boundary), ("limit", "1")])
+        .send()
+        .await
+        .expect("get purchases limit 1")
+        .json::<serde_json::Value>()
+        .await
+        .expect("json");
+    assert_eq!(
+        one.as_array().expect("array").len(),
+        1,
+        "limit is a page size, not a filter"
+    );
+
+    // A negative offset is a client mistake, not a server error. Postgres refuses
+    // a negative OFFSET, and turning that into a 500 blames the server for a bad
+    // query — the same clamp the sales ledger applies.
+    let negative = client
+        .get(format!("{base}/api/purchases"))
+        .query(&[("offset", "-5")])
+        .send()
+        .await
+        .expect("get purchases negative offset");
+    assert_eq!(
+        negative.status(),
+        200,
+        "a negative offset is clamped, not a 500"
+    );
+}
+
+// ── v2 (T5): GET /api/cash nets purchases ──────────────────────────────────
+//
+// plan-v2.md S13: the response shape does not change — one decimal string — but
+// its meaning does. Money in the till is sales, minus refunds, minus purchases.
+//
+// The second test here is the "existing behaviour still holds" test the slice
+// owes: the query changed, so a sale must still move cash by exactly its total
+// and a purchase must move it by exactly its own. Without it, a subtraction
+// added in the wrong direction would look green in the new test alone.
+
+#[tokio::test]
+#[ignore]
+async fn v2_cash_nets_purchases_and_still_counts_sales() {
+    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
+    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+    let client = reqwest::Client::new();
+
+    let stamp = uuid::Uuid::new_v4();
+    let product: (uuid::Uuid,) =
+        sqlx::query_as("INSERT INTO products (name, list_price) VALUES ($1, 100.00) RETURNING id")
+            .bind(format!("v2-cash-{stamp}"))
+            .fetch_one(&pool)
+            .await
+            .expect("insert product");
+
+    async fn cash(client: &reqwest::Client, base: &str) -> String {
+        client
+            .get(format!("{base}/api/cash"))
+            .send()
+            .await
+            .expect("get cash")
+            .error_for_status()
+            .expect("2xx")
+            .json::<serde_json::Value>()
+            .await
+            .expect("json")["total"]
+            .as_str()
+            .expect("cash total is a decimal string")
+            .to_string()
+    }
+    fn cents(s: &str) -> i64 {
+        // Test-only arithmetic on a wire amount: parse the two-decimal string
+        // exactly, never through a float.
+        let (sign, rest) = match s.strip_prefix('-') {
+            Some(r) => (-1i64, r),
+            None => (1i64, s),
+        };
+        let (whole, frac) = rest.split_once('.').expect("two decimals");
+        sign * (whole.parse::<i64>().expect("whole") * 100 + frac.parse::<i64>().expect("fraction"))
+    }
+
+    let before = cents(&cash(&client, &base).await);
+
+    // A purchase of 4 * 100.00 = 400.00 must take exactly 400.00 out.
+    let resp = client
+        .post(format!("{base}/api/purchases"))
+        .json(&serde_json::json!({
+            "items": [{ "product_id": product.0, "quantity": 4, "unit_price": "100.00" }]
+        }))
+        .send()
+        .await
+        .expect("post purchase");
+    assert_eq!(resp.status(), 201);
+
+    let after_purchase = cents(&cash(&client, &base).await);
+    assert_eq!(
+        before - after_purchase,
+        40_000,
+        "a purchase lowers the till by its total: money left"
+    );
+
+    // And the sale side still counts in the other direction, by its own total.
+    // This is the regression the changed query could have introduced: a sign
+    // error would still produce a plausible number.
+    let resp = client
+        .post(format!("{base}/api/sales"))
+        .json(&serde_json::json!({
+            "items": [{ "product_id": product.0, "quantity": 2, "unit_price": "25.00" }]
+        }))
+        .send()
+        .await
+        .expect("post sale");
+    assert_eq!(resp.status(), 201);
+
+    let after_sale = cents(&cash(&client, &base).await);
+    assert_eq!(
+        after_sale - after_purchase,
+        5_000,
+        "a sale still raises the till by its total: money came in"
+    );
+
+    // The shape is unchanged: one decimal string with two places, which is what
+    // every consumer already reads.
+    let raw = cash(&client, &base).await;
+    assert!(
+        raw.split('.').nth(1).map(|f| f.len()) == Some(2),
+        "cash is still a two-decimal string, got {raw:?}"
+    );
+}
+
+/// S10: `purchases` and `purchase_items` refuse TRUNCATE as well as UPDATE and
+/// DELETE, and every refusal leaves both tables byte-identical.
+///
+/// The gap this closes was found by an independent verifier and then reproduced:
+/// dropping `purchases_no_truncate` and `purchase_items_no_truncate` together
+/// left `v2_a_purchase_is_immutable_after_it_exists` GREEN, because that test
+/// only probes UPDATE and DELETE. A guard no test would miss is not a guard.
+#[tokio::test]
+#[ignore]
+async fn v2_purchase_tables_refuse_truncate_and_keep_their_state() {
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
+    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+    let mut tx = pool.begin().await.expect("begin");
+
+    let pid: (uuid::Uuid,) =
+        sqlx::query_as("INSERT INTO products (name, list_price) VALUES ($1, 1.00) RETURNING id")
+            .bind(format!("v2-truncate-{}", uuid::Uuid::new_v4()))
+            .fetch_one(&mut *tx)
+            .await
+            .expect("insert product");
+    let purchase_id: (uuid::Uuid,) =
+        sqlx::query_as("INSERT INTO purchases (supplier_id, total) VALUES ($1, 1.00) RETURNING id")
+            .bind(uuid::Uuid::parse_str(ONE_OFF_SUPPLIER_ID).expect("fixed uuid"))
+            .fetch_one(&mut *tx)
+            .await
+            .expect("insert purchase");
+    sqlx::query(
+        "INSERT INTO purchase_items
+            (purchase_id, product_id, product_name, quantity, unit_price, line_total, unit)
+         VALUES ($1, $2, 'v2-truncate', 1, 1.00, 1.00, 'unit')",
+    )
+    .bind(purchase_id.0)
+    .bind(pid.0)
+    .execute(&mut *tx)
+    .await
+    .expect("insert purchase item");
+    sqlx::query(
+        "INSERT INTO stock_movements (product_id, quantity, reason, purchase_id)
+         VALUES ($1, 1, 'purchase', $2)",
+    )
+    .bind(pid.0)
+    .bind(purchase_id.0)
+    .execute(&mut *tx)
+    .await
+    .expect("insert purchase movement");
+
+    // The state a refusal must leave untouched, hashed rather than counted: a
+    // TRUNCATE followed by a re-insert could keep the count and lose the row.
+    async fn state(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> (String, String) {
+        let purchases: String = sqlx::query_scalar(
+            "SELECT COALESCE(md5(string_agg(t::text, '|' ORDER BY t::text)), 'empty')
+             FROM purchases t",
+        )
+        .fetch_one(&mut **tx)
+        .await
+        .expect("purchases hash");
+        let items: String = sqlx::query_scalar(
+            "SELECT COALESCE(md5(string_agg(t::text, '|' ORDER BY t::text)), 'empty')
+             FROM purchase_items t",
+        )
+        .fetch_one(&mut **tx)
+        .await
+        .expect("items hash");
+        (purchases, items)
+    }
+
+    let before = state(&mut tx).await;
+
+    macro_rules! probe_denied {
+        ($label:expr, $sql:expr) => {{
+            sqlx::query("SAVEPOINT probe")
+                .execute(&mut *tx)
+                .await
+                .expect("savepoint");
+            let result = sqlx::query($sql).execute(&mut *tx).await;
+            sqlx::query("ROLLBACK TO SAVEPOINT probe")
+                .execute(&mut *tx)
+                .await
+                .expect("rollback to savepoint");
+            assert!(result.is_err(), "{} was allowed", $label);
+            assert_eq!(
+                state(&mut tx).await,
+                before,
+                "{} changed the state it was supposed to refuse",
+                $label
+            );
+        }};
+    }
+
+    probe_denied!("TRUNCATE purchases", "TRUNCATE purchases");
+    probe_denied!("TRUNCATE purchase_items", "TRUNCATE purchase_items");
+    probe_denied!("TRUNCATE purchases CASCADE", "TRUNCATE purchases CASCADE");
+    probe_denied!(
+        "TRUNCATE purchases, purchase_items, stock_movements in one statement",
+        "TRUNCATE purchases, purchase_items, stock_movements"
+    );
+
+    tx.rollback().await.expect("rollback");
+}
+
+/// S9: `0009` must run its defensive pre-check **before** it adds the coherence
+/// constraints.
+///
+/// This is a property of the migration text, so it is tested against the text.
+/// `ADD CONSTRAINT` validates existing rows, which means a pre-check placed after
+/// it can never fire: PostgreSQL reports the violation first and the migration's
+/// own count is never printed. That is exactly what an independent verifier
+/// found in the previous revision of this file, and what this test now prevents
+/// from coming back. An incoherent legacy database is something the shared
+/// development stack cannot supply on demand, which is why this is read rather
+/// than executed.
+#[test]
+fn v2_the_coherence_pre_check_runs_before_the_constraints_it_protects() {
+    let sql = include_str!("../migrations/0009_purchases.sql");
+    let pre_check = sql
+        .find("contradict the v2 coherence rule")
+        .expect("0009 must keep its v2 coherence pre-check");
+    for constraint in [
+        "ADD CONSTRAINT stock_movements_document_coherent",
+        "ADD CONSTRAINT stock_movements_purchase_coherent",
+        "ADD CONSTRAINT stock_movements_purchase_is_incoming",
+    ] {
+        let added = sql
+            .find(constraint)
+            .unwrap_or_else(|| panic!("0009 must add {constraint}"));
+        assert!(
+            pre_check < added,
+            "the defensive pre-check must run BEFORE {constraint}; placed after \
+             it, PostgreSQL reports the violation first and the pre-check can \
+             never fire"
+        );
+    }
 }

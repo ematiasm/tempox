@@ -3,7 +3,7 @@
 Full document: `odd/tasks/v1.5-credit-note.md` (specs authority, verbatim user log).
 Engram topic key: `tempox/odd/v1.5-credit-note/tasks`.
 
-**State: closed.** T1–T8 done with their work-unit commits; T9 closed with the native review as an **accepted risk** the owner chose explicitly (document L20). Branch `feat/v1.5-credit-note`, 8 commits on `23a2b67`. Nothing pushed: push and PR creation remain the owner's decision.
+**State: closed.** T1–T8 done with their work-unit commits; T9 closed with the native review as an **accepted risk** the owner chose explicitly (document L20). Branch `feat/v1.5-credit-note`, 8 commits on `23a2b67`. **Delivered as PR #42 (`feat/v1.5-credit-note-backend`) and PR #43 (`feat/v1.5-credit-note-ui`), both merged 2026-10-17 → `03abbd9`**, with CI green on all four checks; the branches are deleted and `main` is level with `origin/main`. The pre-repair commits named throughout the log (`97a8f49`, `f6d850e`, `91f996b`, `523015b`, `5514c2e`, `49a259e`, `2ecc646`) were rebuilt before delivery as `f135f7d` (backend) and `42d34d0` (UI). Those carry the **corrected** state — `git diff 523015b f135f7d` and `git diff 2ecc646 42d34d0` are both empty — whereas `97a8f49`/`f6d850e` differ from what shipped by exactly the two defects verification forced (migration `0008`, the repeated-line guard, the docs correction). Shipping the commits the delivery strategy names would have shipped the defects; what shipped did not.
 
 ## Specs (one line each — the document is authoritative)
 

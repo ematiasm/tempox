@@ -93,6 +93,7 @@ docs/        Documentation (en)
 - `GET/POST/DELETE /api/notes` — CRUD demo backed by PostgreSQL
 - **Sales slice (v1)**: multi-item sales with stock and cash derived from an append-only movement ledger — API surface in [`docs/en/architecture.md`](./docs/en/architecture.md)
 - **Sales reversal (v1.5)**: a mistaken sale is annulled by a credit note, in whole or in part — a second document that returns stock and money while the sale stays exactly as recorded. `POST /api/sales/{id}/credit-notes`, and `/api/cash` is net of the refunds
+- **Purchases (v2, backend)**: goods that arrive raise stock and lower cash, mirroring sales. `GET/POST /api/suppliers` and `POST`/`GET /api/purchases`, with `one-off-supplier` seeded as the default supplier the way `walk-in` is the default customer. A purchase is a **fact**, not an intention: it has no `status`, so "the row exists" and "it counts" are the same statement. A purchase order is a different document, deferred to v2.5. `GET /api/cash` is now net of purchases as well as refunds
 - SvelteKit pages `/sales` (the ledger and the draft sheet) and `/products` (the catalog); `/` redirects to `/sales`, and `/notes` stays reachable by URL
 - **es-AR / en** i18n via a runes-backed store: one `Dict` type, two complete dictionaries, and a per-language formatter bundle (money, quantities, dates). The shop's language is the default and the choice is not persisted; a reload always returns to es-AR
 
