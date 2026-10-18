@@ -25,10 +25,11 @@ Back office at a fixed PC in the shop: desktop-first, keyboard-friendly, mobile 
 ## Capabilities and Constraints
 
 - v1 backend shipped and tested: multi-item sales with snapshot lines, products (list price + base unit + initial stock), customers (name-only, seeded `walk-in`), derived cash, derived stock.
+- **Purchases shipped (v2 backend)**: recording a purchase raises stock and lowers cash, mirroring a sale in the opposite direction. Suppliers are name-only and seeded with `one-off-supplier`, exactly as customers are seeded with `walk-in`. Cash on hand is what came in from sales less refunds less purchases — one number, derived, never stored.
 - The database enforces: decimal money with an exact whole-cents guard, exact totals, immutable events (no edit/delete — a mistaken sale is reversed by a credit note, in whole or in part, never edited).
 - Compile-time checked queries; the image build verifies them against the live database.
 - **The UI speaks es-AR by default, with an English side** (v1.5). Money is ARS written `$ 1.234,56`, the ledger's day is the shop's own (server-side, `SHOP_TIMEZONE`), and `walk-in` displays as "Consumidor Final" while the stored value stays `walk-in`. The language choice is not persisted: the shop opens in its own language every time.
-- Undecided: auth and roles (v5 staff), purchases/expenses/accounting (v2–v6), multi-currency.
+- Undecided: auth and roles (v5 staff), expenses/accounting (v3–v6), multi-currency. **Decided for v2**: a purchase is a fact with no status, and a purchase order (with partial reception) is a later, separate document rather than a state of this one — the shop records what happened, and recording what was merely asked for is a different job.
 
 ## Brand Commitments
 
@@ -40,7 +41,7 @@ Live API verified via curl and integration tests; the notes demo doubles as the 
 
 ## Product Principles
 
-1. **One action, one write**: the sale is the single entry point; stock and cash derive from it.
+1. **One action, one write**: the sale is the single entry point; stock and cash derive from it. A purchase is the same shape in the other direction — one action, one transaction, and the consequences derive.
 2. **The ledger is the truth**: balances are sums, never stored fields.
 3. **Immutable events**: a mistake is corrected by a reversal, never an edit.
 4. **Explicit over clever**: a future employee must be able to use it without training.

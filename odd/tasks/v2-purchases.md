@@ -3,8 +3,9 @@
 Full design: `plan-v2.md` (gitignored working plan, like `plan-v1.md`/`plan-v1a.md`).
 Engram topic key: `tempox/odd/v2-purchases/tasks`.
 
-**State: in progress.** Backend slice v2 (T1–T6), then UI slice v2a (T7–T10).
-Nothing is merged; `main` is `03dc2b2`.
+**State: backend closed.** T1–T6 done; the backend slice of v2 is complete and
+its checks are green. The UI slice (v2a, T7–T10) has not started. `main` was
+`03dc2b2` when the slice began; nothing is pushed.
 
 v2 is the mirror of v1: a purchase raises stock and lowers cash, exactly as a sale
 lowers stock and raises cash. Suppliers mirror customers. What the mirror does
@@ -68,7 +69,7 @@ S19 work-unit commits carry their tests and docs; the last slice closes.
 | T3 | `POST /api/purchases` — the transaction: header, lines, positive movements | S1, S7, S8, S11 | inline | done | `8bc22fa` |
 | T4 | `GET /api/purchases` — list with items, day scoping, paging | S12 | inline | done | `11eeee1` |
 | T5 | `GET /api/cash` nets purchases + its existing-behaviour test | S13, S16 | inline | done | `3ef084d` |
-| T6 | Docs: architecture, README, PRODUCT | S18 | inline | pending | — |
+| T6 | Docs: architecture, README, PRODUCT | S18 | inline | done | `pending` |
 | T7 | Rail destination + suppliers screen | S4, S5 | inline | pending | — |
 | T8 | `/purchases` register: supplier picker, lines, live total, keyboard | S7 | inline | pending | — |
 | T9 | Purchases ledger: day-scoped, stamped | S12 | inline | pending | — |
@@ -263,3 +264,22 @@ test in this slice.
 - GREEN: **30 passed, 0 failed** on the full integration suite; 29 unit tests;
   `make sqlx-check` passes; `fmt` and `clippy -D warnings` clean; all nine
   migrations still apply from scratch to a throwaway database.
+
+### T6 (2026-10-17)
+
+- `docs/en/architecture.md`: the two supplier routes and the two purchase routes
+  added to the API surface; `/api/cash`'s row restated with the purchases
+  subtraction **and** a sentence saying the shape did not change while the
+  meaning did; the ledger reason list now names `purchase`; a new invariant for
+  the positive-purchase rule; and a new bullet stating that a purchase is a fact
+  with no status, with the order deferred and the reason no column anticipates it.
+- `README.md`: one behaviour line for the purchases slice.
+- `PRODUCT.md`: the capability line, the principle line ("one action, one write"
+  now says the purchase is the same shape in the other direction), and the
+  "Undecided" line now records what v2 **decided** instead of listing purchases
+  as still open.
+- **The docs were checked against the code rather than written from memory**: each
+  documented route was confirmed present in `routes/mod.rs`, the supplier
+  `400`/`409` ladder against `suppliers.rs`, and the `1..200` limit claim against
+  the `MAX_LIST_LIMIT` constants in all three list handlers. A doc that overclaims
+  is the `0007`→`0008` failure in prose form.

@@ -4,8 +4,8 @@ Full document: `odd/tasks/v2-purchases.md` (specs authority, verbatim user log).
 Design authority: `plan-v2.md` (gitignored working plan, like `plan-v1.md`).
 Engram topic key: `tempox/odd/v2-purchases/tasks`.
 
-**State: in progress.** Backend slice v2 (T1–T6), then UI slice v2a (T7–T10).
-`main` is `03dc2b2`; nothing pushed.
+**State: backend closed.** T1–T6 done, checks green. UI slice v2a (T7–T10) not
+started. Nothing pushed.
 
 v2 is the mirror of v1 — a purchase raises stock and lowers cash, suppliers
 mirror customers — except where the mirror does not fit, which is the whole
@@ -45,7 +45,7 @@ S19 work-unit commits with tests and docs; the last slice closes.
 | T3 | `POST /api/purchases` (transaction, positive movements) | S1, S7, S8, S11 | done | `8bc22fa` |
 | T4 | `GET /api/purchases` (day scoping, paging) | S12 | done | `11eeee1` |
 | T5 | `GET /api/cash` nets purchases + existing-behaviour test | S13, S16 | done | `3ef084d` |
-| T6 | Docs | S18 | pending | — |
+| T6 | Docs | S18 | done | pending |
 | T7 | Rail + suppliers screen | S4, S5 | pending | — |
 | T8 | `/purchases` register | S7 | pending | — |
 | T9 | Purchases ledger | S12 | pending | — |
