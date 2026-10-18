@@ -2635,3 +2635,214 @@ async fn v2_suppliers_list_and_create() {
         );
     }
 }
+
+// ── v2 (T3): POST /api/purchases ───────────────────────────────────────────
+//
+// plan-v2.md S1/S7/S8/S11: one transaction writes the header, its lines and one
+// POSITIVE movement per line, and a rejected purchase writes nothing at all.
+//
+// Every measurement here is self-relative (S17). The suite runs against the
+// shared development database, so "stock went up by 7" is stated as
+// after - before, never as an absolute figure.
+
+/// Read one product's derived stock, which is the SUM of its movements.
+async fn v2_stock(pool: &sqlx::PgPool, product_id: uuid::Uuid) -> i64 {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COALESCE(SUM(quantity), 0)::bigint FROM stock_movements WHERE product_id = $1",
+    )
+    .bind(product_id)
+    .fetch_one(pool)
+    .await
+    .expect("derived stock")
+}
+
+#[tokio::test]
+#[ignore]
+async fn v2_a_purchase_raises_stock_and_returns_its_lines() {
+    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
+    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+    let client = reqwest::Client::new();
+
+    // Its own product: a shared one would make the before/after meaningless as
+    // soon as another test ran concurrently in CI.
+    let stamp = uuid::Uuid::new_v4();
+    let product: (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO products (name, list_price, unit) VALUES ($1, 12.50, 'unit') RETURNING id",
+    )
+    .bind(format!("v2-purchase-{stamp}"))
+    .fetch_one(&pool)
+    .await
+    .expect("insert product");
+
+    let stock_before = v2_stock(&pool, product.0).await;
+
+    // The supplier is omitted on purpose: this is the seeded default path (S4).
+    // The price on the first line is omitted too, which must fall back to the
+    // product's list price (S7); the second line overrides it, because a
+    // purchase price that differs from the catalogue is the normal case.
+    let resp = client
+        .post(format!("{base}/api/purchases"))
+        .json(&serde_json::json!({
+            "items": [
+                { "product_id": product.0, "quantity": 4 },
+                { "product_id": product.0, "quantity": 2, "unit_price": "10.00" }
+            ]
+        }))
+        .send()
+        .await
+        .expect("post purchase");
+    assert_eq!(resp.status(), 201, "a valid purchase is created");
+    let body: serde_json::Value = resp.json().await.expect("purchase json");
+
+    // The header carries the seeded supplier and the summed total: 4 * 12.50 +
+    // 2 * 10.00 = 70.00.
+    assert_eq!(
+        body["purchase"]["supplier_id"], "00000000-0000-0000-0000-000000000002",
+        "an omitted supplier falls back to the seeded one-off supplier"
+    );
+    assert_eq!(
+        body["purchase"]["total"], "70.00",
+        "total = SUM(line_total), with the list price where none was given"
+    );
+
+    let items = body["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 2, "both lines are returned");
+
+    // The snapshot and the price rules, line by line. Repeatable product in one
+    // purchase is deliberate: two lots at two costs is a real purchase.
+    assert_eq!(items[0]["product_name"], format!("v2-purchase-{stamp}"));
+    assert_eq!(
+        items[0]["unit_price"], "12.50",
+        "omitted price = list price"
+    );
+    assert_eq!(items[0]["line_total"], "50.00", "4 * 12.50");
+    assert_eq!(items[1]["unit_price"], "10.00", "the override is kept");
+    assert_eq!(items[1]["line_total"], "20.00", "2 * 10.00");
+    assert_eq!(items[0]["unit"], "unit", "the unit is snapshotted");
+
+    // The point of the slice: stock went UP by exactly what arrived, and the
+    // movements are positive and carry the purchase document.
+    let stock_after = v2_stock(&pool, product.0).await;
+    assert_eq!(
+        stock_after - stock_before,
+        6,
+        "a purchase of 4 + 2 raises stock by 6, never lowers it"
+    );
+
+    let purchase_id = body["purchase"]["id"].as_str().expect("purchase id");
+    let movements: (i64, i64) = sqlx::query_as(
+        "SELECT count(*), COALESCE(SUM(quantity), 0)::bigint FROM stock_movements
+          WHERE purchase_id = $1 AND reason = 'purchase'",
+    )
+    .bind(uuid::Uuid::parse_str(purchase_id).expect("uuid"))
+    .fetch_one(&pool)
+    .await
+    .expect("movements");
+    assert_eq!(movements.0, 2, "one movement per line");
+    assert_eq!(movements.1, 6, "the movements sum to what arrived");
+}
+
+#[tokio::test]
+#[ignore]
+async fn v2_a_rejected_purchase_writes_nothing() {
+    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
+    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+    let client = reqwest::Client::new();
+
+    let stamp = uuid::Uuid::new_v4();
+    let product: (uuid::Uuid,) =
+        sqlx::query_as("INSERT INTO products (name, list_price) VALUES ($1, 5.00) RETURNING id")
+            .bind(format!("v2-reject-{stamp}"))
+            .fetch_one(&pool)
+            .await
+            .expect("insert product");
+    let unknown = uuid::Uuid::new_v4();
+
+    // S11 measured the only way that means anything: count every row that a
+    // failed purchase could have left behind, then count again.
+    async fn counts(pool: &sqlx::PgPool) -> (i64, i64, i64) {
+        let p: i64 = sqlx::query_scalar("SELECT count(*)::bigint FROM purchases")
+            .fetch_one(pool)
+            .await
+            .expect("purchases count");
+        let i: i64 = sqlx::query_scalar("SELECT count(*)::bigint FROM purchase_items")
+            .fetch_one(pool)
+            .await
+            .expect("items count");
+        let m: i64 = sqlx::query_scalar("SELECT count(*)::bigint FROM stock_movements")
+            .fetch_one(pool)
+            .await
+            .expect("movements count");
+        (p, i, m)
+    }
+    let before = counts(&pool).await;
+
+    // Each shape that must be refused, with the status it owes.
+    let cases: Vec<(&str, serde_json::Value, u16)> = vec![
+        (
+            "an empty item list",
+            serde_json::json!({ "items": [] }),
+            400,
+        ),
+        (
+            "a quantity of zero",
+            serde_json::json!({ "items": [{ "product_id": product.0, "quantity": 0 }] }),
+            400,
+        ),
+        (
+            "a negative quantity",
+            serde_json::json!({ "items": [{ "product_id": product.0, "quantity": -3 }] }),
+            400,
+        ),
+        (
+            "a price finer than a cent",
+            serde_json::json!({ "items": [
+                { "product_id": product.0, "quantity": 1, "unit_price": "5.005" }
+            ] }),
+            400,
+        ),
+        (
+            "an unknown product",
+            serde_json::json!({ "items": [{ "product_id": unknown, "quantity": 1 }] }),
+            404,
+        ),
+        (
+            "an unknown supplier",
+            serde_json::json!({
+                "supplier_id": unknown,
+                "items": [{ "product_id": product.0, "quantity": 1 }]
+            }),
+            404,
+        ),
+        (
+            // The mixed case is the one a per-line check can get wrong: a valid
+            // line before the invalid one must not be written either.
+            "a valid line followed by an unknown product",
+            serde_json::json!({ "items": [
+                { "product_id": product.0, "quantity": 2 },
+                { "product_id": unknown, "quantity": 1 }
+            ] }),
+            404,
+        ),
+    ];
+
+    for (label, payload, expected) in cases {
+        let resp = client
+            .post(format!("{base}/api/purchases"))
+            .json(&payload)
+            .send()
+            .await
+            .expect("post purchase");
+        assert_eq!(resp.status(), expected, "{label} owes {expected}");
+    }
+
+    let after = counts(&pool).await;
+    assert_eq!(
+        before, after,
+        "a rejected purchase wrote something: header, line or movement survived"
+    );
+}

@@ -65,7 +65,7 @@ S19 work-unit commits carry their tests and docs; the last slice closes.
 |---|---|---|---|---|---|
 | T1 | Migration `0009_purchases.sql` + its integration tests (guards, coherence, seed, sign) | S1, S4–S6, S9, S10 | inline | done | `bc189cf` |
 | T2 | `suppliers` endpoints (`GET`, `POST`, 400/409) | S4, S5 | inline | done | `a61ba7d` |
-| T3 | `POST /api/purchases` — the transaction: header, lines, positive movements | S1, S7, S8, S11 | inline | pending | — |
+| T3 | `POST /api/purchases` — the transaction: header, lines, positive movements | S1, S7, S8, S11 | inline | done | `pending` |
 | T4 | `GET /api/purchases` — list with items, day scoping, paging | S12 | inline | pending | — |
 | T5 | `GET /api/cash` nets purchases + its existing-behaviour test | S13, S16 | inline | pending | — |
 | T6 | Docs: architecture, README, PRODUCT | S18 | inline | pending | — |
@@ -180,3 +180,28 @@ test in this slice.
 - `cargo fmt` clean; `cargo clippy --all-targets -- -D warnings` clean.
 - All nine migrations apply **from scratch** through the migrator to a throwaway
   database created and dropped by the run, with `0009` last.
+
+### T3 (2026-10-17)
+
+- **RED observed first**: both new tests failed against the old binary — `404` on
+  `POST /api/purchases` (route absent) and the rejection cases failing at the
+  first assertion because every shape got `404`.
+- **GREEN**: 6 v2 tests pass against the branch binary on port 3099; full
+  integration suite **28 passed, 0 failed**; 29 unit tests.
+- **Mutation check, and the first one was not the check I wanted.** Inverting the
+  movement sign (`+quantity` → `-quantity`) made the test fail — but with `500`,
+  because the database's `stock_movements_purchase_is_incoming` constraint
+  refused it. That measures the *constraint*, not the handler's arithmetic, so
+  it was not the evidence the slice needed. The mutation that does prove the test
+  bites removes the movement write entirely: stock delta measured **0 instead of
+  6**, failing on the assertion whose message names the rule. Handler restored
+  byte-identical afterwards (`diff` against a saved copy: no output).
+- **A false green caught and discarded.** One mutation run reported FAILED while
+  the backend was actually down (`ConnectionRefused`). A test that fails because
+  the server is absent is not evidence about the mutation. Re-run with the
+  mutated binary genuinely serving, then with the restored one.
+- The mixed rejection case — a valid line followed by an unknown product — is
+  what proves every line is resolved *before* the first write. Checking per line
+  inside the insert loop would have written the valid prefix and returned 404.
+- `make sqlx-prepare` regenerated the cache (5 new query files); `make
+  sqlx-check` passes. `cargo fmt --check` and `clippy -D warnings` clean.
