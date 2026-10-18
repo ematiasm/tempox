@@ -42,7 +42,7 @@ S19 work-unit commits with tests and docs; the last slice closes.
 |---|---|---|---|---|
 | T1 | Migration `0009_purchases.sql` + integration tests | S1, S4–S6, S9, S10 | done | `bc189cf` |
 | T2 | `suppliers` endpoints | S4, S5 | done | `a61ba7d` |
-| T3 | `POST /api/purchases` (transaction, positive movements) | S1, S7, S8, S11 | done | pending |
+| T3 | `POST /api/purchases` (transaction, positive movements) | S1, S7, S8, S11 | done | `8bc22fa` |
 | T4 | `GET /api/purchases` (day scoping, paging) | S12 | pending | — |
 | T5 | `GET /api/cash` nets purchases + existing-behaviour test | S13, S16 | pending | — |
 | T6 | Docs | S18 | pending | — |
