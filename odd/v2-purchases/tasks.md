@@ -40,7 +40,7 @@ S19 work-unit commits with tests and docs; the last slice closes.
 
 | ID | Task | Specs | Status | Commit |
 |---|---|---|---|---|
-| T1 | Migration `0009_purchases.sql` + integration tests | S1, S4–S6, S9, S10 | done | pending |
+| T1 | Migration `0009_purchases.sql` + integration tests | S1, S4–S6, S9, S10 | done | `bc189cf` |
 | T2 | `suppliers` endpoints | S4, S5 | pending | — |
 | T3 | `POST /api/purchases` (transaction, positive movements) | S1, S7, S8, S11 | pending | — |
 | T4 | `GET /api/purchases` (day scoping, paging) | S12 | pending | — |
