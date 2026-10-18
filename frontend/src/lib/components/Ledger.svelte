@@ -26,6 +26,7 @@
     refundedByLine as saleRefundedByLine
   } from '#lib/salesRefund.js';
   import { lang } from '#lib/i18n/index.svelte.js';
+  import { createStaleNotice } from '#lib/screenTrust.js';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import Stamp from './Stamp.svelte';
 
@@ -72,10 +73,11 @@
   let refundError = $state<string | null>(null);
   // Set when the credit note was written and only the day's reload failed. Kept
   // apart from `refundError` on purpose: the two carry opposite meanings, and the
-  // cashier acts differently on each. Keyed by document like every other piece of
-  // refund state: a global flag rendered its warning under every expanded row, and
-  // arming another row's confirm wiped the one that still mattered.
-  let refundStale = new SvelteMap<string, string>();
+  // cashier acts differently on each. The lifetime rule lives in
+  // `screenTrust.ts`: a successful reload retires every notice, because the
+  // figures are current and a warning saying otherwise is a lie. Backed by a
+  // `SvelteMap` so retiring it re-renders.
+  const refundStale = createStaleNotice(new SvelteMap<string, string>());
 
   // The server's current-day boundary is the sole authority for this state.
   const isToday = $derived(range !== null && todayFrom !== null && range.from === todayFrom);
@@ -121,6 +123,12 @@
         if (cancelled) return;
         rows = sales;
         expanded.clear();
+        // The figures are current again, so nothing on this screen is stale. A
+        // warning here would contradict the data beside it, and an operator who
+        // learns to ignore it will not read it on the day it is true. This is the
+        // rule the first implementation was missing: it only ever retired a
+        // notice on a click that happened to touch that same row.
+        refundStale.retireAll();
       })
       .catch((e: unknown) => {
         if (!cancelled) error = e instanceof ApiError ? `${e.message} (${e.status})` : String(e);
@@ -261,7 +269,7 @@
     if (!range) return;
     refunding = row.id;
     refundError = null;
-    refundStale.delete(row.id);
+    refundStale.forget(row.id);
     // The note and the reload are separate failures. Once `createCreditNote`
     // answers 201 the stock and the money have moved; a reload that fails after
     // that is a stale screen, not a failed annulment. Reporting both through the
@@ -288,7 +296,7 @@
     } catch (e) {
       // The note stands; only this screen is behind. It is said as that, and the
       // confirm is closed, so the cashier does not read it as a refund to redo.
-      refundStale.set(row.id, e instanceof ApiError ? `${e.message} (${e.status})` : String(e));
+      refundStale.mark(row.id, e instanceof ApiError ? `${e.message} (${e.status})` : String(e));
     }
     refunding = null;
   }
@@ -342,7 +350,24 @@
         {lang.t.sales_retry}
       </button>
     </div>
-  {:else if loading}
+  {/if}
+
+  <!-- One retry for the whole screen, for the state the alert above cannot reach.
+       A failed reload after a written credit note sets the stale notice and never
+       `error`, so the alert's own retry was never rendered in that state: the
+       warning told the cashier the figures were stale with no way to refresh
+       them. One control here serves every row, because re-reading the day is the
+       same action regardless of which document exposed it. -->
+  {#if !error && !refundStale.empty}
+    <div class="alert" role="status">
+      <strong>{lang.t.sales_stale_title}</strong>
+      <button type="button" onclick={() => (refreshToken = refreshToken + 1)}>
+        {lang.t.sales_retry}
+      </button>
+    </div>
+  {/if}
+
+  {#if loading}
     <!-- Bars, not a spinner: the header, the scope controls and the legend stay
          put, so the page does not jump while the day arrives. -->
     <div class="skeleton" aria-hidden="true">
@@ -555,7 +580,7 @@
                           onclick={() => {
                             confirming = row.id;
                             refundError = null;
-                            refundStale.delete(row.id);
+                            refundStale.forget(row.id);
                           }}
                         >
                           {lang.t.sales_refund_action}
