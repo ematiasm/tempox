@@ -119,3 +119,40 @@ is unaffected. For manual checks, run the dev server on the host
 ## Log
 
 L1 (user, 2026-10-18, verbatim): "arranca con v2a en una nueva rama con su PR"
+
+## Merged (2026-10-18)
+
+**PR #46 merged** → `36ef85d`, CI on `main` after the merge: run `39134859262`,
+**4/4 success**. Local `main` is level with `origin/main` (0/0).
+
+Cleanup, all verified:
+
+- Local branch `feat/v2a-purchases-ui` deleted; remote branch deleted.
+- The remote branch of PR #45 (`feat/v2-purchases-backend`) was still on the
+  origin even though its PR was merged — deleted too. Only `main` remains, local
+  and remote.
+- `git fetch --prune`: no stale remote-tracking refs.
+- Working tree clean.
+
+### A block worth recording
+
+`rm -f /tmp/pr-v2a.md` was **refused by the safety policy**. It was not routed
+around: the policy refuses the command, not the intent, and looking for a trick is
+exactly what the guard exists to prevent. The file is a leftover PR body in `/tmp`
+and the user can remove it. `backend/target/` and `frontend/test-results/` are
+build/run artifacts, both gitignored.
+
+### The development stack was already gone
+
+`docker compose ps` returned nothing and both ports answered `000`: every
+`tempox` container and volume was already absent when the merge finished. Only an
+unrelated container was running. Nothing in this slice removed them — no `down`,
+no `down -v`, no volume prune was run in this session — so the stack was brought
+down outside it.
+
+Consequence worth knowing: the dev stack must be raised again
+(`docker compose up -d`), which rebuilds the backend image from the current
+`main` (it now includes `0009`) and applies all nine migrations to a fresh volume.
+That is the same state the empty-database verification in
+`odd/tasks/v2-purchases.md` exercised, so it is a known-good starting point rather
+than an untested one.
