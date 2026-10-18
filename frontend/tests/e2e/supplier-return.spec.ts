@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { money, recordedDocumentId } from './unique.js';
 
 /**
  * Returning goods to their supplier, end to end, through the real UI.
@@ -19,17 +20,20 @@ test('a return takes stock out and brings money back, and the purchase stands', 
   page
 }) => {
   const name = `e2e-return-${Date.now().toString(36)}`;
+  const price = '10,00';
+  const purchaseTotal = '60,00';
+  const returnTotal = '20,00';
 
   // 1. The product exists, created through the catalog's own form. The stock
   //    field is LEFT ALONE on purpose: an empty initial stock is 0, while a
   //    typing `0` is refused because a quantity must be at least 1.
   await page.goto('/products');
   await page.locator('#new-name').fill(name);
-  await page.locator('#new-price').fill('10,00');
+  await page.locator('#new-price').fill(price);
   await page.getByRole('button', { name: 'Crear producto' }).click();
   await expect(page.getByRole('status')).toContainText(name);
 
-  // 2. Buy 6 units at $10, so the purchase is $60 and the stock goes to 6.
+  // 2. Buy 6 units, so the stock goes to 6 and the purchase has its own total.
   await page.goto('/purchases');
   await page.getByRole('combobox', { name: 'Producto' }).fill(name);
   const matches = page.getByRole('listbox', { name: 'Productos encontrados' });
@@ -40,10 +44,12 @@ test('a return takes stock out and brings money back, and the purchase stands', 
   const draftLine = page.locator('.sheet table.lines tbody tr').first();
   await expect(draftLine).toContainText(name);
   await draftLine.locator('input[aria-label^="Cant"]').fill('6');
-  await expect(page.locator('.sheet .total')).toHaveText('$ 60,00');
+  await expect(page.locator('.sheet .total')).toHaveText(money(purchaseTotal));
 
   await page.getByRole('button', { name: /Registrar compra/ }).click();
-  await expect(page.locator('.sheet .done')).toContainText('$ 60,00');
+  await expect(page.locator('.sheet .done')).toContainText(money(purchaseTotal));
+  // Read the id now: the banner belongs to this screen and is gone after navigating.
+  const purchaseId = await recordedDocumentId(page);
 
   // 3. Stock really is 6 before anything goes back. Measured rather than assumed:
   //    the return's assertion below is only meaningful against a known start.
@@ -55,8 +61,11 @@ test('a return takes stock out and brings money back, and the purchase stands', 
   //    with what is left — the whole line — so the operator types over it only
   //    when they are returning less.
   await page.goto('/purchases');
-  const doc = page.locator('.ledger .document').first();
-  await expect(doc).toContainText('$ 60,00');
+  // This purchase, by the id the draft reported: position is a lie in a shared
+  // ledger and a total is not unique (#52).
+  const doc = page.locator(`.ledger .document:has([aria-controls="purchase-lines-${purchaseId}"])`);
+  await expect(doc).toHaveCount(1);
+  await expect(doc).toContainText(money(purchaseTotal));
   await doc.locator('.head').click();
 
   const returnField = doc.locator('input[aria-label^="Cantidad a devolver"]').first();
@@ -74,13 +83,13 @@ test('a return takes stock out and brings money back, and the purchase stands', 
   //    line on the server, never sent by the client.
   const returnBlock = doc.locator('.return-block').first();
   await expect(returnBlock).toContainText('Devolución al proveedor');
-  await expect(returnBlock.locator('.return-total')).toHaveText('+$ 20,00');
+  await expect(returnBlock.locator('.return-total')).toHaveText(`+${money(returnTotal)}`);
   await expect(returnBlock).toContainText(name);
 
   // 6. The purchase itself is untouched: still $60, still standing. A return is a
   //    second document, never an edit — DESIGN.md's Reversal Is a Second Document
   //    Rule, asserted where a reader would notice it break.
-  await expect(doc.locator('.head')).toContainText('$ 60,00');
+  await expect(doc.locator('.head')).toContainText(money(purchaseTotal));
 
   // 7. The point of the slice, measured where the operator reads it: stock came
   //    DOWN by what went back, and 4 of the 6 remain.
@@ -91,7 +100,10 @@ test('a return takes stock out and brings money back, and the purchase stands', 
   // 8. What is left to return is now 4, not 6: the form derives it from the
   //    record rather than from what this page remembers sending.
   await page.goto('/purchases');
-  const docAgain = page.locator('.ledger .document').first();
+  const docAgain = page.locator(
+    `.ledger .document:has([aria-controls="purchase-lines-${purchaseId}"])`
+  );
+  await expect(docAgain).toHaveCount(1);
   await docAgain.locator('.head').click();
   await expect(docAgain.locator('input[aria-label^="Cantidad a devolver"]').first()).toHaveValue(
     '4'
@@ -107,10 +119,12 @@ test('more than a line has left is refused on the screen, and no request leaves 
   // nothing for the server to reject. S9 is pinned where it belongs, by the
   // backend's own integration tests.
   const name = `e2e-overreturn-${Date.now().toString(36)}`;
+  const price = '10,00';
+  const purchaseTotal = '30,00';
 
   await page.goto('/products');
   await page.locator('#new-name').fill(name);
-  await page.locator('#new-price').fill('10,00');
+  await page.locator('#new-price').fill(price);
   await page.getByRole('button', { name: 'Crear producto' }).click();
   await expect(page.getByRole('status')).toContainText(name);
 
@@ -125,12 +139,14 @@ test('more than a line has left is refused on the screen, and no request leaves 
   const draftLine = page.locator('.sheet table.lines tbody tr').first();
   await draftLine.locator('input[aria-label^="Cant"]').fill('3');
   await page.getByRole('button', { name: /Registrar compra/ }).click();
-  await expect(page.locator('.sheet .done')).toContainText('$ 30,00');
+  await expect(page.locator('.sheet .done')).toContainText(money(purchaseTotal));
+  const purchaseId = await recordedDocumentId(page);
 
   // The form itself refuses the plan: asking for more than the line has left is
   // a quantity the server would answer 409 for, so the screen says so first and
   // sends nothing. Stock must stay at 3 because no request left.
-  const doc = page.locator('.ledger .document').first();
+  const doc = page.locator(`.ledger .document:has([aria-controls="purchase-lines-${purchaseId}"])`);
+  await expect(doc).toHaveCount(1);
   await doc.locator('.head').click();
   await doc.locator('input[aria-label^="Cantidad a devolver"]').first().fill('9');
   await doc.getByRole('button', { name: 'Devolver al proveedor…' }).click();
@@ -162,11 +178,14 @@ test('a return of one line leaves the other line alone, which is the normal case
   const stamp = Date.now().toString(36);
   const keep = `e2e-keep-${stamp}`;
   const back = `e2e-back-${stamp}`;
+  const price = '10,00';
+  const purchaseTotal = '50,00';
+  const backTotal = '30,00';
 
   for (const name of [keep, back]) {
     await page.goto('/products');
     await page.locator('#new-name').fill(name);
-    await page.locator('#new-price').fill('10,00');
+    await page.locator('#new-price').fill(price);
     await page.getByRole('button', { name: 'Crear producto' }).click();
     await expect(page.getByRole('status')).toContainText(name);
   }
@@ -190,9 +209,11 @@ test('a return of one line leaves the other line alone, which is the normal case
       .fill(qty);
   }
   await page.getByRole('button', { name: /Registrar compra/ }).click();
-  await expect(page.locator('.sheet .done')).toContainText('$ 50,00');
+  await expect(page.locator('.sheet .done')).toContainText(money(purchaseTotal));
+  const purchaseId = await recordedDocumentId(page);
 
-  const doc = page.locator('.ledger .document').first();
+  const doc = page.locator(`.ledger .document:has([aria-controls="purchase-lines-${purchaseId}"])`);
+  await expect(doc).toHaveCount(1);
   await doc.locator('.head').click();
 
   // Return the whole of `back` and nothing of `keep`.
@@ -201,10 +222,10 @@ test('a return of one line leaves the other line alone, which is the normal case
   await doc.getByRole('button', { name: 'Devolver al proveedor…' }).click();
   await doc.getByRole('button', { name: 'Sí, devolver' }).click();
 
-  // 3 units at the price paid is $30, and only that line moved.
+  // 3 units at the price paid, and only that line moved.
   const returnBlock = doc.locator('.return-block').first();
   await expect(returnBlock).toContainText(back);
-  await expect(returnBlock.locator('.return-total')).toHaveText('+$ 30,00');
+  await expect(returnBlock.locator('.return-total')).toHaveText(`+${money(backTotal)}`);
   await expect(returnBlock).not.toContainText(keep);
 
   // The untouched line still has everything left to return.
@@ -213,5 +234,5 @@ test('a return of one line leaves the other line alone, which is the normal case
   );
 
   // And the purchase is still worth what it was.
-  await expect(doc.locator('.head')).toContainText('$ 50,00');
+  await expect(doc.locator('.head')).toContainText(money(purchaseTotal));
 });

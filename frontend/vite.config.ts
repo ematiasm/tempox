@@ -23,6 +23,11 @@ export default defineConfig({
   // fields rather than as a connection error.
   envPrefix: ['VITE_', 'PUBLIC_'],
   test: {
+    // `tests/e2e/unique.ts` holds a pure helper the e2e specs depend on, and its
+    // uniqueness guarantee is exactly the kind of thing that broke silently before
+    // (#52, then again in this very file). It is unit-tested from `tests/unit`,
+    // which is why only that directory's specs are collected -- the Playwright
+    // files themselves are not vitest's to run.
     include: ['tests/unit/**/*.{test,spec}.ts'],
     environment: 'jsdom'
   }
