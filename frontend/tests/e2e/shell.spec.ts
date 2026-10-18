@@ -19,15 +19,21 @@ test('the document declares the shop language before any script runs (S14)', asy
   await expect(page.locator('html')).toHaveAttribute('lang', 'es-AR');
 });
 
-test('rail carries both destinations and marks the active one', async ({ page }) => {
+test('rail carries the three jobs and marks the active one', async ({ page }) => {
   await page.goto('/sales');
   const rail = page.getByRole('navigation', { name: 'Principal' });
   const sales = rail.getByRole('link', { name: 'Ventas' });
+  const purchases = rail.getByRole('link', { name: 'Compras' });
   const products = rail.getByRole('link', { name: 'Productos' });
 
+  // Sell, buy, and look after the catalog: the three jobs the shop does. A rail
+  // that listed every reachable URL would be a map of the repo, not of the job,
+  // which is why `/notes` is absent here and asserted absent below.
   await expect(sales).toBeVisible();
+  await expect(purchases).toBeVisible();
   await expect(products).toBeVisible();
   await expect(sales).toHaveAttribute('aria-current', 'page');
+  await expect(purchases).not.toHaveAttribute('aria-current', 'page');
   await expect(products).not.toHaveAttribute('aria-current', 'page');
 
   // Navigation reads as navigation: the URL changes and the mark follows it.

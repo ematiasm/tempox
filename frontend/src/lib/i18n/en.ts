@@ -9,6 +9,7 @@ const en: Dict = {
   notes_empty: 'No notes yet.',
   nav_sales: 'Sales',
   nav_products: 'Products',
+  nav_purchases: 'Purchases',
   nav_main: 'Main',
   lang_toggle: 'Switch language',
   sales_title: 'Record a sale',
@@ -120,7 +121,36 @@ const en: Dict = {
   picker_empty: 'No products yet — create the first one',
   picker_in_stock: (stock) => `${stock} in stock`,
   sales_remove_column: 'Remove',
-  sales_return_line: (name) => `Return ${name}`
+  sales_return_line: (name) => `Return ${name}`,
+  purchases_title: 'Record purchase',
+  purchases_tagline: 'Stock comes in and cash goes out, from the one entry',
+  purchases_action: 'Record purchase',
+  purchases_draft_title: 'New purchase',
+  purchases_ledger_title: 'Purchases ledger',
+  purchases_ledger_sub: 'Every purchase is a document; the day reads top-down, newest first',
+  purchases_supplier: 'Supplier',
+  purchases_one_off_supplier: 'One-off supplier',
+  purchases_new_supplier: 'New supplier',
+  purchases_new_supplier_placeholder: 'Name of the new supplier…',
+  purchases_supplier_existing: (name: string) =>
+    `“${name}” already exists — pick it from the list for this purchase.`,
+  purchases_no_lines:
+    'No lines yet — pick a product above and it lands here with its price filled in.',
+  purchases_live_total: 'Live total',
+  purchases_price_unit: '$/unit',
+  purchases_draft_hint: 'Ctrl+Enter records',
+  purchases_error_title: 'Not recorded: ',
+  purchases_invalid: 'A field does not hold a valid number — fix it before recording.',
+  purchases_legend: 'Purchase recorded — stock came in and money went out',
+  purchases_no_purchases_today:
+    'No purchases today yet — the first one appears here with its stamp.',
+  purchases_no_purchases_day: 'No purchases that day.',
+  purchases_document_one: 'document',
+  purchases_documents: 'documents',
+  purchases_ledger_error: 'Could not read the ledger: ',
+  purchases_supplier_required: 'Choose a supplier before recording the purchase.',
+  purchases_load_suppliers_failed: 'Could not load the suppliers: ',
+  purchases_create_supplier_error: 'Could not create the supplier: '
 };
 
 export default en;

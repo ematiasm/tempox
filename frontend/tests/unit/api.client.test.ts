@@ -8,9 +8,13 @@ import {
   fetchDay,
   findOrCreateCustomer,
   getCash,
+  createPurchase,
+  createSupplier,
   listCustomers,
   listProducts,
-  listSales
+  listPurchases,
+  listSales,
+  listSuppliers
 } from '#lib/api.js';
 
 /** The URL the client actually called, as a URL object. */
@@ -23,6 +27,21 @@ function calledUrl(mock: ReturnType<typeof vi.fn>, index = 0): URL {
 /** The init the client actually passed, if any. */
 function calledInit(mock: ReturnType<typeof vi.fn>, index = 0): RequestInit | undefined {
   return mock.mock.calls[index]?.[1] as RequestInit | undefined;
+}
+
+/**
+ * The body objects the client handed to `fetch`, parsed back.
+ *
+ * Reading the object rather than only the serialized string matters where the
+ * difference between "key absent" and "key present but undefined" is the point:
+ * `JSON.stringify` erases both, so a string-only assertion cannot tell them
+ * apart.
+ */
+function bodiesSent(mock: ReturnType<typeof vi.fn>): Record<string, unknown>[] {
+  return mock.mock.calls.map((call) => {
+    const init = call[1] as RequestInit | undefined;
+    return JSON.parse((init?.body as string) ?? '{}') as Record<string, unknown>;
+  });
 }
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -330,5 +349,140 @@ describe('dayRange (S8, S9)', () => {
     const at = new Date(2026, 9, 14, 18, 42);
     expect(dayRange(at).prev).toBe(dayRange(new Date(2026, 9, 13, 12, 0)).from);
     expect(dayRange(at).next).toBe(dayRange(new Date(2026, 9, 15, 12, 0)).from);
+  });
+});
+
+// ── v2: purchases and suppliers ──────────────────────────────────────────────
+
+describe('listSuppliers and createSupplier', () => {
+  it('lists suppliers, because a purchase picker needs them including the seed', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse([]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await listSuppliers();
+
+    expect(calledUrl(fetchMock).pathname).toBe('/api/suppliers');
+    expect(calledInit(fetchMock)).toBeUndefined();
+  });
+
+  it('creates a supplier with the name it was given, untrimmed on the client', async () => {
+    // The server trims and decides what is blank. A client that also trimmed
+    // would make the two disagree about what "empty" means.
+    const created = { id: 's1', name: 'Molino Sur', created_at: '2026-10-18T00:00:00Z' };
+    const fetchMock = vi.fn(async () => jsonResponse(created, 201));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const supplier = await createSupplier('  Molino Sur  ');
+
+    expect(supplier.name).toBe('Molino Sur');
+    expect(calledUrl(fetchMock).pathname).toBe('/api/suppliers');
+    const init = calledInit(fetchMock);
+    expect(init?.method).toBe('POST');
+    expect(JSON.parse(init?.body as string)).toEqual({ name: '  Molino Sur  ' });
+  });
+
+  it('surfaces a duplicate name as a 409 ApiError rather than inventing a match', async () => {
+    // Unlike customers, a supplier has no inline "select the existing one":
+    // the picker lists them, so a 409 means the user typed a name that is
+    // already in the list and can pick it. Swallowing the conflict here would
+    // hide that from the screen.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => jsonResponse({ error: 'conflict' }, 409))
+    );
+
+    await expect(createSupplier('Molino Sur')).rejects.toMatchObject({ status: 409 });
+  });
+});
+
+describe('listPurchases', () => {
+  it('sends the range, the limit and the offset it was given', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse([]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await listPurchases({
+      from: '2026-10-14T00:00:00Z',
+      to: '2026-10-15T00:00:00Z',
+      limit: 50,
+      offset: 50
+    });
+
+    const url = calledUrl(fetchMock);
+    expect(url.pathname).toBe('/api/purchases');
+    expect(url.searchParams.get('from')).toBe('2026-10-14T00:00:00Z');
+    expect(url.searchParams.get('to')).toBe('2026-10-15T00:00:00Z');
+    expect(url.searchParams.get('limit')).toBe('50');
+    expect(url.searchParams.get('offset')).toBe('50');
+  });
+
+  it('omits absent bounds instead of sending empty ones', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse([]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await listPurchases();
+
+    const url = calledUrl(fetchMock);
+    expect(url.searchParams.has('from')).toBe(false);
+    expect(url.searchParams.has('to')).toBe(false);
+  });
+});
+
+describe('createPurchase', () => {
+  it('sends the purchase exactly as given, with no client-side rescaling', async () => {
+    // Money crosses the wire as a decimal string; a client that parsed and
+    // re-serialized it could lose the cent it is meant to protect.
+    const fetchMock = vi.fn(async () => jsonResponse({ purchase: { id: 'p1' }, items: [] }, 201));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createPurchase({
+      supplier_id: 'sup-1',
+      items: [
+        { product_id: 'prod-1', quantity: 4 },
+        { product_id: 'prod-2', quantity: 2, unit_price: '10.50' }
+      ]
+    });
+
+    expect(calledUrl(fetchMock).pathname).toBe('/api/purchases');
+    const init = calledInit(fetchMock);
+    expect(init?.method).toBe('POST');
+    expect(JSON.parse(init?.body as string)).toEqual({
+      supplier_id: 'sup-1',
+      items: [
+        { product_id: 'prod-1', quantity: 4 },
+        { product_id: 'prod-2', quantity: 2, unit_price: '10.50' }
+      ]
+    });
+  });
+
+  it('never sends null for an absent supplier', async () => {
+    // The distinction that matters on the wire is absent vs `null`: the server
+    // reads a missing `supplier_id` as "use the seeded one-off-supplier", and an
+    // unknown id as 404. `null` is neither, so it would be a third case nobody
+    // handles.
+    //
+    // Note what this test can and cannot catch. `JSON.stringify` drops
+    // `undefined`, so `body.supplier_id = undefined` is an EQUIVALENT mutant of
+    // omitting the key — measured, it passes this test, and that is correct
+    // rather than a gap. What would be a real defect is `?? null`, which puts a
+    // null on the wire; that is what this asserts against.
+    const fetchMock = vi.fn(async () => jsonResponse({ purchase: { id: 'p1' }, items: [] }, 201));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createPurchase({ items: [{ product_id: 'prod-1', quantity: 1 }] });
+
+    const body = bodiesSent(fetchMock)[0];
+    expect(Object.hasOwn(body, 'supplier_id')).toBe(false);
+    expect(body.supplier_id ?? undefined).toBeUndefined();
+  });
+
+  it('surfaces a rejected purchase as an ApiError with its status', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => jsonResponse({ error: 'not found' }, 404))
+    );
+
+    await expect(
+      createPurchase({ items: [{ product_id: 'prod-missing', quantity: 1 }] })
+    ).rejects.toMatchObject({ status: 404 });
   });
 });

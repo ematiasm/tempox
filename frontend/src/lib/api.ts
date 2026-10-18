@@ -228,6 +228,121 @@ export async function createCreditNote(
   );
 }
 
+// ── Suppliers ────────────────────────────────────────────────────────────────
+
+export type Supplier = { id: string; name: string; created_at: string };
+
+/**
+ * Suppliers, including the seeded `one-off-supplier`.
+ *
+ * The seed is listed like any other supplier rather than hidden: a purchase that
+ * omits its supplier names it explicitly, and a picker that left it out would
+ * make that fallback invisible.
+ */
+export async function listSuppliers(): Promise<Supplier[]> {
+  return request<Supplier[]>(new URL('/api/suppliers', BASE));
+}
+
+/**
+ * Creates a supplier and returns what the server stored.
+ *
+ * The name is sent exactly as typed. Trimming here would make this client and
+ * the server disagree about what counts as blank, and the server is the one that
+ * decides. Unlike `findOrCreateCustomer`, a 409 is **not** swallowed: the picker
+ * already lists the suppliers, so a duplicate means the user typed a name that
+ * is right there to choose, and hiding the conflict would hide that.
+ */
+export async function createSupplier(name: string): Promise<Supplier> {
+  return request<Supplier>(new URL('/api/suppliers', BASE), json('POST', { name }));
+}
+
+// ── Purchases ────────────────────────────────────────────────────────────────
+
+export type CreatePurchaseLine = {
+  product_id: string;
+  /** Integer quantity in the product's base unit. */
+  quantity: number;
+  /**
+   * Currency amount with two decimal places. Omit to use the list price.
+   *
+   * A purchase price that differs from the catalogue is the normal case, not an
+   * exception, which is why this override exists on the same terms a sale line
+   * has it.
+   */
+  unit_price?: string;
+};
+
+export type NewPurchase = {
+  /** Omitted means the server's seeded `one-off-supplier`. */
+  supplier_id?: string;
+  items: CreatePurchaseLine[];
+};
+
+export type ListPurchasesParams = {
+  /** Inclusive bound on `created_at`. */
+  from?: string;
+  /** Exclusive bound on `created_at`. */
+  to?: string;
+  limit?: number;
+  offset?: number;
+};
+
+/** A purchase and its lines, which is how both endpoints answer. */
+export type PurchaseListItem = {
+  purchase: Purchase;
+  items: PurchaseItem[];
+};
+
+export type Purchase = {
+  id: string;
+  supplier_id: string;
+  total: string;
+  created_at: string;
+};
+
+/**
+ * One line of a purchase: the product, and the name/unit/price snapshotted when
+ * the goods arrived.
+ */
+export type PurchaseItem = {
+  id: string;
+  purchase_id: string;
+  product_id: string;
+  product_name: string;
+  quantity: number;
+  unit_price: string;
+  line_total: string;
+  unit: Unit;
+};
+
+/** Purchases newest first, with their nested lines. */
+export async function listPurchases(params: ListPurchasesParams = {}): Promise<PurchaseListItem[]> {
+  const url = new URL('/api/purchases', BASE);
+  setIfPresent(url, 'from', params.from);
+  setIfPresent(url, 'to', params.to);
+  setIfPresent(url, 'limit', params.limit);
+  setIfPresent(url, 'offset', params.offset);
+  return request<PurchaseListItem[]>(url);
+}
+
+/**
+ * Records a purchase. The purchase, its lines and the positive stock movements
+ * land in one transaction on the server, so there is no partial purchase to
+ * clean up here.
+ */
+export async function createPurchase(
+  purchase: NewPurchase
+): Promise<{ purchase: Purchase; items: PurchaseItem[] }> {
+  const body: Record<string, unknown> = { items: purchase.items };
+  // Omitted, not null: the server distinguishes "no supplier" (the seeded
+  // one-off-supplier) from "an unknown supplier id" (404).
+  if (purchase.supplier_id) body.supplier_id = purchase.supplier_id;
+  return request<{ purchase: Purchase; items: PurchaseItem[] }>(
+    new URL('/api/purchases', BASE),
+    json('POST', body)
+  );
+}
+
 // ── Products ─────────────────────────────────────────────────────────────────
 
 export type ListProductsParams = {

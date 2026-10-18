@@ -131,4 +131,36 @@ export interface Dict {
   sales_remove_column: string;
   /** The refund field's accessible name, which names the line it corrects. */
   sales_return_line: (name: string) => string;
+
+  // ── Purchases (v2) ────────────────────────────────────────────────────────
+  // A purchase is the mirror of a sale in the other direction: goods in, money
+  // out. The vocabulary is the shop's, not a translation of the English code.
+  nav_purchases: string;
+  purchases_title: string;
+  purchases_tagline: string;
+  purchases_action: string;
+  purchases_draft_title: string;
+  purchases_ledger_title: string;
+  purchases_ledger_sub: string;
+  purchases_supplier: string;
+  /** The seeded supplier that a purchase falls back to. Stored as `one-off-supplier`. */
+  purchases_one_off_supplier: string;
+  purchases_new_supplier: string;
+  purchases_new_supplier_placeholder: string;
+  purchases_supplier_existing: (name: string) => string;
+  purchases_no_lines: string;
+  purchases_live_total: string;
+  purchases_price_unit: string;
+  purchases_draft_hint: string;
+  purchases_error_title: string;
+  purchases_invalid: string;
+  purchases_legend: string;
+  purchases_no_purchases_today: string;
+  purchases_no_purchases_day: string;
+  purchases_document_one: string;
+  purchases_documents: string;
+  purchases_ledger_error: string;
+  purchases_supplier_required: string;
+  purchases_load_suppliers_failed: string;
+  purchases_create_supplier_error: string;
 }
