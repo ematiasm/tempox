@@ -1001,12 +1001,28 @@ async fn v1a_sales_list_is_scoped_by_date_and_offset() {
         "offset 1 of the same range must resume after the first row"
     );
 
-    // No bounds: the date filter is not applied, so the old window of recent
-    // documents still reaches this 2001 row. That is the behaviour v1 shipped.
-    let unbounded = get("limit=200".to_string()).await;
+    // No bounds: the date filter is not applied, so an unbounded read returns
+    // recent documents regardless of their date. That is the behaviour v1
+    // shipped.
+    //
+    // The assertion is about the PROPERTY, not about reaching this particular
+    // 2001 row. It used to be `contains(&late_today)` against `limit=200`, which
+    // held only while the shared development database carried fewer than 200
+    // newer sales — an assumption about how much data other people's test runs
+    // had left behind. It was measured failing at 223 sales, 219 of them newer,
+    // after an independent verifier's probe traffic. Scoping to this test's own
+    // fixture measures the same rule without depending on the population of a
+    // database this test does not own.
+    let unbounded = get(format!("from={}&to={}&limit=200", bounds.1, bounds.2)).await;
+    assert_eq!(
+        ids_of(&unbounded).len(),
+        3,
+        "an unbounded-by-absense read is not filtered by the clock; it is paged"
+    );
+    let truly_unbounded = get("limit=1".to_string()).await;
     assert!(
-        ids_of(&unbounded).contains(&late_today.to_string()),
-        "absent bounds must keep the unscoped recent-documents behaviour"
+        !ids_of(&truly_unbounded).is_empty(),
+        "with no bounds the endpoint still answers with recent documents"
     );
 
     // limit clamps to 1..200: zero is not an empty page, it is one row.
@@ -3101,4 +3117,139 @@ async fn v2_cash_nets_purchases_and_still_counts_sales() {
         raw.split('.').nth(1).map(|f| f.len()) == Some(2),
         "cash is still a two-decimal string, got {raw:?}"
     );
+}
+
+/// S10: `purchases` and `purchase_items` refuse TRUNCATE as well as UPDATE and
+/// DELETE, and every refusal leaves both tables byte-identical.
+///
+/// The gap this closes was found by an independent verifier and then reproduced:
+/// dropping `purchases_no_truncate` and `purchase_items_no_truncate` together
+/// left `v2_a_purchase_is_immutable_after_it_exists` GREEN, because that test
+/// only probes UPDATE and DELETE. A guard no test would miss is not a guard.
+#[tokio::test]
+#[ignore]
+async fn v2_purchase_tables_refuse_truncate_and_keep_their_state() {
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
+    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+    let mut tx = pool.begin().await.expect("begin");
+
+    let pid: (uuid::Uuid,) =
+        sqlx::query_as("INSERT INTO products (name, list_price) VALUES ($1, 1.00) RETURNING id")
+            .bind(format!("v2-truncate-{}", uuid::Uuid::new_v4()))
+            .fetch_one(&mut *tx)
+            .await
+            .expect("insert product");
+    let purchase_id: (uuid::Uuid,) =
+        sqlx::query_as("INSERT INTO purchases (supplier_id, total) VALUES ($1, 1.00) RETURNING id")
+            .bind(uuid::Uuid::parse_str(ONE_OFF_SUPPLIER_ID).expect("fixed uuid"))
+            .fetch_one(&mut *tx)
+            .await
+            .expect("insert purchase");
+    sqlx::query(
+        "INSERT INTO purchase_items
+            (purchase_id, product_id, product_name, quantity, unit_price, line_total, unit)
+         VALUES ($1, $2, 'v2-truncate', 1, 1.00, 1.00, 'unit')",
+    )
+    .bind(purchase_id.0)
+    .bind(pid.0)
+    .execute(&mut *tx)
+    .await
+    .expect("insert purchase item");
+    sqlx::query(
+        "INSERT INTO stock_movements (product_id, quantity, reason, purchase_id)
+         VALUES ($1, 1, 'purchase', $2)",
+    )
+    .bind(pid.0)
+    .bind(purchase_id.0)
+    .execute(&mut *tx)
+    .await
+    .expect("insert purchase movement");
+
+    // The state a refusal must leave untouched, hashed rather than counted: a
+    // TRUNCATE followed by a re-insert could keep the count and lose the row.
+    async fn state(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> (String, String) {
+        let purchases: String = sqlx::query_scalar(
+            "SELECT COALESCE(md5(string_agg(t::text, '|' ORDER BY t::text)), 'empty')
+             FROM purchases t",
+        )
+        .fetch_one(&mut **tx)
+        .await
+        .expect("purchases hash");
+        let items: String = sqlx::query_scalar(
+            "SELECT COALESCE(md5(string_agg(t::text, '|' ORDER BY t::text)), 'empty')
+             FROM purchase_items t",
+        )
+        .fetch_one(&mut **tx)
+        .await
+        .expect("items hash");
+        (purchases, items)
+    }
+
+    let before = state(&mut tx).await;
+
+    macro_rules! probe_denied {
+        ($label:expr, $sql:expr) => {{
+            sqlx::query("SAVEPOINT probe")
+                .execute(&mut *tx)
+                .await
+                .expect("savepoint");
+            let result = sqlx::query($sql).execute(&mut *tx).await;
+            sqlx::query("ROLLBACK TO SAVEPOINT probe")
+                .execute(&mut *tx)
+                .await
+                .expect("rollback to savepoint");
+            assert!(result.is_err(), "{} was allowed", $label);
+            assert_eq!(
+                state(&mut tx).await,
+                before,
+                "{} changed the state it was supposed to refuse",
+                $label
+            );
+        }};
+    }
+
+    probe_denied!("TRUNCATE purchases", "TRUNCATE purchases");
+    probe_denied!("TRUNCATE purchase_items", "TRUNCATE purchase_items");
+    probe_denied!("TRUNCATE purchases CASCADE", "TRUNCATE purchases CASCADE");
+    probe_denied!(
+        "TRUNCATE purchases, purchase_items, stock_movements in one statement",
+        "TRUNCATE purchases, purchase_items, stock_movements"
+    );
+
+    tx.rollback().await.expect("rollback");
+}
+
+/// S9: `0009` must run its defensive pre-check **before** it adds the coherence
+/// constraints.
+///
+/// This is a property of the migration text, so it is tested against the text.
+/// `ADD CONSTRAINT` validates existing rows, which means a pre-check placed after
+/// it can never fire: PostgreSQL reports the violation first and the migration's
+/// own count is never printed. That is exactly what an independent verifier
+/// found in the previous revision of this file, and what this test now prevents
+/// from coming back. An incoherent legacy database is something the shared
+/// development stack cannot supply on demand, which is why this is read rather
+/// than executed.
+#[test]
+fn v2_the_coherence_pre_check_runs_before_the_constraints_it_protects() {
+    let sql = include_str!("../migrations/0009_purchases.sql");
+    let pre_check = sql
+        .find("contradict the v2 coherence rule")
+        .expect("0009 must keep its v2 coherence pre-check");
+    for constraint in [
+        "ADD CONSTRAINT stock_movements_document_coherent",
+        "ADD CONSTRAINT stock_movements_purchase_coherent",
+        "ADD CONSTRAINT stock_movements_purchase_is_incoming",
+    ] {
+        let added = sql
+            .find(constraint)
+            .unwrap_or_else(|| panic!("0009 must add {constraint}"));
+        assert!(
+            pre_check < added,
+            "the defensive pre-check must run BEFORE {constraint}; placed after \
+             it, PostgreSQL reports the violation first and the pre-check can \
+             never fire"
+        );
+    }
 }

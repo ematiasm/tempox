@@ -91,6 +91,30 @@ ALTER TABLE stock_movements
 -- refund that cannot be traced to the document it corrects is not auditable.
 -- A purchase has no sale to point at, which is why the reasons split by which
 -- document they carry instead of by "document or initial".
+-- 0007's defensive check, and it matters MORE here than it did there, for two
+-- reasons. First, this development database carries real sales and credit notes.
+-- Second, and the one that cost a verification round: `ADD CONSTRAINT`
+-- validates the existing rows, so if this pre-check ran *after* the constraints
+-- it protects, PostgreSQL would report `check constraint ... is violated by some
+-- row` and the migration's own count would never be printed — a diagnostic that
+-- names the symptom instead of the cause. It therefore runs BEFORE them, right
+-- after the reason vocabulary is recreated.
+DO $$
+DECLARE
+    incoherent bigint;
+BEGIN
+    SELECT count(*) INTO incoherent FROM stock_movements
+     WHERE (reason IN ('sale', 'credit_note') AND sale_id IS NULL)
+        OR (reason = 'initial' AND (sale_id IS NOT NULL OR purchase_id IS NOT NULL))
+        OR (reason NOT IN ('sale', 'credit_note', 'initial') AND sale_id IS NULL AND purchase_id IS NULL);
+    IF incoherent > 0 THEN
+        RAISE EXCEPTION
+            'stock_movements has % row(s) that contradict the v2 coherence rule; fix them before migrating',
+            incoherent;
+    END IF;
+END;
+$$;
+
 ALTER TABLE stock_movements
     DROP CONSTRAINT IF EXISTS stock_movements_document_coherent;
 ALTER TABLE stock_movements
@@ -118,25 +142,6 @@ ALTER TABLE stock_movements
     ADD CONSTRAINT stock_movements_purchase_is_incoming
     CHECK (reason <> 'purchase' OR quantity > 0);
 
--- 0007's defensive check, and it matters more here than it did there: this
--- development database carries real sales and credit notes, so a constraint that
--- the existing data already violates would otherwise be added and then fail on
--- the next legitimate insert, blaming the wrong writer.
-DO $$
-DECLARE
-    incoherent bigint;
-BEGIN
-    SELECT count(*) INTO incoherent FROM stock_movements
-     WHERE (reason IN ('sale', 'credit_note') AND sale_id IS NULL)
-        OR (reason = 'initial' AND (sale_id IS NOT NULL OR purchase_id IS NOT NULL))
-        OR (reason NOT IN ('sale', 'credit_note', 'initial') AND sale_id IS NULL AND purchase_id IS NULL);
-    IF incoherent > 0 THEN
-        RAISE EXCEPTION
-            'stock_movements has % row(s) that contradict the v2 coherence rule; fix them before migrating',
-            incoherent;
-    END IF;
-END;
-$$;
 
 CREATE INDEX IF NOT EXISTS stock_movements_purchase_id_idx
     ON stock_movements (purchase_id);

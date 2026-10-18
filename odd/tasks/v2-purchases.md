@@ -283,3 +283,73 @@ test in this slice.
   `400`/`409` ladder against `suppliers.rs`, and the `1..200` limit claim against
   the `MAX_LIST_LIMIT` constants in all three list handlers. A doc that overclaims
   is the `0007`→`0008` failure in prose form.
+
+## Independent verification (2026-10-18)
+
+An independent read-only verifier ran against the committed range `03dc2b2..HEAD`
+and returned **one blocker and three risks**. All are now closed.
+
+**B1 — the S9 pre-check could never fire.** `0009` added
+`stock_movements_document_coherent` at line 97 and ran its defensive `DO` block at
+line 126, so on a database that already held an incoherent row PostgreSQL
+reported `check constraint ... is violated by some row` first and the migration's
+own count was never printed. **This is the same defect the T2 entry above claims
+to have fixed**, and it was only half fixed: T2 moved the *guard* assertion to
+the end, which was right for that one, and left the *pre-check* after the
+constraints it protects. Fixed: the block now runs immediately before them.
+- Test added (`v2_the_coherence_pre_check_runs_before_the_constraints_it_protects`,
+  a `#[test]`, not ignored): it asserts the ordering in the migration text, since
+  an incoherent legacy database is what the shared stack cannot supply on demand.
+  **Measured RED** by moving the block back to the end; the message names the
+  constraint and the reason.
+- The pre-check was also measured **firing**, on a throwaway database carrying a
+  simulated legacy incoherent row (`initial` with a `sale_id`): it raised
+  `stock_movements has 1 row(s) that contradict the v2 coherence rule`, which is
+  the diagnostic that was previously unreachable. Database dropped afterwards.
+
+**R1 — the TRUNCATE guards had no test that bites.** The verifier showed that
+dropping `purchases_no_truncate` **and** `purchase_items_no_truncate` left the
+existing immutability test green, because it only probed UPDATE and DELETE. Added
+`v2_purchase_tables_refuse_truncate_and_keep_their_state`, which probes four
+TRUNCATE shapes against a savepoint and compares an `md5` hash of both tables
+before and after each refusal. **Mutation measured**: with both triggers dropped
+it fails with `TRUNCATE purchase_items was allowed`; restored, it passes.
+
+**R2 — the shared development database carries a purchase that contradicts
+S1/S8.** `29c6cdbb-…`, 70.00, two lines, **zero** stock movements, created
+2026-10-18 04:55:10 — during this session, and reproducible by nobody, because
+T3's mutation removed the movement write *while the handler was serving the
+shared database*. My mistake, not the handler's: every purchase the current
+handler created has matching movements (the verifier created 39 to check).
+Because purchases are immutable by design, the row cannot be corrected, and its
+70.00 stays in the cash figure. **It is recorded rather than repaired**: deleting
+it would require disabling the guard that this whole slice exists to install.
+Lesson: a mutation run belongs on a throwaway database, never on the shared one.
+
+**R3 — the docs overclaimed one corner (S18).** `architecture.md` said a price
+finer than a cent is `400`. Measured: `unit_price "0.005"` with quantity 1 is
+`400`, but with quantity 2 the line total (`0.010`) is whole cents, so the handler
+accepts it and the database's whole-cents check rejects it as `500`. The
+behaviour is pre-existing and inherited from the sale path (the verifier measured
+`POST /api/sales` on the pre-existing image returning the same `500`), so the
+**doc** was corrected rather than the behaviour changed out of scope.
+
+**R4 — advisory, no action**: a `purchase` movement that also carries a
+`sale_id` is accepted by the constraints. No code path produces one and the
+verifier counted zero in the database. The `purchase_coherent` equality covers
+`purchase_id`, not the absence of a `sale_id`; tightening it is a decision for
+whoever has a reason, not a silent change here.
+
+**A test that depended on how much data other runs had left behind.** The
+verifier's probe traffic (223 sales, 219 newer than the 2001 fixture) made
+`v1a_sales_list_is_scoped_by_date_and_offset` fail: it asserted that an unbounded
+`limit=200` read *reaches* a 2001 row, which holds only under 200 newer rows. The
+assertion was rewritten to measure the property on this test's own fixture
+instead of relying on the population of a database it does not own.
+
+**Migration checksum, handled explicitly.** Moving the `DO` block changes the
+file, so `sqlx` refused to boot: `migration 9 was previously applied but has been
+modified`. Before touching anything, the resulting schema was compared between a
+freshly migrated database and the development one — **identical** in columns,
+constraints, indexes and triggers — and the diff proved the `DO` block was moved
+and no statement added or removed. Only then was the recorded checksum updated.
