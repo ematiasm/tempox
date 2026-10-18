@@ -2270,3 +2270,254 @@ async fn v1_5_a_malformed_day_is_a_refusal_not_a_guess() {
         "the answer to 'what day is it' must contain the moment it was asked"
     );
 }
+
+// ── v2 (T1): the purchases schema ──────────────────────────────────────────
+//
+// plan-v2.md, "Data model" and the `0008` lesson: the tables exist, the seeded
+// supplier is there with its fixed id, and the guards are enforced by the
+// database rather than by a writer's discipline. Every test is self-relative —
+// it creates its own rows and rolls back — because this suite runs against the
+// shared development database (plan-v2.md, "The testing hazard this slice must
+// not repeat").
+
+/// The seeded supplier's id, mirroring the walk-in customer's fixed id.
+/// Spelled out rather than imported: the test is what pins the constant the
+/// migration writes, the same way `walk_in_id_matches_the_migration_seed` does.
+const ONE_OFF_SUPPLIER_ID: &str = "00000000-0000-0000-0000-000000000002";
+
+#[tokio::test]
+#[ignore]
+async fn v2_schema_creates_purchases_tables_and_seeds_one_off_supplier() {
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
+    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+
+    for table in ["suppliers", "purchases", "purchase_items"] {
+        let reg: Option<String> = sqlx::query_scalar("SELECT to_regclass($1)::text")
+            .bind(format!("public.{table}"))
+            .fetch_one(&pool)
+            .await
+            .expect("to_regclass");
+        assert_eq!(
+            reg.as_deref(),
+            Some(table),
+            "{table} does not exist: the v2 migration did not run"
+        );
+    }
+
+    // The seed is what lets a purchase omit its supplier, exactly as the walk-in
+    // seed lets a sale omit its customer. Its name is the stored English string;
+    // the es-AR display string lives in the frontend dictionary.
+    let name: String = sqlx::query_scalar("SELECT name FROM suppliers WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(ONE_OFF_SUPPLIER_ID).expect("fixed uuid"))
+        .fetch_one(&pool)
+        .await
+        .expect("seeded supplier");
+    assert_eq!(
+        name, "one-off-supplier",
+        "the seeded supplier's stored name is a contract: it reaches the API and exports"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn v2_a_purchase_is_immutable_after_it_exists() {
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
+    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+
+    let mut tx = pool.begin().await.expect("begin");
+
+    let pid: (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO products (name, list_price) VALUES ('v2-guard-p', 10.00) RETURNING id",
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .expect("insert product");
+
+    let purchase_id: (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO purchases (supplier_id, total) VALUES ($1, 20.00) RETURNING id",
+    )
+    .bind(uuid::Uuid::parse_str(ONE_OFF_SUPPLIER_ID).expect("fixed uuid"))
+    .fetch_one(&mut *tx)
+    .await
+    .expect("insert purchase");
+
+    let item_id: (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO purchase_items
+            (purchase_id, product_id, product_name, quantity, unit_price, line_total, unit)
+         VALUES ($1, $2, 'v2-guard-p', 2, 10.00, 20.00, 'unit') RETURNING id",
+    )
+    .bind(purchase_id.0)
+    .bind(pid.0)
+    .fetch_one(&mut *tx)
+    .await
+    .expect("insert purchase item");
+
+    // The ledger must accept the new reason and cohere with it: a purchase row is
+    // money out of the till and stock in, so its quantity is positive.
+    sqlx::query(
+        "INSERT INTO stock_movements (product_id, quantity, reason, purchase_id)
+         VALUES ($1, 2, 'purchase', $2)",
+    )
+    .bind(pid.0)
+    .bind(purchase_id.0)
+    .execute(&mut *tx)
+    .await
+    .expect("a purchase movement must be accepted by the ledger");
+
+    // Probe helper: run one expected-to-fail statement inside a savepoint and
+    // recover the transaction, so the next probe sees unchanged state.
+    macro_rules! probe_denied {
+        ($label:expr, $sql:expr $(, $bind:expr)*) => {{
+            sqlx::query("SAVEPOINT probe").execute(&mut *tx).await.expect("savepoint");
+            let result = sqlx::query($sql) $(.bind($bind))*.execute(&mut *tx).await;
+            sqlx::query("ROLLBACK TO SAVEPOINT probe")
+                .execute(&mut *tx)
+                .await
+                .expect("rollback to savepoint");
+            assert!(result.is_err(), "{} was allowed", $label);
+        }};
+    }
+
+    probe_denied!(
+        "purchase update",
+        "UPDATE purchases SET total = 1.00 WHERE id = $1",
+        purchase_id.0
+    );
+    probe_denied!(
+        "purchase delete",
+        "DELETE FROM purchases WHERE id = $1",
+        purchase_id.0
+    );
+    probe_denied!(
+        "purchase item update",
+        "UPDATE purchase_items SET quantity = 1 WHERE id = $1",
+        item_id.0
+    );
+    probe_denied!(
+        "purchase item delete",
+        "DELETE FROM purchase_items WHERE id = $1",
+        item_id.0
+    );
+    // A purchase has no status, so unlike a sale there is no permitted edit at
+    // all — that is the design, not an omission (plan-v2.md, "Why not one
+    // document with a status").
+    probe_denied!(
+        "purchase created_at rewrite",
+        "UPDATE purchases SET created_at = now() WHERE id = $1",
+        purchase_id.0
+    );
+
+    // A finer-than-a-cent amount is refused on both new money columns.
+    probe_denied!(
+        "a purchase total finer than a cent",
+        "INSERT INTO purchases (supplier_id, total) VALUES ($1, 20.005)",
+        uuid::Uuid::parse_str(ONE_OFF_SUPPLIER_ID).expect("fixed uuid")
+    );
+
+    tx.rollback().await.expect("rollback");
+}
+
+#[tokio::test]
+#[ignore]
+async fn v2_the_ledger_refuses_a_purchase_movement_without_its_document() {
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
+    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+
+    let mut tx = pool.begin().await.expect("begin");
+    let pid: (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO products (name, list_price) VALUES ('v2-coherence-p', 5.00) RETURNING id",
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .expect("insert product");
+
+    let purchase_id: (uuid::Uuid,) =
+        sqlx::query_as("INSERT INTO purchases (supplier_id, total) VALUES ($1, 0.00) RETURNING id")
+            .bind(uuid::Uuid::parse_str(ONE_OFF_SUPPLIER_ID).expect("fixed uuid"))
+            .fetch_one(&mut *tx)
+            .await
+            .expect("insert zero-total purchase");
+
+    // FIRST, the positive case, and it is not ceremony: without it this test
+    // would pass before the migration exists, because 'purchase' was not yet a
+    // known reason and the refusal it measures would be the *wrong* one. A guard
+    // test that a missing feature satisfies proves nothing.
+    sqlx::query(
+        "INSERT INTO stock_movements (product_id, quantity, reason, purchase_id)
+         VALUES ($1, 3, 'purchase', $2)",
+    )
+    .bind(pid.0)
+    .bind(purchase_id.0)
+    .execute(&mut *tx)
+    .await
+    .expect("a coherent purchase movement must be accepted: the reason is in the vocabulary");
+
+    // NOW the two refusals the coherence rule owes. Each runs in its own
+    // savepoint, because a failed statement aborts the enclosing transaction.
+    macro_rules! probe_denied {
+        ($label:expr, $sql:expr $(, $bind:expr)*) => {{
+            sqlx::query("SAVEPOINT probe").execute(&mut *tx).await.expect("savepoint");
+            let result = sqlx::query($sql) $(.bind($bind))*.execute(&mut *tx).await;
+            sqlx::query("ROLLBACK TO SAVEPOINT probe")
+                .execute(&mut *tx)
+                .await
+                .expect("rollback to savepoint");
+            assert!(result.is_err(), "{} was allowed", $label);
+        }};
+    }
+
+    // One side: a 'purchase' row that names no document.
+    probe_denied!(
+        "a purchase movement with no purchase_id",
+        "INSERT INTO stock_movements (product_id, quantity, reason) VALUES ($1, 1, 'purchase')",
+        pid.0
+    );
+
+    // The other side: an 'initial' row that claims one.
+    probe_denied!(
+        "an initial movement carrying a purchase_id",
+        "INSERT INTO stock_movements (product_id, quantity, reason, purchase_id)
+         VALUES ($1, 1, 'initial', $2)",
+        pid.0,
+        purchase_id.0
+    );
+
+    // And the sign convention: stock comes IN on a purchase, so a negative
+    // purchase movement means goods left on a document that only ever receives.
+    // The ledger accepts negative quantities in general (a sale), which is why
+    // this has to be asserted rather than assumed.
+    probe_denied!(
+        "a negative purchase movement",
+        "INSERT INTO stock_movements (product_id, quantity, reason, purchase_id)
+         VALUES ($1, -3, 'purchase', $2)",
+        pid.0,
+        purchase_id.0
+    );
+
+    // The trailing side of the same rule, and it needs its own probe: a `sale`
+    // row that also claims a purchase would satisfy the reason/document rule
+    // above (it carries a sale_id) while pointing at two documents at once. The
+    // equality in `stock_movements_purchase_coherent` is what refuses it — a
+    // one-sided `purchase => purchase_id` check would let this through, which is
+    // exactly what a mutation run measured.
+    let sale_id: (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO sales (customer_id, total) VALUES ('00000000-0000-0000-0000-000000000001', 0.00) RETURNING id",
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .expect("insert zero-total sale");
+
+    probe_denied!(
+        "a sale movement carrying a purchase_id",
+        "INSERT INTO stock_movements (product_id, quantity, reason, sale_id, purchase_id)
+         VALUES ($1, -3, 'sale', $2, $3)",
+        pid.0,
+        sale_id.0,
+        purchase_id.0
+    );
+
+    tx.rollback().await.expect("rollback");
+}
