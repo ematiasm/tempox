@@ -161,7 +161,19 @@ const es: Dict = {
   purchases_ledger_error: 'No se pudo leer el libro: ',
   purchases_supplier_required: 'Elegí un proveedor antes de registrar la compra.',
   purchases_load_suppliers_failed: 'No se pudieron cargar los proveedores: ',
-  purchases_create_supplier_error: 'No se pudo crear el proveedor: '
+  purchases_create_supplier_error: 'No se pudo crear el proveedor: ',
+  purchases_supplier_return: 'Devolución al proveedor',
+  purchases_return_action: 'Devolver al proveedor…',
+  purchases_return_confirm:
+    'Las unidades listadas vuelven al proveedor y la caja sube por lo que entra.',
+  purchases_return_yes: 'Sí, devolver',
+  purchases_return_no: 'No',
+  purchases_return_qty: 'Devolver',
+  purchases_return_left: (left, bought) => `quedan ${left} de ${bought}`,
+  purchases_return_none: 'Ya se devolvieron todas las líneas.',
+  purchases_return_error: 'No se devolvió: ',
+  purchases_return_invalid: 'Una cantidad a devolver no es válida — corregila antes de devolver.',
+  purchases_return_line: (name) => `Cantidad a devolver de ${name}`
 };
 
 export default es;

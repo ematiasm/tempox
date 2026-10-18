@@ -163,4 +163,23 @@ export interface Dict {
   purchases_supplier_required: string;
   purchases_load_suppliers_failed: string;
   purchases_create_supplier_error: string;
+
+  // ── Supplier returns (v2.5) ──────────────────────────────────────────────
+  // The mirror of the credit note, with the direction reversed: goods go back
+  // to the supplier and money comes back. The vocabulary is the shop's.
+  purchases_supplier_return: string;
+  purchases_return_action: string;
+  purchases_return_confirm: string;
+  purchases_return_yes: string;
+  purchases_return_no: string;
+  /** The return quantity column's header. */
+  purchases_return_qty: string;
+  /** How much of a line is left to return, of what was bought. */
+  purchases_return_left: (left: number, bought: number) => string;
+  /** Shown when every line of the purchase has already gone back. */
+  purchases_return_none: string;
+  purchases_return_error: string;
+  purchases_return_invalid: string;
+  /** The return field's accessible name, which names the line it corrects. */
+  purchases_return_line: (name: string) => string;
 }

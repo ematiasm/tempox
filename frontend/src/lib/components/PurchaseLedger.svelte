@@ -12,6 +12,7 @@
    */
   import {
     ApiError,
+    createSupplierReturn,
     fetchDay,
     listPurchases,
     listSuppliers,
@@ -19,9 +20,15 @@
     type PurchaseListItem,
     type Supplier
   } from '#lib/api.js';
-  import { formatDay, formatMoney, formatQuantity, formatTime } from '#lib/money.js';
+  import { formatDay, formatMoney, formatQuantity, formatTime, parseQuantity } from '#lib/money.js';
+  import {
+    isFullyReturned,
+    planReturn,
+    returnableOf,
+    returnedByLine
+  } from '#lib/supplierReturns.js';
   import { lang } from '#lib/i18n/index.svelte.js';
-  import { SvelteSet } from 'svelte/reactivity';
+  import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 
   interface Props {
     /** Changes whenever a purchase is recorded, so the day reloads. */
@@ -43,6 +50,18 @@
   let suppliers = $state<Supplier[]>([]);
   const supplierNames = $derived(new Map(suppliers.map((s) => [s.id, s.name])));
 
+  // ── Returns ──────────────────────────────────────────────────────────────
+  //
+  // The same shape the sales ledger uses for a refund, with the direction
+  // reversed: a draft per line, a two-step confirm, and the day reloaded from
+  // the server afterwards rather than patched locally. The server is the
+  // authority on what went back, so a local tally would be a second opinion that
+  // could disagree with the record.
+  let returnDraft = new SvelteMap<string, Map<string, string>>();
+  let confirming = $state<string | null>(null);
+  let returning = $state<string | null>(null);
+  let returnError = $state<string | null>(null);
+
   // The shop's zone, as the server names it. Every time on the page renders in
   // it rather than in the machine's, so a shop in Buenos Aires reads its own
   // hours from a PC that may be set anywhere.
@@ -51,6 +70,30 @@
   function describe(e: unknown): string {
     if (e instanceof ApiError) return `HTTP ${e.status}`;
     return e instanceof Error ? e.message : String(e);
+  }
+
+  /**
+   * Reads one shop day, with its documents and the supplier names.
+   *
+   * Extracted from the effect so a recorded return can reload exactly what a
+   * recorded purchase reloads, from the same source of truth. The caller decides
+   * how to react to a failure: the effect writes the page-level error, a return
+   * writes its own so the operator sees it next to the form they used.
+   */
+  async function loadDay(at: Date): Promise<void> {
+    const day = await fetchDay(at);
+    const [list, supplierList] = await Promise.all([
+      listPurchases({ from: day.from, to: day.to, limit: 200 }),
+      listSuppliers()
+    ]);
+    range = day;
+    rows = list;
+    suppliers = supplierList;
+  }
+
+  /** Re-reads the day already on screen, keeping the scope the user chose. */
+  async function reload(): Promise<void> {
+    await loadDay(scopeInstant);
   }
 
   $effect(() => {
@@ -87,6 +130,66 @@
   function toggle(id: string) {
     if (open.has(id)) open.delete(id);
     else open.add(id);
+  }
+
+  /**
+   * The draft text for one line: what was already returned sits under it as
+   * "left", so a partial return reads as what is left rather than as a total.
+   */
+  function returnText(rowId: string, itemId: string, remaining: number): string {
+    return returnDraft.get(rowId)?.get(itemId) ?? String(remaining);
+  }
+
+  function setReturnText(rowId: string, itemId: string, text: string) {
+    const draft = new SvelteMap(returnDraft.get(rowId) ?? []);
+    draft.set(itemId, text);
+    returnDraft.set(rowId, draft);
+  }
+
+  function clearReturnDraft(rowId: string) {
+    returnDraft.delete(rowId);
+  }
+
+  /**
+   * The plan this document would send, or `null` when the form is not valid.
+   *
+   * The arithmetic lives in `supplierReturns.ts` so it can be tested without a
+   * browser: the credit note measured that a component-only version of this is
+   * where a line gets overdrawn.
+   */
+  function planFor(row: PurchaseListItem): { purchase_item_id: string; quantity: number }[] | null {
+    const returned = returnedByLine(row.supplier_returns);
+    const requested = new SvelteMap<string, number | null>();
+    for (const item of row.items) {
+      const remaining = returnableOf(item.id, item.quantity, returned);
+      if (remaining === 0) continue;
+      requested.set(item.id, parseQuantity(returnText(row.purchase.id, item.id, remaining)));
+    }
+    return planReturn(row.items, returned, requested);
+  }
+
+  async function submitReturn(row: PurchaseListItem) {
+    const plan = planFor(row);
+    if (plan === null) {
+      returnError = lang.t.purchases_return_invalid;
+      return;
+    }
+    returning = row.purchase.id;
+    returnError = null;
+    try {
+      await createSupplierReturn(row.purchase.id, plan);
+      clearReturnDraft(row.purchase.id);
+      confirming = null;
+      // Reload the day rather than patching the row in place: the return the
+      // server wrote is the record, and what is left has to come from it.
+      await reload();
+    } catch (e) {
+      // A 409 is the cumulative guard answering: the line has less left than the
+      // form asked for. It is the one refusal an operator can act on.
+      returnError = e instanceof ApiError ? `${e.message} (${e.status})` : String(e);
+    } finally {
+      returning = null;
+    }
   }
 </script>
 
@@ -169,6 +272,7 @@
           </button>
 
           {#if isOpen}
+            {@const returned = returnedByLine(row.supplier_returns)}
             <table class="lines">
               <thead>
                 <tr>
@@ -176,10 +280,12 @@
                   <th scope="col" class="num">{lang.t.sales_qty}</th>
                   <th scope="col" class="num">{lang.t.purchases_price_unit}</th>
                   <th scope="col" class="num">{lang.t.sales_line}</th>
+                  <th scope="col" class="num">{lang.t.purchases_return_qty}</th>
                 </tr>
               </thead>
               <tbody>
                 {#each row.items as item (item.id)}
+                  {@const remaining = returnableOf(item.id, item.quantity, returned)}
                   <tr>
                     <td>{item.product_name}</td>
                     <td class="num figure">
@@ -187,10 +293,104 @@
                     </td>
                     <td class="num figure">{formatMoney(item.unit_price)}</td>
                     <td class="num figure">{formatMoney(item.line_total)}</td>
+                    <td class="num return-cell">
+                      {#if remaining > 0}
+                        <input
+                          type="text"
+                          inputmode="numeric"
+                          aria-label={lang.t.purchases_return_line(item.product_name)}
+                          value={returnText(row.purchase.id, item.id, remaining)}
+                          oninput={(event) =>
+                            setReturnText(row.purchase.id, item.id, event.currentTarget.value)}
+                        />
+                      {:else}
+                        <span class="returned">{lang.t.purchases_return_none}</span>
+                      {/if}
+                      <span class="left">
+                        {lang.t.purchases_return_left(remaining, item.quantity)}
+                      </span>
+                    </td>
                   </tr>
                 {/each}
               </tbody>
             </table>
+
+            <!-- The returns this purchase produced, oldest first, each with its
+                 own total and lines. They sit UNDER the purchase and never
+                 replace it: the purchase keeps every figure it was recorded
+                 with, and whether it is fully returned is derived from these. -->
+            {#each row.supplier_returns as supplierReturn (supplierReturn.return.id)}
+              <section
+                class="return-block"
+                aria-label="{lang.t.purchases_supplier_return} DR-#{supplierReturn.return.id.slice(
+                  0,
+                  8
+                )}"
+              >
+                <div class="return-head">
+                  <span>
+                    {lang.t.purchases_supplier_return} DR-#{supplierReturn.return.id.slice(0, 8)}
+                  </span>
+                  <span class="return-total figure"
+                    >+{formatMoney(supplierReturn.return.total)}</span
+                  >
+                  <time>{formatTime(new Date(supplierReturn.return.created_at), zone)}</time>
+                </div>
+                <table>
+                  <thead>
+                    <tr>
+                      <th scope="col">{lang.t.sales_product}</th>
+                      <th scope="col" class="num">{lang.t.sales_qty}</th>
+                      <th scope="col" class="num">{lang.t.sales_unit_price}</th>
+                      <th scope="col" class="num">{lang.t.sales_line}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {#each supplierReturn.items as item (item.id)}
+                      <tr>
+                        <td>{item.product_name}</td>
+                        <td class="num figure">{formatQuantity(item.quantity, item.unit)}</td>
+                        <td class="num figure">{formatMoney(item.unit_price)}</td>
+                        <td class="num figure">{formatMoney(item.line_total)}</td>
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table>
+              </section>
+            {/each}
+
+            <div class="refund">
+              {#if isFullyReturned(row.items, row.supplier_returns)}
+                <p>{lang.t.purchases_return_none}</p>
+              {:else if confirming === row.purchase.id}
+                <p class="refund-warn">{lang.t.purchases_return_confirm}</p>
+                <button
+                  type="button"
+                  class="danger"
+                  disabled={returning === row.purchase.id}
+                  onclick={() => submitReturn(row)}
+                >
+                  {returning === row.purchase.id ? '…' : lang.t.purchases_return_yes}
+                </button>
+                <button type="button" onclick={() => (confirming = null)}>
+                  {lang.t.purchases_return_no}
+                </button>
+              {:else}
+                <button
+                  type="button"
+                  class="danger"
+                  onclick={() => {
+                    confirming = row.purchase.id;
+                    returnError = null;
+                  }}
+                >
+                  {lang.t.purchases_return_action}
+                </button>
+              {/if}
+              {#if returnError}
+                <p role="alert">{lang.t.purchases_return_error}{returnError}</p>
+              {/if}
+            </div>
           {/if}
         </li>
       {/each}
@@ -329,5 +529,127 @@
   }
   .lines .num {
     text-align: right;
+  }
+  .return-cell {
+    white-space: nowrap;
+  }
+  .return-cell input {
+    width: 5.5em;
+    padding: 5px 7px;
+    border: 1px solid var(--rule-strong);
+    border-radius: var(--radius);
+    background: #fff;
+    color: var(--ink);
+    font-family: var(--font-figure);
+    font-size: var(--step-1);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+  .left {
+    display: block;
+    color: var(--ink-soft);
+    font-size: var(--step--1);
+  }
+  .returned {
+    color: var(--ink-soft);
+    font-size: var(--step--1);
+  }
+  /*
+   * A return is a correction, not an alarm (DESIGN.md, "The Annulled Is Ink
+   * Rule"), so its block is ink on paper and its amount is signed with a plus:
+   * money comes back. Crimson would be a third role for the one accent, spent
+   * against the stamp it belongs to.
+   */
+  .return-block {
+    border: 1px solid var(--rule-strong);
+    border-radius: var(--radius);
+    background: var(--paper);
+    padding: 10px 12px;
+    margin: 0 0 10px;
+  }
+  .return-head {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    font-family: var(--font-figure);
+    font-size: var(--step-0);
+    font-weight: 600;
+    color: var(--ink-soft);
+  }
+  .return-head time {
+    margin-left: auto;
+    font-family: var(--font-text);
+    font-weight: 400;
+    font-size: var(--step--1);
+  }
+  .return-total {
+    color: var(--ink);
+    font-size: var(--step-1);
+  }
+  .return-block table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 6px;
+  }
+  .return-block th {
+    text-align: left;
+    font-size: var(--step--1);
+    text-transform: uppercase;
+    letter-spacing: 0.09em;
+    color: var(--ink-soft);
+    padding: 4px 8px;
+    font-weight: 600;
+  }
+  .return-block td {
+    padding: 4px 8px;
+    border-top: 1px solid var(--rule);
+    font-size: var(--step-0);
+  }
+  .return-block .num {
+    text-align: right;
+  }
+  .refund {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 22px;
+    padding: 16px 0 4px;
+  }
+  .refund p {
+    margin: 0;
+  }
+  .refund-warn {
+    flex-basis: 100%;
+    color: var(--ink-soft);
+  }
+  .refund button {
+    border: 1px solid var(--rule-strong);
+    background: var(--paper-raised);
+    color: var(--ink);
+    border-radius: var(--radius);
+    padding: 7px 11px;
+    font-size: var(--step-0);
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .refund button.danger {
+    border-color: var(--ink);
+    background: transparent;
+    color: var(--ink);
+  }
+  .refund button.danger:hover:not(:disabled) {
+    border-color: var(--crimson);
+    color: var(--crimson);
+    background: rgb(168 27 42 / 0.08);
+  }
+  .refund button:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+  .refund [role='alert'] {
+    flex-basis: 100%;
+    color: var(--crimson-deep);
+    font-size: var(--step-0);
   }
 </style>
