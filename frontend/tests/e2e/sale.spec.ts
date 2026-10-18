@@ -125,8 +125,18 @@ test('a refund of one line leaves the other lines untouched', async ({ page }) =
   const a = `e2e-pickA-${stamp}`;
   const b = `e2e-pickB-${stamp}`;
 
+  // The ledger row shows the time, the id, the customer, the item count, the
+  // status and the total -- not the product names. So the total is the only field
+  // this test can select its own document by, and it must be unique for this run:
+  // the development database is shared and every earlier run left its own $77.48
+  // behind. Four units of a price derived from the clock gives a total no previous
+  // run produced, without depending on spec order.
+  const unitPrice = ((Date.now() % 900) + 100) / 100; // 1.00 .. 9.99
+  const unitPriceText = unitPrice.toFixed(2).replace('.', ',');
+  const saleTotal = (unitPrice * 4 + 20 * 3).toFixed(2).replace('.', ',');
+
   for (const [name, price] of [
-    [a, '10,00'],
+    [a, unitPriceText],
     [b, '20,00']
   ]) {
     await page.goto('/products');
@@ -137,7 +147,7 @@ test('a refund of one line leaves the other lines untouched', async ({ page }) =
     await expect(page.getByRole('status')).toContainText(name);
   }
 
-  // One sale with two lines: 4 of A ($40) and 3 of B ($60).
+  // One sale with two lines: 4 of A and 3 of B at $20.00.
   await page.goto('/sales');
   for (const [name, quantity] of [
     [a, '4'],
@@ -151,10 +161,16 @@ test('a refund of one line leaves the other lines untouched', async ({ page }) =
     await expect(line).toContainText(name);
     await line.locator('input[aria-label^="Cant"]').fill(quantity);
   }
-  await expect(page.locator('.sheet .total')).toHaveText('$ 100,00');
+  await expect(page.locator('.sheet .total')).toHaveText(`$ ${saleTotal}`);
   await page.getByRole('button', { name: /Registrar venta/ }).click();
 
-  const doc = page.locator('table.docs tbody tr.doc').first();
+  // Select this sale's own row, not the newest one. `.first()` is the most recent
+  // document, which is only this one when no other spec has recorded a sale since
+  // -- and on CI the shared database and the spec order make that untrue. That is
+  // the defect tracked as #52, and it is what made this test fail there while
+  // passing locally.
+  const doc = page.locator('table.docs tbody tr.doc', { hasText: `$ ${saleTotal}` });
+  await expect(doc).toHaveCount(1);
   await expect(doc.locator('.stamp')).toContainText('Confirmada');
   await doc.locator('.doc-id').click();
   const document = page.locator('.lines');
@@ -172,9 +188,11 @@ test('a refund of one line leaves the other lines untouched', async ({ page }) =
   await page.getByRole('button', { name: 'Anular venta…' }).click();
   await page.getByRole('button', { name: 'Sí, anular' }).click();
 
-  // The note covers one unit of A only: $10, not $10 plus B's $60.
+  // One unit of A comes back, and B's line must not be in the note at all.
   await expect(document.locator('.note-block')).toHaveCount(1);
-  await expect(document.locator('.note-block')).toContainText('−$ 10,00');
+  await expect(document.locator('.note-block')).toContainText(
+    `−$ ${unitPrice.toFixed(2).replace('.', ',')}`
+  );
   await expect(document.locator('.note-block')).not.toContainText(b);
 
   // B still has all three units left, which is the whole point.
@@ -193,7 +211,10 @@ test('a refund with every line excluded is refused before sending', async ({ pag
 
   await page.goto('/products');
   await page.locator('#new-name').fill(name);
-  await page.locator('#new-price').fill('30,00');
+  // Unique per run, for the same reason as the test above: the row is selected by
+  // its total and the development database keeps every earlier run's documents.
+  const price = (((Date.now() % 900) + 100) / 100).toFixed(2).replace('.', ',');
+  await page.locator('#new-price').fill(price);
   await page.locator('#new-stock').fill('5');
   await page.getByRole('button', { name: 'Crear producto' }).click();
   await expect(page.getByRole('status')).toContainText(name);
@@ -205,7 +226,11 @@ test('a refund with every line excluded is refused before sending', async ({ pag
   await page.keyboard.press('Enter');
   await page.getByRole('button', { name: /Registrar venta/ }).click();
 
-  const doc = page.locator('table.docs tbody tr.doc').first();
+  // Same reason as above: the row does not carry product names, so this document
+  // is selected by its own total rather than by its position in a list every spec
+  // writes to (#52).
+  const doc = page.locator('table.docs tbody tr.doc', { hasText: `$ ${price}` });
+  await expect(doc).toHaveCount(1);
   await doc.locator('.doc-id').click();
   const document = page.locator('.lines');
 
