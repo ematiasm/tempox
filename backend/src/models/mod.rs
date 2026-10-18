@@ -8,3 +8,4 @@ pub mod sale;
 pub mod sale_item;
 pub mod stock_movement;
 pub mod supplier;
+pub mod supplier_return;
