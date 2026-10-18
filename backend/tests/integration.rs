@@ -2482,6 +2482,22 @@ async fn v2_the_ledger_refuses_a_purchase_movement_without_its_document() {
             .await
             .expect("insert zero-total purchase");
 
+    // The product must be ON the purchase for a movement to explain its stock.
+    // This fixture did not do that, and it passed until 0011 added the rule that
+    // a movement's product has to be on the document it names. The insert is not
+    // ceremony now: without it the positive case below is refused, correctly, for
+    // a reason this test is not about.
+    sqlx::query(
+        "INSERT INTO purchase_items
+            (purchase_id, product_id, product_name, quantity, unit_price, line_total, unit)
+         VALUES ($1, $2, 'v2-coherence-p', 10, 0.00, 0.00, 'unit')",
+    )
+    .bind(purchase_id.0)
+    .bind(pid.0)
+    .execute(&mut *tx)
+    .await
+    .expect("insert purchase item");
+
     // FIRST, the positive case, and it is not ceremony: without it this test
     // would pass before the migration exists, because 'purchase' was not yet a
     // known reason and the refusal it measures would be the *wrong* one. A guard
@@ -4064,4 +4080,413 @@ async fn v2_5_cash_adds_returns_back_and_still_counts_sales_and_purchases() {
         raw.split('.').nth(1).map(|f| f.len()) == Some(2),
         "cash is still a two-decimal string, got {raw:?}"
     );
+}
+
+// ── Ledger integrity (0011): the rules the constraints never encoded ────────
+//
+// The six constraints 0009/0010 left behind enumerate the vocabulary and validate
+// the DOCUMENTS a movement names. Two things they never check, both measured on
+// the live schema before this test was written:
+//
+//   1. that the movement's product actually belongs to the document it names.
+//      A `supplier_return` movement for a product that is not in the purchase is
+//      ACCEPTED by the database today. So is a `credit_note` movement for a
+//      product that is not in the sale.
+//   2. the vocabulary is enumerated in six places, so every migration that adds a
+//      reason has to touch three or four of them. 0007, 0009 and 0010 all did.
+//
+// The fix is one trigger that derives the rule from the row's own shape instead of
+// naming the reasons. These tests are the evidence that the replacement refuses
+// everything the constraints refused — which is the only way replacing them is
+// safe.
+//
+// `fixture` helpers insert directly rather than through the API, because the
+// point is to test what the DATABASE accepts, not what a handler happens to send.
+
+/// A product, a sale with one line, and a purchase with one line — plus a second
+/// product belonging to neither. Everything a movement test needs.
+#[allow(dead_code)]
+struct LedgerFixture {
+    in_sale: uuid::Uuid,
+    in_purchase: uuid::Uuid,
+    stranger: uuid::Uuid,
+    sale_id: uuid::Uuid,
+    sale_item_id: uuid::Uuid,
+    purchase_id: uuid::Uuid,
+    purchase_item_id: uuid::Uuid,
+}
+
+#[allow(dead_code)]
+async fn ledger_fixture(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tag: &str,
+) -> LedgerFixture {
+    // Inline rather than a closure: an `async move` closure would capture `tx`
+    // and every later use of it in this function would be a borrow after move.
+    let stamp = uuid::Uuid::new_v4();
+    let mut product_ids = Vec::with_capacity(3);
+    for slot in ["sale", "purch", "stranger"] {
+        let row: (uuid::Uuid,) = sqlx::query_as(
+            "INSERT INTO products (name, list_price) VALUES ($1, 10.00) RETURNING id",
+        )
+        .bind(format!("li-{tag}-{slot}-{stamp}"))
+        .fetch_one(&mut **tx)
+        .await
+        .expect("insert product");
+        product_ids.push(row.0);
+    }
+    let in_sale = product_ids[0];
+    let in_purchase = product_ids[1];
+    let stranger = product_ids[2];
+
+    let sale_id: (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO sales (customer_id, total) VALUES ('00000000-0000-0000-0000-000000000001', 10.00) RETURNING id",
+    )
+    .fetch_one(&mut **tx)
+    .await
+    .expect("insert sale");
+    let sale_item_id: (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO sale_items (sale_id, product_id, product_name, quantity, unit_price, line_total, unit)
+         VALUES ($1, $2, 'li sale line', 1, 10.00, 10.00, 'unit') RETURNING id",
+    )
+    .bind(sale_id.0)
+    .bind(in_sale)
+    .fetch_one(&mut **tx)
+    .await
+    .expect("insert sale item");
+
+    let purchase_id: (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO purchases (supplier_id, total) VALUES ('00000000-0000-0000-0000-000000000002', 10.00) RETURNING id",
+    )
+    .fetch_one(&mut **tx)
+    .await
+    .expect("insert purchase");
+    let purchase_item_id: (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO purchase_items (purchase_id, product_id, product_name, quantity, unit_price, line_total, unit)
+         VALUES ($1, $2, 'li purchase line', 1, 10.00, 10.00, 'unit') RETURNING id",
+    )
+    .bind(purchase_id.0)
+    .bind(in_purchase)
+    .fetch_one(&mut **tx)
+    .await
+    .expect("insert purchase item");
+
+    LedgerFixture {
+        in_sale,
+        in_purchase,
+        stranger,
+        sale_id: sale_id.0,
+        sale_item_id: sale_item_id.0,
+        purchase_id: purchase_id.0,
+        purchase_item_id: purchase_item_id.0,
+    }
+}
+
+#[tokio::test]
+#[ignore]
+async fn ledger_refuses_a_movement_whose_product_is_not_in_its_document() {
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
+    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+    let mut tx = pool.begin().await.expect("begin");
+    let f = ledger_fixture(&mut tx, "belongs").await;
+
+    let cn: (uuid::Uuid,) =
+        sqlx::query_as("INSERT INTO credit_notes (sale_id, total) VALUES ($1, 10.00) RETURNING id")
+            .bind(f.sale_id)
+            .fetch_one(&mut *tx)
+            .await
+            .expect("insert credit note");
+    let ret: (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO supplier_returns (purchase_id, total) VALUES ($1, 10.00) RETURNING id",
+    )
+    .bind(f.purchase_id)
+    .fetch_one(&mut *tx)
+    .await
+    .expect("insert supplier return");
+
+    macro_rules! probe_denied {
+        ($label:expr, $sql:expr $(, $bind:expr)*) => {{
+            sqlx::query("SAVEPOINT probe").execute(&mut *tx).await.expect("savepoint");
+            let result = sqlx::query($sql) $(.bind($bind))*.execute(&mut *tx).await;
+            sqlx::query("ROLLBACK TO SAVEPOINT probe")
+                .execute(&mut *tx)
+                .await
+                .expect("rollback to savepoint");
+            assert!(result.is_err(), "{} was allowed", $label);
+        }};
+    }
+
+    // The positive cases FIRST. Without them these refusals would be satisfied by
+    // a rule that refuses everything, which proves nothing — the lesson v2 learned
+    // when a guard test passed before the migration existed.
+    sqlx::query(
+        "INSERT INTO stock_movements (product_id, quantity, reason, sale_id)
+         VALUES ($1, -1, 'sale', $2)",
+    )
+    .bind(f.in_sale)
+    .bind(f.sale_id)
+    .execute(&mut *tx)
+    .await
+    .expect("a sale movement for a product in the sale must be accepted");
+    sqlx::query(
+        "INSERT INTO stock_movements (product_id, quantity, reason, sale_id, credit_note_id)
+         VALUES ($1, 1, 'credit_note', $2, $3)",
+    )
+    .bind(f.in_sale)
+    .bind(f.sale_id)
+    .bind(cn.0)
+    .execute(&mut *tx)
+    .await
+    .expect("a credit-note movement for a product in the sale must be accepted");
+    sqlx::query(
+        "INSERT INTO stock_movements (product_id, quantity, reason, purchase_id)
+         VALUES ($1, 1, 'purchase', $2)",
+    )
+    .bind(f.in_purchase)
+    .bind(f.purchase_id)
+    .execute(&mut *tx)
+    .await
+    .expect("a purchase movement for a product in the purchase must be accepted");
+    sqlx::query(
+        "INSERT INTO stock_movements (product_id, quantity, reason, purchase_id, supplier_return_id)
+         VALUES ($1, -1, 'supplier_return', $2, $3)",
+    )
+    .bind(f.in_purchase)
+    .bind(f.purchase_id)
+    .bind(ret.0)
+    .execute(&mut *tx)
+    .await
+    .expect("a return movement for a product in the purchase must be accepted");
+
+    // NOW the hole. Both of these are ACCEPTED by the schema as it stands, which is
+    // the defect this migration exists to close.
+    probe_denied!(
+        "a sale movement for a product that is not in the sale",
+        "INSERT INTO stock_movements (product_id, quantity, reason, sale_id)
+         VALUES ($1, -1, 'sale', $2)",
+        f.stranger,
+        f.sale_id
+    );
+    probe_denied!(
+        "a credit-note movement for a product that is not in the sale",
+        "INSERT INTO stock_movements (product_id, quantity, reason, sale_id, credit_note_id)
+         VALUES ($1, 1, 'credit_note', $2, $3)",
+        f.stranger,
+        f.sale_id,
+        cn.0
+    );
+    probe_denied!(
+        "a purchase movement for a product that is not in the purchase",
+        "INSERT INTO stock_movements (product_id, quantity, reason, purchase_id)
+         VALUES ($1, 1, 'purchase', $2)",
+        f.stranger,
+        f.purchase_id
+    );
+    probe_denied!(
+        "a supplier-return movement for a product that is not in the purchase",
+        "INSERT INTO stock_movements (product_id, quantity, reason, purchase_id, supplier_return_id)
+         VALUES ($1, -1, 'supplier_return', $2, $3)",
+        f.stranger,
+        f.purchase_id,
+        ret.0
+    );
+
+    tx.rollback().await.expect("rollback");
+}
+
+/// The replacement must refuse everything the six enumerated constraints refused.
+/// This is the test that makes replacing them safe: if the trigger misses a rule,
+/// one of these probes succeeds.
+#[tokio::test]
+#[ignore]
+async fn ledger_still_refuses_everything_the_old_constraints_refused() {
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
+    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+    let mut tx = pool.begin().await.expect("begin");
+    let f = ledger_fixture(&mut tx, "equivalence").await;
+
+    let cn: (uuid::Uuid,) =
+        sqlx::query_as("INSERT INTO credit_notes (sale_id, total) VALUES ($1, 10.00) RETURNING id")
+            .bind(f.sale_id)
+            .fetch_one(&mut *tx)
+            .await
+            .expect("insert credit note");
+    let ret: (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO supplier_returns (purchase_id, total) VALUES ($1, 10.00) RETURNING id",
+    )
+    .bind(f.purchase_id)
+    .fetch_one(&mut *tx)
+    .await
+    .expect("insert supplier return");
+
+    macro_rules! probe_denied {
+        ($label:expr, $sql:expr $(, $bind:expr)*) => {{
+            sqlx::query("SAVEPOINT probe").execute(&mut *tx).await.expect("savepoint");
+            let result = sqlx::query($sql) $(.bind($bind))*.execute(&mut *tx).await;
+            sqlx::query("ROLLBACK TO SAVEPOINT probe")
+                .execute(&mut *tx)
+                .await
+                .expect("rollback to savepoint");
+            assert!(result.is_err(), "{} was allowed", $label);
+        }};
+    }
+
+    // `reason_known`: an unknown reason.
+    probe_denied!(
+        "an unknown reason",
+        "INSERT INTO stock_movements (product_id, quantity, reason) VALUES ($1, 1, 'inventado')",
+        f.in_sale
+    );
+
+    // `document_coherent`: each document reason without its document.
+    probe_denied!(
+        "a sale with no sale_id",
+        "INSERT INTO stock_movements (product_id, quantity, reason) VALUES ($1, -1, 'sale')",
+        f.in_sale
+    );
+    probe_denied!(
+        "a credit_note with no sale_id",
+        "INSERT INTO stock_movements (product_id, quantity, reason, credit_note_id) VALUES ($1, 1, 'credit_note', $2)",
+        f.in_sale,
+        cn.0
+    );
+    probe_denied!(
+        "a purchase with no purchase_id",
+        "INSERT INTO stock_movements (product_id, quantity, reason) VALUES ($1, 1, 'purchase')",
+        f.in_purchase
+    );
+    probe_denied!(
+        "a supplier_return with no purchase_id",
+        "INSERT INTO stock_movements (product_id, quantity, reason, supplier_return_id) VALUES ($1, -1, 'supplier_return', $2)",
+        f.in_purchase,
+        ret.0
+    );
+    // `initial` must carry no document at all — every combination.
+    probe_denied!(
+        "an initial carrying a sale_id",
+        "INSERT INTO stock_movements (product_id, quantity, reason, sale_id) VALUES ($1, 1, 'initial', $2)",
+        f.in_sale,
+        f.sale_id
+    );
+    probe_denied!(
+        "an initial carrying a purchase_id",
+        "INSERT INTO stock_movements (product_id, quantity, reason, purchase_id) VALUES ($1, 1, 'initial', $2)",
+        f.in_purchase,
+        f.purchase_id
+    );
+
+    // `credit_note_coherent`: the equality, so a sale row may not carry a note.
+    probe_denied!(
+        "a sale carrying a credit_note_id",
+        "INSERT INTO stock_movements (product_id, quantity, reason, sale_id, credit_note_id)
+         VALUES ($1, -1, 'sale', $2, $3)",
+        f.in_sale,
+        f.sale_id,
+        cn.0
+    );
+    // `purchase_coherent`: and a sale may not carry a purchase either.
+    probe_denied!(
+        "a sale carrying a purchase_id",
+        "INSERT INTO stock_movements (product_id, quantity, reason, sale_id, purchase_id)
+         VALUES ($1, -1, 'sale', $2, $3)",
+        f.in_sale,
+        f.sale_id,
+        f.purchase_id
+    );
+    // `supplier_return_coherent`: a sale may not carry a return.
+    probe_denied!(
+        "a sale carrying a supplier_return_id",
+        "INSERT INTO stock_movements (product_id, quantity, reason, sale_id, supplier_return_id)
+         VALUES ($1, -1, 'sale', $2, $3)",
+        f.in_sale,
+        f.sale_id,
+        ret.0
+    );
+
+    // The two direction rules.
+    probe_denied!(
+        "a positive purchase movement",
+        "INSERT INTO stock_movements (product_id, quantity, reason, purchase_id)
+         VALUES ($1, -1, 'purchase', $2)",
+        f.in_purchase,
+        f.purchase_id
+    );
+    probe_denied!(
+        "a negative supplier_return movement",
+        "INSERT INTO stock_movements (product_id, quantity, reason, purchase_id, supplier_return_id)
+         VALUES ($1, 1, 'supplier_return', $2, $3)",
+        f.in_purchase,
+        f.purchase_id,
+        ret.0
+    );
+
+    // And the pre-existing quantity rule survives the replacement.
+    probe_denied!(
+        "a zero quantity",
+        "INSERT INTO stock_movements (product_id, quantity, reason) VALUES ($1, 0, 'initial')",
+        f.in_sale
+    );
+
+    tx.rollback().await.expect("rollback");
+}
+
+/// A credit note must correct the sale it is attached to; a return must correct
+/// the purchase. The FK proves the document exists, never that the pair agrees.
+#[tokio::test]
+#[ignore]
+async fn ledger_refuses_a_document_from_another_transaction() {
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
+    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+    let mut tx = pool.begin().await.expect("begin");
+    let a = ledger_fixture(&mut tx, "pairA").await;
+    let b = ledger_fixture(&mut tx, "pairB").await;
+
+    // A credit note on sale B, used on a movement naming sale A.
+    let cn_on_b: (uuid::Uuid,) =
+        sqlx::query_as("INSERT INTO credit_notes (sale_id, total) VALUES ($1, 10.00) RETURNING id")
+            .bind(b.sale_id)
+            .fetch_one(&mut *tx)
+            .await
+            .expect("insert credit note");
+    let ret_on_b: (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO supplier_returns (purchase_id, total) VALUES ($1, 10.00) RETURNING id",
+    )
+    .bind(b.purchase_id)
+    .fetch_one(&mut *tx)
+    .await
+    .expect("insert supplier return");
+
+    macro_rules! probe_denied {
+        ($label:expr, $sql:expr $(, $bind:expr)*) => {{
+            sqlx::query("SAVEPOINT probe").execute(&mut *tx).await.expect("savepoint");
+            let result = sqlx::query($sql) $(.bind($bind))*.execute(&mut *tx).await;
+            sqlx::query("ROLLBACK TO SAVEPOINT probe")
+                .execute(&mut *tx)
+                .await
+                .expect("rollback to savepoint");
+            assert!(result.is_err(), "{} was allowed", $label);
+        }};
+    }
+
+    probe_denied!(
+        "a credit note attached to a different sale",
+        "INSERT INTO stock_movements (product_id, quantity, reason, sale_id, credit_note_id)
+         VALUES ($1, 1, 'credit_note', $2, $3)",
+        a.in_sale,
+        a.sale_id,
+        cn_on_b.0
+    );
+    probe_denied!(
+        "a return attached to a different purchase",
+        "INSERT INTO stock_movements (product_id, quantity, reason, purchase_id, supplier_return_id)
+         VALUES ($1, -1, 'supplier_return', $2, $3)",
+        a.in_purchase,
+        a.purchase_id,
+        ret_on_b.0
+    );
+
+    tx.rollback().await.expect("rollback");
 }
