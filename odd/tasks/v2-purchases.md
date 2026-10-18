@@ -353,3 +353,29 @@ modified`. Before touching anything, the resulting schema was compared between a
 freshly migrated database and the development one — **identical** in columns,
 constraints, indexes and triggers — and the diff proved the `DO` block was moved
 and no statement added or removed. Only then was the recorded checksum updated.
+
+## Pull request (2026-10-18)
+
+Opened as **[PR #45](https://github.com/ematiasm/tempox/pull/45)** —
+`feat/v2-purchases-backend` → `main`, labels `enhancement` + `backend` +
+`database`, with explicit owner authorization for the push and the PR.
+
+Two things about the delivery worth recording, because neither was obvious:
+
+- **The repository's template overrides the generic PR skill.** The repo's
+  `PULL_REQUEST_TEMPLATE.md` asks for `bug` / `enhancement` / `documentation` /
+  `ci` plus an area label (`backend` / `frontend` / `database`), and says so in
+  its own comment, while the Gentle AI skill describes `type:*`. The repository
+  wins; the labels applied are the ones its template names.
+- **The PR carries 16 commits, not only the v2 work.** The slice was built
+  directly on local `main`, so `main` and the branch point at the same commit and
+  both are 16 ahead of `origin/main`. Four of those commits are documentation
+  from v1.5 and from the v2 design, including the correction of a false delivery
+  claim. `git reset --hard` was **blocked by the safety policy** and no attempt
+  was made to route around it; deleting and recreating the branch pointer made
+  the branch contain the same commits without rewriting any history, and the PR
+  body says what is in it.
+
+Size, measured: 2 078 authored lines under `backend/` (of which 993 are the
+integration suite and 223 the migration) and 461 lines of documentation across
+`odd/`, `docs/`, `README.md` and `PRODUCT.md`.
