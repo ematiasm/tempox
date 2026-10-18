@@ -64,7 +64,7 @@ S19 work-unit commits carry their tests and docs; the last slice closes.
 | ID | Task | Specs | Route | Status | Commit |
 |---|---|---|---|---|---|
 | T1 | Migration `0009_purchases.sql` + its integration tests (guards, coherence, seed, sign) | S1, S4–S6, S9, S10 | inline | done | `bc189cf` |
-| T2 | `suppliers` endpoints (`GET`, `POST`, 400/409) | S4, S5 | inline | done | `pending` |
+| T2 | `suppliers` endpoints (`GET`, `POST`, 400/409) | S4, S5 | inline | done | `a61ba7d` |
 | T3 | `POST /api/purchases` — the transaction: header, lines, positive movements | S1, S7, S8, S11 | inline | pending | — |
 | T4 | `GET /api/purchases` — list with items, day scoping, paging | S12 | inline | pending | — |
 | T5 | `GET /api/cash` nets purchases + its existing-behaviour test | S13, S16 | inline | pending | — |
