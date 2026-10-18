@@ -3,9 +3,16 @@
 Full design: `plan-v2.md` (gitignored working plan, like `plan-v1.md`/`plan-v1a.md`).
 Engram topic key: `tempox/odd/v2-purchases/tasks`.
 
-**State: backend merged.** T1–T6 done and delivered as **PR #45 → `0b6fd3e`**,
-CI 4/4 green on `main`. The UI slice (v2a, T7–T10) has not started; `main` is its
-base.
+**State: complete and merged.** The backend (T1–T6) delivered as **PR #45 →
+`0b6fd3e`**; the UI half (T7–T10) was delivered as **v2a, PR #46 → `36ef85d`**
+and is tracked in [v2a-purchases-ui.md](./v2a-purchases-ui.md), not here. CI is 4/4
+green on `main` after both.
+
+The T7–T10 rows below are kept with their v2 wording so the split stays legible,
+but they are **moved, not open**: `plan-v2.md` deferred the frontend to v2a at
+design time, and v2a delivered it. Marking them `done` here would claim a commit
+that lives on another branch and count the work twice; marking them `pending`
+was the defect this correction fixes — it made a finished slice read as unstarted.
 
 v2 is the mirror of v1: a purchase raises stock and lowers cash, exactly as a sale
 lowers stock and raises cash. Suppliers mirror customers. What the mirror does
@@ -70,10 +77,10 @@ S19 work-unit commits carry their tests and docs; the last slice closes.
 | T4 | `GET /api/purchases` — list with items, day scoping, paging | S12 | inline | done | `11eeee1` |
 | T5 | `GET /api/cash` nets purchases + its existing-behaviour test | S13, S16 | inline | done | `3ef084d` |
 | T6 | Docs: architecture, README, PRODUCT | S18 | inline | done | `436bf1a` |
-| T7 | Rail destination + suppliers screen | S4, S5 | inline | pending | — |
-| T8 | `/purchases` register: supplier picker, lines, live total, keyboard | S7 | inline | pending | — |
-| T9 | Purchases ledger: day-scoped, stamped | S12 | inline | pending | — |
-| T10 | i18n: every new string in both dictionaries, shop vocabulary | S5 | inline | pending | — |
+| T7 | Rail destination + suppliers screen | S4, S5 | inline | moved to v2a | `e52937f` (v2a T8) |
+| T8 | `/purchases` register: supplier picker, lines, live total, keyboard | S7 | inline | moved to v2a | `e52937f` (v2a T9) |
+| T9 | Purchases ledger: day-scoped, stamped | S12 | inline | moved to v2a | `e52937f` (v2a T10) |
+| T10 | i18n: every new string in both dictionaries, shop vocabulary | S5 | inline | moved to v2a | `e52937f` (v2a T10) |
 
 ## Verification log
 
@@ -434,7 +441,9 @@ the repository rule says integration tests must run:
 
 ### What is next
 
-The v2a UI slice (T7–T10) has not started: the rail, the purchases register, the
-purchases ledger and the new i18n strings. `main` is its base. The v1.5
-credit-note review (`review-a75a3be004742020`) remains the owner's accepted risk
-and is untouched by this slice.
+Nothing on this slice. The v2a UI slice (T7–T10) shipped as **PR #46 →
+`36ef85d`** and is tracked in [v2a-purchases-ui.md](./v2a-purchases-ui.md); the
+supplier-return slice that followed it shipped as **PR #47/#48/#49**. The v1.5
+credit-note review that this section used to call the owner's accepted risk was
+later run, found a real defect, and was fixed in PR #51 — see
+[v1.5-credit-note.md](./v1.5-credit-note.md) `L26`.

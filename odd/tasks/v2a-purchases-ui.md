@@ -4,8 +4,8 @@ Full design: `plan-v2.md` (gitignored working plan, like `plan-v1.md`).
 Feature context: `odd/tasks/v2-purchases.md` (the backend slice, merged as PR #45).
 Engram topic key: `tempox/odd/v2a-purchases-ui/tasks`.
 
-**State: implemented, not delivered.** T7–T10 done on `feat/v2a-purchases-ui`
-off `35d8878` (`main` after PR #45). Two commits, checks green.
+**State: complete and merged.** T7–T10 delivered as **PR #46 → `36ef85d`** off
+`35d8878` (main after PR #45). CI 4/4 green on `main` after the merge.
 
 The UI slice of v2: a screen to record a purchase, a ledger to read the day back,
 and the third rail tab. The backend it consumes was delivered separately and is
