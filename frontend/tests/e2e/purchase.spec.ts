@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { lineTotal, money, uniqueUnitPrice } from './unique.js';
 
 /**
  * The purchase flow, end to end, through the real UI against the real API.
@@ -14,6 +15,9 @@ import { expect, test } from '@playwright/test';
  */
 test('a purchase is recorded and raises the stock it brought in', async ({ page }) => {
   const name = `e2e-purchase-${Date.now().toString(36)}`;
+  const price = uniqueUnitPrice();
+  const oneTotal = lineTotal(price, 1);
+  const sevenTotal = lineTotal(price, 7);
 
   // 1. The product exists first, created through the catalog's own form so this
   //    test also covers that screen. The stock field is LEFT ALONE on purpose:
@@ -23,7 +27,7 @@ test('a purchase is recorded and raises the stock it brought in', async ({ page 
   //    full 30s timeout instead of failing where the reader can see why.
   await page.goto('/products');
   await page.locator('#new-name').fill(name);
-  await page.locator('#new-price').fill('10,00');
+  await page.locator('#new-price').fill(price);
   await page.getByRole('button', { name: 'Crear producto' }).click();
   await expect(page.getByRole('status')).toContainText(name);
 
@@ -53,11 +57,11 @@ test('a purchase is recorded and raises the stock it brought in', async ({ page 
   // The price is prefilled from the list price, written in the shop's own shape
   // so the field's parser accepts it, and stays overridable: a purchase price
   // that differs from the catalogue is the normal case.
-  await expect(line.locator('input[aria-label^="Precio"]')).toHaveValue('10,00');
-  await expect(page.locator('.sheet .total')).toHaveText('$ 10,00');
+  await expect(line.locator('input[aria-label^="Precio"]')).toHaveValue(price);
+  await expect(page.locator('.sheet .total')).toHaveText(money(oneTotal));
 
   await line.locator('input[aria-label^="Cant"]').fill('7');
-  await expect(page.locator('.sheet .total')).toHaveText('$ 70,00');
+  await expect(page.locator('.sheet .total')).toHaveText(money(sevenTotal));
 
   // 3. The supplier defaults to the seeded one, which is what a purchase with no
   //    named supplier means. It reads in the shop's language, not as the stored
@@ -69,17 +73,19 @@ test('a purchase is recorded and raises the stock it brought in', async ({ page 
   // 4. Record it. The band's action is the page's single next action.
   await page.getByRole('button', { name: /Registrar compra/ }).click();
 
-  await expect(page.locator('.sheet .done')).toContainText('$ 70,00');
+  await expect(page.locator('.sheet .done')).toContainText(money(sevenTotal));
   await expect(page.locator('.sheet table.lines tbody tr')).toHaveCount(0);
 
-  // 5. It is in the day's ledger with its lines behind it.
-  const doc = page.locator('.ledger .document').first();
+  // 5. It is in the day's ledger with its lines behind it. Selected by its own
+  //    total, not by position: every spec records into this ledger (#52).
+  const doc = page.locator('.ledger .document', { hasText: money(sevenTotal) });
+  await expect(doc).toHaveCount(1);
   await expect(doc).toContainText('Proveedor ocasional');
-  await expect(doc).toContainText('$ 70,00');
+  await expect(doc).toContainText(money(sevenTotal));
 
   await doc.locator('.head').click();
   await expect(doc.locator('table.lines')).toContainText(name);
-  await expect(doc.locator('table.lines')).toContainText('$ 70,00');
+  await expect(doc.locator('table.lines')).toContainText(money(sevenTotal));
 
   // 6. The point of the slice, measured where the operator reads it: the stock
   //    went UP by what arrived. This is the assertion that would fail if the

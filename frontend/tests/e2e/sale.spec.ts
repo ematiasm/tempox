@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { lineTotal, money, uniqueUnitPrice } from './unique.js';
 
 /**
  * The sale flow, end to end, through the real UI against the real API (S14).
@@ -13,12 +14,14 @@ import { expect, test } from '@playwright/test';
  */
 test('a sale is recorded from the draft sheet and wears its stamp', async ({ page }) => {
   const name = `e2e-sale-${Date.now().toString(36)}`;
+  const price = uniqueUnitPrice();
+  const total = lineTotal(price, 4);
 
   // 1. The product has to exist. It is created through the catalog's own form
   //    rather than through the API, so the test covers that screen too.
   await page.goto('/products');
   await page.locator('#new-name').fill(name);
-  await page.locator('#new-price').fill('25,00');
+  await page.locator('#new-price').fill(price);
   await page.locator('#new-stock').fill('10');
   await page.getByRole('button', { name: 'Crear producto' }).click();
   await expect(page.getByRole('status')).toContainText(name);
@@ -42,11 +45,11 @@ test('a sale is recorded from the draft sheet and wears its stamp', async ({ pag
   await expect(line).toContainText(name);
   // The price is prefilled from the list price, written in the shop's own shape
   // so the field's parser accepts it, and stays overridable (S5).
-  await expect(line.locator('input[aria-label^="Precio"]')).toHaveValue('25,00');
-  await expect(page.locator('.sheet .total')).toHaveText('$ 25,00');
+  await expect(line.locator('input[aria-label^="Precio"]')).toHaveValue(price);
+  await expect(page.locator('.sheet .total')).toHaveText(money(price));
 
   await line.locator('input[aria-label^="Cant"]').fill('4');
-  await expect(page.locator('.sheet .total')).toHaveText('$ 100,00');
+  await expect(page.locator('.sheet .total')).toHaveText(money(total));
 
   // 3. Record it. The band's action is the page's single next action.
   await page.getByRole('button', { name: /Registrar venta/ }).click();
@@ -54,26 +57,31 @@ test('a sale is recorded from the draft sheet and wears its stamp', async ({ pag
   // 4. The stamp, which is what this barrier exists to protect.
   const recorded = page.locator('.recorded');
   await expect(recorded).toContainText('Confirmada');
-  await expect(recorded).toContainText('$ 100,00');
+  await expect(recorded).toContainText(money(total));
   await expect(page.locator('.sheet table.lines tbody tr')).toHaveCount(0);
 
-  // 5. And it is in the day's ledger, stamped, with its lines behind it.
-  const doc = page.locator('table.docs tbody tr.doc').first();
+  // 5. And it is in the day's ledger, stamped, with its lines behind it. Selected
+  //    by its own total, not by position: every spec records into this ledger
+  //    (#52).
+  const doc = page.locator('table.docs tbody tr.doc', { hasText: money(total) });
+  await expect(doc).toHaveCount(1);
   await expect(doc).toContainText('Consumidor Final');
-  await expect(doc).toContainText('$ 100,00');
+  await expect(doc).toContainText(money(total));
   await expect(doc.locator('.stamp')).toContainText('Confirmada');
 
   await doc.locator('.doc-id').click();
   await expect(page.locator('.lines table')).toContainText(name);
-  await expect(page.locator('.lines table')).toContainText('$ 100,00');
+  await expect(page.locator('.lines table')).toContainText(money(total));
 });
 
 test('a sale can be returned in parts with credit notes', async ({ page }) => {
   const name = `e2e-refund-${Date.now().toString(36)}`;
+  const price = uniqueUnitPrice();
+  const total = lineTotal(price, 4);
 
   await page.goto('/products');
   await page.locator('#new-name').fill(name);
-  await page.locator('#new-price').fill('25,00');
+  await page.locator('#new-price').fill(price);
   await page.locator('#new-stock').fill('10');
   await page.getByRole('button', { name: 'Crear producto' }).click();
   await expect(page.getByRole('status')).toContainText(name);
@@ -86,10 +94,12 @@ test('a sale can be returned in parts with credit notes', async ({ page }) => {
   const line = page.locator('.sheet table.lines tbody tr').first();
   await expect(line).toContainText(name);
   await line.locator('input[aria-label^="Cant"]').fill('4');
-  await expect(page.locator('.sheet .total')).toHaveText('$ 100,00');
+  await expect(page.locator('.sheet .total')).toHaveText(money(total));
   await page.getByRole('button', { name: /Registrar venta/ }).click();
 
-  const doc = page.locator('table.docs tbody tr.doc').first();
+  // This sale, by its own total rather than by position (#52).
+  const doc = page.locator('table.docs tbody tr.doc', { hasText: money(total) });
+  await expect(doc).toHaveCount(1);
   await expect(doc.locator('.stamp')).toContainText('Confirmada');
   await doc.locator('.doc-id').click();
   const document = page.locator('.lines');
@@ -100,7 +110,7 @@ test('a sale can be returned in parts with credit notes', async ({ page }) => {
   await page.getByRole('button', { name: 'Anular venta…' }).click();
   await expect(document.locator('.note-block')).toHaveCount(0);
   await page.getByRole('button', { name: 'Sí, anular' }).click();
-  await expect(document.locator('.note-block')).toContainText('−$ 25,00');
+  await expect(document.locator('.note-block')).toContainText(`−${money(price)}`);
   await expect(doc.locator('.stamp')).toContainText('Confirmada');
 
   await page.getByRole('textbox', { name: `Devolver ${name}` }).fill('3');
