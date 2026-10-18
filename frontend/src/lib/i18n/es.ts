@@ -172,6 +172,8 @@ const es: Dict = {
   purchases_return_left: (left, bought) => `quedan ${left} de ${bought}`,
   purchases_return_none: 'Ya se devolvieron todas las líneas.',
   purchases_return_error: 'No se devolvió: ',
+  purchases_return_recorded:
+    'La devolución quedó registrada — no se pudo releer el día, así que lo que resta arriba puede estar desactualizado. Recargá la página para verla.',
   purchases_return_invalid: 'Una cantidad a devolver no es válida — corregila antes de devolver.',
   purchases_return_line: (name) => `Cantidad a devolver de ${name}`
 };

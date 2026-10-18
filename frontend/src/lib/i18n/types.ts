@@ -179,6 +179,14 @@ export interface Dict {
   /** Shown when every line of the purchase has already gone back. */
   purchases_return_none: string;
   purchases_return_error: string;
+  /**
+   * Shown when the return DID reach the server but the day could not be re-read.
+   *
+   * Deliberately not the refusal prefix: telling an operator "not returned" when
+   * the server has it invites a retry that the guard then refuses, or worse, a
+   * second return of goods that already went back.
+   */
+  purchases_return_recorded: string;
   purchases_return_invalid: string;
   /** The return field's accessible name, which names the line it corrects. */
   purchases_return_line: (name: string) => string;

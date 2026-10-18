@@ -161,6 +161,8 @@ const en: Dict = {
   purchases_return_left: (left, bought) => `${left} of ${bought} left`,
   purchases_return_none: 'Every line has already gone back.',
   purchases_return_error: 'Not returned: ',
+  purchases_return_recorded:
+    'The return was recorded — the day could not be reloaded, so what is left above may be out of date. Reload the page to see it.',
   purchases_return_invalid: 'A return quantity is not valid — fix it before returning.',
   purchases_return_line: (name) => `Return quantity for ${name}`
 };

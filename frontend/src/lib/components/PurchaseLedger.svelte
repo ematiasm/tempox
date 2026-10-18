@@ -59,9 +59,16 @@
   // authority on what went back, so a local tally would be a second opinion that
   // could disagree with the record.
   let returnDraft = new SvelteMap<string, Map<string, string>>();
-  let confirming = $state<string | null>(null);
-  let returning = $state<string | null>(null);
-  let returnError = $state<string | null>(null);
+  // Per row, not per component. With two documents expanded, a single `error`
+  // string rendered inside every block showed one row's refusal under both, and
+  // a single `confirming` put two rows into the confirm step at once.
+  let confirming = new SvelteSet<string>();
+  let returning = new SvelteSet<string>();
+  let returnError = new SvelteMap<string, string>();
+  // Kept apart from `returnError` on purpose: "the return did not happen" and
+  // "the return happened but the day could not be re-read" are opposite facts,
+  // and one message for both told the operator the opposite of the truth.
+  let reloadNotice = new SvelteMap<string, string>();
 
   // The shop's zone, as the server names it. Every time on the page renders in
   // it rather than in the machine's, so a shop in Buenos Aires reads its own
@@ -74,27 +81,50 @@
   }
 
   /**
-   * Reads one shop day, with its documents and the supplier names.
+   * A generation counter for day loads.
    *
-   * Extracted from the effect so a recorded return can reload exactly what a
-   * recorded purchase reloads, from the same source of truth. The caller decides
-   * how to react to a failure: the effect writes the page-level error, a return
-   * writes its own so the operator sees it next to the form they used.
+   * Every load takes a number and every load checks it before writing. Without
+   * this, a reload still in flight when the user pages would write the old day
+   * over the new one -- measured: paging to the previous day while a slow reload
+   * ran flipped the label back to today with today's purchase on screen.
    */
-  async function loadDay(at: Date): Promise<void> {
+  let loadSeq = 0;
+
+  /**
+   * Reads one shop day and applies it, unless the caller says it went stale.
+   *
+   * The one place a day is read. The `$effect` and a recorded return both call
+   * it, so the two cannot drift apart -- they used to be the same three lines
+   * written twice, and only the effect had a cancellation guard.
+   *
+   * Returns false when the read was discarded, so a caller can tell "reloaded"
+   * from "superseded": a return must not claim the day is current when the user
+   * has already paged away from it.
+   */
+  async function loadDay(at: Date, isStale: () => boolean): Promise<boolean> {
     const day = await fetchDay(at);
     const [list, supplierList] = await Promise.all([
       listPurchases({ from: day.from, to: day.to, limit: 200 }),
       listSuppliers()
     ]);
+    if (isStale()) return false;
     range = day;
     rows = list;
     suppliers = supplierList;
+    return true;
   }
 
-  /** Re-reads the day already on screen, keeping the scope the user chose. */
-  async function reload(): Promise<void> {
-    await loadDay(scopeInstant);
+  /**
+   * Re-reads the day already on screen, keeping the scope the user chose.
+   *
+   * Throws if the read fails, so a return can tell its own operator what
+   * happened. Discards its own result silently if a newer load started, or if the
+   * user paged while it was in flight -- that load is the one that owns the
+   * screen now.
+   */
+  async function reload(at: Date): Promise<void> {
+    const seq = ++loadSeq;
+    await loadDay(at, () => seq !== loadSeq || scopeInstant !== at);
   }
 
   $effect(() => {
@@ -102,24 +132,18 @@
     // Reading refreshToken here is what makes a recorded purchase reload the day.
     void refreshToken;
     let cancelled = false;
+    const seq = ++loadSeq;
+    const isStale = () => cancelled || seq !== loadSeq;
     loading = true;
     error = null;
 
     (async () => {
       try {
-        const day = await fetchDay(at);
-        const [list, supplierList] = await Promise.all([
-          listPurchases({ from: day.from, to: day.to, limit: 200 }),
-          listSuppliers()
-        ]);
-        if (cancelled) return;
-        range = day;
-        rows = list;
-        suppliers = supplierList;
+        await loadDay(at, isStale);
       } catch (e) {
-        if (!cancelled) error = describe(e);
+        if (!isStale()) error = describe(e);
       } finally {
-        if (!cancelled) loading = false;
+        if (!isStale()) loading = false;
       }
     })();
 
@@ -173,26 +197,41 @@
   }
 
   async function submitReturn(row: PurchaseListItem) {
+    const rowId = row.purchase.id;
+    returnError.delete(rowId);
+    reloadNotice.delete(rowId);
+
     const plan = planFor(row);
     if (plan === null) {
-      returnError = lang.t.purchases_return_invalid;
+      returnError.set(rowId, lang.t.purchases_return_invalid);
       return;
     }
-    returning = row.purchase.id;
-    returnError = null;
+    if (returning.has(rowId)) return;
+
+    returning.add(rowId);
     try {
-      await createSupplierReturn(row.purchase.id, plan);
-      clearReturnDraft(row.purchase.id);
-      confirming = null;
-      // Reload the day rather than patching the row in place: the return the
-      // server wrote is the record, and what is left has to come from it.
-      await reload();
+      await createSupplierReturn(rowId, plan);
     } catch (e) {
-      // A 409 is the cumulative guard answering: the line has less left than the
-      // form asked for. It is the one refusal an operator can act on.
-      returnError = e instanceof ApiError ? `${e.message} (${e.status})` : String(e);
+      // The return did NOT happen. A 409 is the cumulative guard answering: the
+      // line has less left than the form asked for.
+      returnError.set(rowId, e instanceof ApiError ? `${e.message} (${e.status})` : String(e));
+      return;
     } finally {
-      returning = null;
+      returning.delete(rowId);
+    }
+
+    // From here the return is a fact on the server. Anything that fails below is
+    // a failure to re-read, never a failure to return -- and saying so is the
+    // difference between an operator retrying and an operator over-returning.
+    clearReturnDraft(rowId);
+    confirming.delete(rowId);
+    try {
+      await reload(scopeInstant);
+    } catch (e) {
+      reloadNotice.set(
+        rowId,
+        `${lang.t.purchases_return_recorded}${e instanceof ApiError ? ` (${e.status})` : ''}`
+      );
     }
   }
 </script>
@@ -366,17 +405,17 @@
             <div class="refund">
               {#if isFullyReturned(row.items, row.supplier_returns)}
                 <p>{lang.t.purchases_return_none}</p>
-              {:else if confirming === row.purchase.id}
+              {:else if confirming.has(row.purchase.id)}
                 <p class="refund-warn">{lang.t.purchases_return_confirm}</p>
                 <button
                   type="button"
                   class="danger"
-                  disabled={returning === row.purchase.id}
+                  disabled={returning.has(row.purchase.id)}
                   onclick={() => submitReturn(row)}
                 >
-                  {returning === row.purchase.id ? '…' : lang.t.purchases_return_yes}
+                  {returning.has(row.purchase.id) ? '…' : lang.t.purchases_return_yes}
                 </button>
-                <button type="button" onclick={() => (confirming = null)}>
+                <button type="button" onclick={() => confirming.delete(row.purchase.id)}>
                   {lang.t.purchases_return_no}
                 </button>
               {:else}
@@ -384,15 +423,25 @@
                   type="button"
                   class="danger"
                   onclick={() => {
-                    confirming = row.purchase.id;
-                    returnError = null;
+                    confirming.add(row.purchase.id);
+                    returnError.delete(row.purchase.id);
+                    reloadNotice.delete(row.purchase.id);
                   }}
                 >
                   {lang.t.purchases_return_action}
                 </button>
               {/if}
-              {#if returnError}
-                <p role="alert">{lang.t.purchases_return_error}{returnError}</p>
+              {#if returnError.get(row.purchase.id)}
+                <p role="alert">
+                  {lang.t.purchases_return_error}{returnError.get(row.purchase.id)}
+                </p>
+              {/if}
+              {#if reloadNotice.get(row.purchase.id)}
+                <!-- Not a failure of the return: the server has it. The screen just
+                     could not re-read the day, so what is left below may be stale. -->
+                <p role="status">
+                  {reloadNotice.get(row.purchase.id)}
+                </p>
               {/if}
             </div>
           {/if}
@@ -654,6 +703,16 @@
   .refund [role='alert'] {
     flex-basis: 100%;
     color: var(--crimson-deep);
+    font-size: var(--step-0);
+  }
+  /*
+   * A failed re-read is not an error, so it is not crimson: nothing went wrong
+   * with the return. It is spare prose in soft ink, the same voice the day's
+   * hints use.
+   */
+  .refund [role='status'] {
+    flex-basis: 100%;
+    color: var(--ink-soft);
     font-size: var(--step-0);
   }
 </style>

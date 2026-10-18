@@ -341,17 +341,16 @@ export async function listPurchases(params: ListPurchasesParams = {}): Promise<P
  * land in one transaction on the server, so there is no partial purchase to
  * clean up here.
  */
-export async function createPurchase(
-  purchase: NewPurchase
-): Promise<{ purchase: Purchase; items: PurchaseItem[] }> {
+export async function createPurchase(purchase: NewPurchase): Promise<PurchaseListItem> {
   const body: Record<string, unknown> = { items: purchase.items };
   // Omitted, not null: the server distinguishes "no supplier" (the seeded
   // one-off-supplier) from "an unknown supplier id" (404).
   if (purchase.supplier_id) body.supplier_id = purchase.supplier_id;
-  return request<{ purchase: Purchase; items: PurchaseItem[] }>(
-    new URL('/api/purchases', BASE),
-    json('POST', body)
-  );
+  // `PurchaseListItem`, not `{purchase, items}`: the server answers the same
+  // shape as the list endpoint, with `supplier_returns` empty because a purchase
+  // cannot be born corrected. The narrower type described the server wrongly and
+  // the comment above the list type claimed otherwise.
+  return request<PurchaseListItem>(new URL('/api/purchases', BASE), json('POST', body));
 }
 
 /**
