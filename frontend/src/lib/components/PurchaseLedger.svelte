@@ -279,16 +279,7 @@
     </div>
   </header>
 
-  {#if error}
-    <p class="error" role="alert">
-      {lang.t.purchases_ledger_error}{error}
-      <button type="button" class="ghost" onclick={() => (scopeInstant = new Date())}>
-        {lang.t.sales_retry}
-      </button>
-    </p>
-  {/if}
-
-  <!-- The retry the alert above cannot offer. A failed re-read after a written
+  <!-- The retry the alert below cannot offer. A failed re-read after a written
        return sets the stale notice and never `error`, so this state had no way to
        refresh the day at all. It re-reads the day already on screen rather than
        jumping to today, because the notice is about that day. -->
@@ -301,7 +292,17 @@
     </p>
   {/if}
 
-  {#if loading}
+  <!-- Mutually exclusive with the loading, empty and table states, as it was
+       before: a failed read must replace the ledger region, never sit beside an
+       empty-state paragraph claiming there are no purchases, or beside stale rows. -->
+  {#if error}
+    <p class="error" role="alert">
+      {lang.t.purchases_ledger_error}{error}
+      <button type="button" class="ghost" onclick={() => (scopeInstant = new Date())}>
+        {lang.t.sales_retry}
+      </button>
+    </p>
+  {:else if loading}
     <p class="empty">{lang.t.sales_loading}</p>
   {:else if rows.length === 0}
     <p class="empty">
@@ -448,7 +449,9 @@
                   onclick={() => {
                     confirming.add(row.purchase.id);
                     returnError.delete(row.purchase.id);
-                    reloadNotice.forget(row.purchase.id);
+                    // Not "the operator dealt with this document": they may cancel.
+                    // Dropping the stale notice here left the figures stale with no
+                    // warning and no retry. Only a reload that succeeds retires it.
                   }}
                 >
                   {lang.t.purchases_return_action}

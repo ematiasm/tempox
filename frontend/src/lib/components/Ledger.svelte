@@ -293,6 +293,13 @@
       rows = await listSales({ from: range.from, to: range.to, limit: PAGE, offset: 0 });
       const c = await getCash();
       cash = c.total;
+      // This is a successful reload of the whole day, so the same rule applies as
+      // in the effect above: nothing on this screen is stale any more. The rule
+      // lives in one place (`screenTrust.ts`) precisely so both success paths
+      // honour it -- the first version only retired notices on the effect path,
+      // which would have left a warning standing over figures that had just been
+      // re-read.
+      refundStale.retireAll();
     } catch (e) {
       // The note stands; only this screen is behind. It is said as that, and the
       // confirm is closed, so the cashier does not read it as a refund to redo.
@@ -342,17 +349,7 @@
     </span>
   </div>
 
-  {#if error}
-    <div class="alert" role="alert">
-      <strong>{lang.t.sales_ledger_error}</strong>
-      <span>{error}</span>
-      <button type="button" onclick={() => (refreshToken = refreshToken + 1)}>
-        {lang.t.sales_retry}
-      </button>
-    </div>
-  {/if}
-
-  <!-- One retry for the whole screen, for the state the alert above cannot reach.
+  <!-- One retry for the whole screen, for the state the alert below cannot reach.
        A failed reload after a written credit note sets the stale notice and never
        `error`, so the alert's own retry was never rendered in that state: the
        warning told the cashier the figures were stale with no way to refresh
@@ -367,7 +364,18 @@
     </div>
   {/if}
 
-  {#if loading}
+  <!-- Mutually exclusive with the loading, empty and table states, as it was
+       before: a failed read must replace the ledger region, never sit beside an
+       empty-state paragraph claiming there are no sales, or beside stale rows. -->
+  {#if error}
+    <div class="alert" role="alert">
+      <strong>{lang.t.sales_ledger_error}</strong>
+      <span>{error}</span>
+      <button type="button" onclick={() => (refreshToken = refreshToken + 1)}>
+        {lang.t.sales_retry}
+      </button>
+    </div>
+  {:else if loading}
     <!-- Bars, not a spinner: the header, the scope controls and the legend stay
          put, so the page does not jump while the day arrives. -->
     <div class="skeleton" aria-hidden="true">
@@ -580,7 +588,12 @@
                           onclick={() => {
                             confirming = row.id;
                             refundError = null;
-                            refundStale.forget(row.id);
+                            // Deliberately NOT forgetting the stale notice here. Arming
+                            // the confirm is not "the cashier dealt with this
+                            // document": they may still cancel, and dropping the
+                            // notice would leave the figures stale with neither a
+                            // warning nor the retry that refreshes them. Only a
+                            // reload that actually succeeds retires it.
                           }}
                         >
                           {lang.t.sales_refund_action}
