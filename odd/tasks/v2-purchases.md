@@ -69,7 +69,7 @@ S19 work-unit commits carry their tests and docs; the last slice closes.
 | T3 | `POST /api/purchases` — the transaction: header, lines, positive movements | S1, S7, S8, S11 | inline | done | `8bc22fa` |
 | T4 | `GET /api/purchases` — list with items, day scoping, paging | S12 | inline | done | `11eeee1` |
 | T5 | `GET /api/cash` nets purchases + its existing-behaviour test | S13, S16 | inline | done | `3ef084d` |
-| T6 | Docs: architecture, README, PRODUCT | S18 | inline | done | `pending` |
+| T6 | Docs: architecture, README, PRODUCT | S18 | inline | done | `436bf1a` |
 | T7 | Rail destination + suppliers screen | S4, S5 | inline | pending | — |
 | T8 | `/purchases` register: supplier picker, lines, live total, keyboard | S7 | inline | pending | — |
 | T9 | Purchases ledger: day-scoped, stamped | S12 | inline | pending | — |
