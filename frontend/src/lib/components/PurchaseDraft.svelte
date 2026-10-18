@@ -208,7 +208,8 @@
   <header class="sheet-head">
     <h2 id="purchase-draft-title">{lang.t.purchases_draft_title}</h2>
     {#if justRecorded}
-      <p class="done" role="status">
+      <!-- The identity an e2e test needs; see the same note in SaleDraft. -->
+      <p class="done" role="status" data-doc-id={justRecorded.id}>
         {lang.t.purchases_legend} · {formatMoney(justRecorded.total)}
       </p>
     {/if}

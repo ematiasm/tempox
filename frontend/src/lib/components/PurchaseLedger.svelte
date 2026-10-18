@@ -319,11 +319,12 @@
     <ol class="documents">
       {#each rows as row (row.purchase.id)}
         {@const isOpen = open.has(row.purchase.id)}
-        <li class="document">
+        <li class="document" data-purchase-id={row.purchase.id}>
           <button
             type="button"
             class="head"
             aria-expanded={isOpen}
+            aria-controls="purchase-lines-{row.purchase.id}"
             onclick={() => toggle(row.purchase.id)}
           >
             <span class="time figure">{formatTime(new Date(row.purchase.created_at), zone)}</span>
@@ -340,7 +341,7 @@
 
           {#if isOpen}
             {@const returned = returnedByLine(row.supplier_returns)}
-            <table class="lines">
+            <table class="lines" id="purchase-lines-{row.purchase.id}">
               <thead>
                 <tr>
                   <th scope="col">{lang.t.sales_product}</th>

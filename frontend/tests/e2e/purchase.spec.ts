@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { lineTotal, money, uniqueUnitPrice } from './unique.js';
+import { money, recordedDocumentId } from './unique.js';
 
 /**
  * The purchase flow, end to end, through the real UI against the real API.
@@ -15,9 +15,9 @@ import { lineTotal, money, uniqueUnitPrice } from './unique.js';
  */
 test('a purchase is recorded and raises the stock it brought in', async ({ page }) => {
   const name = `e2e-purchase-${Date.now().toString(36)}`;
-  const price = uniqueUnitPrice();
-  const oneTotal = lineTotal(price, 1);
-  const sevenTotal = lineTotal(price, 7);
+  const price = '10,00';
+  const oneTotal = '10,00';
+  const sevenTotal = '70,00';
 
   // 1. The product exists first, created through the catalog's own form so this
   //    test also covers that screen. The stock field is LEFT ALONE on purpose:
@@ -75,10 +75,12 @@ test('a purchase is recorded and raises the stock it brought in', async ({ page 
 
   await expect(page.locator('.sheet .done')).toContainText(money(sevenTotal));
   await expect(page.locator('.sheet table.lines tbody tr')).toHaveCount(0);
+  const purchaseId = await recordedDocumentId(page);
 
-  // 5. It is in the day's ledger with its lines behind it. Selected by its own
-  //    total, not by position: every spec records into this ledger (#52).
-  const doc = page.locator('.ledger .document', { hasText: money(sevenTotal) });
+  // 5. It is in the day's ledger with its lines behind it. Selected by the id the
+  //    draft reported: position is a lie in a shared ledger and a total is not
+  //    unique (#52).
+  const doc = page.locator(`.ledger .document:has([aria-controls="purchase-lines-${purchaseId}"])`);
   await expect(doc).toHaveCount(1);
   await expect(doc).toContainText('Proveedor ocasional');
   await expect(doc).toContainText(money(sevenTotal));

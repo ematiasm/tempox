@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { lineTotal, money, uniqueUnitPrice } from './unique.js';
+import { lineTotal, money, recordedDocumentId } from './unique.js';
 
 /**
  * The sale flow, end to end, through the real UI against the real API (S14).
@@ -14,7 +14,7 @@ import { lineTotal, money, uniqueUnitPrice } from './unique.js';
  */
 test('a sale is recorded from the draft sheet and wears its stamp', async ({ page }) => {
   const name = `e2e-sale-${Date.now().toString(36)}`;
-  const price = uniqueUnitPrice();
+  const price = '25,00';
   const total = lineTotal(price, 4);
 
   // 1. The product has to exist. It is created through the catalog's own form
@@ -61,9 +61,12 @@ test('a sale is recorded from the draft sheet and wears its stamp', async ({ pag
   await expect(page.locator('.sheet table.lines tbody tr')).toHaveCount(0);
 
   // 5. And it is in the day's ledger, stamped, with its lines behind it. Selected
-  //    by its own total, not by position: every spec records into this ledger
-  //    (#52).
-  const doc = page.locator('table.docs tbody tr.doc', { hasText: money(total) });
+  //    by the id the draft reported, not by position and not by total: every spec
+  //    records into this ledger, and a total is not unique (#52).
+  const saleId = await recordedDocumentId(page);
+  // The row's toggle carries the full document id in `aria-controls`, which is the
+  // only place the full id appears in the ledger.
+  const doc = page.locator(`table.docs tbody tr.doc:has([aria-controls="lines-${saleId}"])`);
   await expect(doc).toHaveCount(1);
   await expect(doc).toContainText('Consumidor Final');
   await expect(doc).toContainText(money(total));
@@ -76,7 +79,7 @@ test('a sale is recorded from the draft sheet and wears its stamp', async ({ pag
 
 test('a sale can be returned in parts with credit notes', async ({ page }) => {
   const name = `e2e-refund-${Date.now().toString(36)}`;
-  const price = uniqueUnitPrice();
+  const price = '25,00';
   const total = lineTotal(price, 4);
 
   await page.goto('/products');
@@ -97,8 +100,9 @@ test('a sale can be returned in parts with credit notes', async ({ page }) => {
   await expect(page.locator('.sheet .total')).toHaveText(money(total));
   await page.getByRole('button', { name: /Registrar venta/ }).click();
 
-  // This sale, by its own total rather than by position (#52).
-  const doc = page.locator('table.docs tbody tr.doc', { hasText: money(total) });
+  // This sale, by the id the draft reported (#52).
+  const saleId = await recordedDocumentId(page);
+  const doc = page.locator(`table.docs tbody tr.doc:has([aria-controls="lines-${saleId}"])`);
   await expect(doc).toHaveCount(1);
   await expect(doc.locator('.stamp')).toContainText('Confirmada');
   await doc.locator('.doc-id').click();
@@ -135,18 +139,12 @@ test('a refund of one line leaves the other lines untouched', async ({ page }) =
   const a = `e2e-pickA-${stamp}`;
   const b = `e2e-pickB-${stamp}`;
 
-  // The ledger row shows the time, the id, the customer, the item count, the
-  // status and the total -- not the product names. So the total is the only field
-  // this test can select its own document by, and it must be unique for this run:
-  // the development database is shared and every earlier run left its own $77.48
-  // behind. Four units of a price derived from the clock gives a total no previous
-  // run produced, without depending on spec order.
-  const unitPrice = ((Date.now() % 900) + 100) / 100; // 1.00 .. 9.99
-  const unitPriceText = unitPrice.toFixed(2).replace('.', ',');
-  const saleTotal = (unitPrice * 4 + 20 * 3).toFixed(2).replace('.', ',');
+  const priceA = '4,37';
+  // 4 x 4.37 + 3 x 20.00
+  const saleTotal = '77,48';
 
   for (const [name, price] of [
-    [a, unitPriceText],
+    [a, priceA],
     [b, '20,00']
   ]) {
     await page.goto('/products');
@@ -174,12 +172,10 @@ test('a refund of one line leaves the other lines untouched', async ({ page }) =
   await expect(page.locator('.sheet .total')).toHaveText(`$ ${saleTotal}`);
   await page.getByRole('button', { name: /Registrar venta/ }).click();
 
-  // Select this sale's own row, not the newest one. `.first()` is the most recent
-  // document, which is only this one when no other spec has recorded a sale since
-  // -- and on CI the shared database and the spec order make that untrue. That is
-  // the defect tracked as #52, and it is what made this test fail there while
-  // passing locally.
-  const doc = page.locator('table.docs tbody tr.doc', { hasText: `$ ${saleTotal}` });
+  // Select this sale by the id the draft reported. Position is a lie in a shared
+  // ledger and a total is not unique (#52).
+  const saleId = await recordedDocumentId(page);
+  const doc = page.locator(`table.docs tbody tr.doc:has([aria-controls="lines-${saleId}"])`);
   await expect(doc).toHaveCount(1);
   await expect(doc.locator('.stamp')).toContainText('Confirmada');
   await doc.locator('.doc-id').click();
@@ -200,9 +196,7 @@ test('a refund of one line leaves the other lines untouched', async ({ page }) =
 
   // One unit of A comes back, and B's line must not be in the note at all.
   await expect(document.locator('.note-block')).toHaveCount(1);
-  await expect(document.locator('.note-block')).toContainText(
-    `−$ ${unitPrice.toFixed(2).replace('.', ',')}`
-  );
+  await expect(document.locator('.note-block')).toContainText(`−${money(priceA)}`);
   await expect(document.locator('.note-block')).not.toContainText(b);
 
   // B still has all three units left, which is the whole point.
@@ -221,10 +215,7 @@ test('a refund with every line excluded is refused before sending', async ({ pag
 
   await page.goto('/products');
   await page.locator('#new-name').fill(name);
-  // Unique per run, for the same reason as the test above: the row is selected by
-  // its total and the development database keeps every earlier run's documents.
-  const price = (((Date.now() % 900) + 100) / 100).toFixed(2).replace('.', ',');
-  await page.locator('#new-price').fill(price);
+  await page.locator('#new-price').fill('31,00');
   await page.locator('#new-stock').fill('5');
   await page.getByRole('button', { name: 'Crear producto' }).click();
   await expect(page.getByRole('status')).toContainText(name);
@@ -236,10 +227,9 @@ test('a refund with every line excluded is refused before sending', async ({ pag
   await page.keyboard.press('Enter');
   await page.getByRole('button', { name: /Registrar venta/ }).click();
 
-  // Same reason as above: the row does not carry product names, so this document
-  // is selected by its own total rather than by its position in a list every spec
-  // writes to (#52).
-  const doc = page.locator('table.docs tbody tr.doc', { hasText: `$ ${price}` });
+  // Same reason as above: selected by the id the draft reported (#52).
+  const saleId = await recordedDocumentId(page);
+  const doc = page.locator(`table.docs tbody tr.doc:has([aria-controls="lines-${saleId}"])`);
   await expect(doc).toHaveCount(1);
   await doc.locator('.doc-id').click();
   const document = page.locator('.lines');

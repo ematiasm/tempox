@@ -225,7 +225,12 @@
   <header class="head">
     <h2 id="draft-h">{lang.t.sales_draft_title}</h2>
     {#if justRecorded}
-      <span class="recorded">
+      <!-- `data-doc-id` is the identity an e2e test needs. A ledger row shows the
+           time, the id, the customer, the item count, the status and the total, and
+           the product name only lives in the lines behind it -- so a spec has no
+           other field to select its own document by. A total is not unique either:
+           100.00 x 7 and 175.00 x 4 both come to 700.00. The id is. -->
+      <span class="recorded" data-doc-id={justRecorded.id}>
         <Stamp label={lang.t.sales_confirmed} size="cell" land />
         <span class="figures">{formatMoney(justRecorded.total)}</span>
       </span>
