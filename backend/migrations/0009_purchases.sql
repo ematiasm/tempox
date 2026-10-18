@@ -102,6 +102,8 @@ ALTER TABLE stock_movements
     );
 
 ALTER TABLE stock_movements
+    DROP CONSTRAINT IF EXISTS stock_movements_purchase_coherent;
+ALTER TABLE stock_movements
     ADD CONSTRAINT stock_movements_purchase_coherent
     CHECK ((reason = 'purchase') = (purchase_id IS NOT NULL));
 
@@ -110,6 +112,8 @@ ALTER TABLE stock_movements
 -- purchase could silently remove stock while the purchase document says it
 -- arrived — the exact class of invisible inconsistency the append-only ledger
 -- exists to prevent.
+ALTER TABLE stock_movements
+    DROP CONSTRAINT IF EXISTS stock_movements_purchase_is_incoming;
 ALTER TABLE stock_movements
     ADD CONSTRAINT stock_movements_purchase_is_incoming
     CHECK (reason <> 'purchase' OR quantity > 0);
@@ -180,27 +184,35 @@ BEFORE TRUNCATE ON purchase_items
 FOR EACH STATEMENT EXECUTE FUNCTION reject_purchase_item_mutation();
 
 -- 0008 ends with an assertion that its guard actually exists, because a silently
--- missing trigger is exactly the failure it was written to repair. The same
--- check belongs here, and it is cheap: four triggers, one query.
+-- missing trigger is exactly the failure it was written to repair. The same check
+-- belongs here, and it is cheap: four triggers, one query.
+--
+-- It runs LAST, after the triggers it checks are created, because that is the
+-- only position where a failure names the real cause. This migration was first
+-- written with the check in the middle, and the measurement was unambiguous: a
+-- re-run reported the *constraint* that happened to fail next instead of the
+-- guard that was actually absent. A diagnostic that names the wrong cause costs
+-- more than no diagnostic, so the check sits after every CREATE TRIGGER.
 DO $$
 DECLARE
-    missing text;
+    present bigint;
 BEGIN
-    SELECT string_agg(wanted.name, ', ') INTO missing
+    SELECT count(*) INTO present
       FROM (VALUES
               ('purchases', 'purchases_immutable'),
               ('purchases', 'purchases_no_truncate'),
               ('purchase_items', 'purchase_items_immutable'),
               ('purchase_items', 'purchase_items_no_truncate')
            ) AS wanted(table_name, name)
-     WHERE NOT EXISTS (
+     WHERE EXISTS (
              SELECT 1 FROM pg_trigger t
               WHERE t.tgname = wanted.name
                 AND t.tgrelid = wanted.table_name::regclass
                 AND NOT t.tgisinternal
            );
-    IF missing IS NOT NULL THEN
-        RAISE EXCEPTION 'the v2 immutability guards are missing: %', missing;
+    IF present <> 4 THEN
+        RAISE EXCEPTION
+            'expected 4 v2 immutability triggers, found %; refusing to continue', present;
     END IF;
 END;
 $$;

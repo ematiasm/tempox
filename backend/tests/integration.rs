@@ -2521,3 +2521,117 @@ async fn v2_the_ledger_refuses_a_purchase_movement_without_its_document() {
 
     tx.rollback().await.expect("rollback");
 }
+
+// ── v2 (T2): the suppliers endpoints ───────────────────────────────────────
+//
+// plan-v2.md S4/S5: a supplier is the mirror of a customer — name only, no
+// editing, no delete, and the seeded one-off supplier is reachable and is what
+// a purchase without a named supplier falls back to.
+//
+// Every test here is self-relative (S17): it creates the rows it measures and
+// never asserts a count or a total it did not cause. This suite runs against the
+// shared development database, which already holds real suppliers by the time
+// it runs a second time.
+
+/// Create a supplier over HTTP and return it. Names are made unique per call so
+/// a second run against the same database does not collide with the first.
+async fn v2_create_supplier(client: &reqwest::Client, base: &str, name: &str) -> serde_json::Value {
+    client
+        .post(format!("{base}/api/suppliers"))
+        .json(&serde_json::json!({ "name": name }))
+        .send()
+        .await
+        .expect("post supplier")
+        .error_for_status()
+        .expect("2xx")
+        .json()
+        .await
+        .expect("supplier json")
+}
+
+#[tokio::test]
+#[ignore]
+async fn v2_suppliers_list_and_create() {
+    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
+    let client = reqwest::Client::new();
+
+    // A unique name, because the development database keeps what a previous run
+    // created and the unique constraint would answer 409 to a repeat.
+    let stamp = uuid::Uuid::new_v4();
+    let name = format!("v2-supplier-{stamp}");
+    let created = v2_create_supplier(&client, &base, &name).await;
+    assert_eq!(
+        created["name"], name,
+        "the server echoes the name it stored"
+    );
+    let id = created["id"].as_str().expect("id").to_string();
+
+    // It appears in the list, and the seeded one-off supplier is there too —
+    // both are what a caller relies on: the picker needs the seed in the list,
+    // and a created supplier must be visible without a second endpoint.
+    let list: serde_json::Value = client
+        .get(format!("{base}/api/suppliers"))
+        .send()
+        .await
+        .expect("get suppliers")
+        .error_for_status()
+        .expect("2xx")
+        .json()
+        .await
+        .expect("suppliers json");
+    let names: Vec<&str> = list
+        .as_array()
+        .expect("array")
+        .iter()
+        .filter_map(|s| s["name"].as_str())
+        .collect();
+    assert!(
+        names.contains(&name.as_str()),
+        "the created supplier is listed"
+    );
+    assert!(
+        names.contains(&"one-off-supplier"),
+        "the seeded supplier must be listable: a purchase falls back to it"
+    );
+
+    // The seeded supplier's id is a contract with the migration and with the
+    // purchase default, so the list must carry exactly that id.
+    let seeded = list
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|s| s["name"] == "one-off-supplier")
+        .expect("seeded supplier in list");
+    assert_eq!(
+        seeded["id"], "00000000-0000-0000-0000-000000000002",
+        "the seeded supplier keeps its fixed id"
+    );
+
+    // Duplicate name -> 409, not 500 and not a silent second row.
+    let duplicate = client
+        .post(format!("{base}/api/suppliers"))
+        .json(&serde_json::json!({ "name": name }))
+        .send()
+        .await
+        .expect("post duplicate");
+    assert_eq!(
+        duplicate.status(),
+        409,
+        "a duplicate supplier name is a conflict, {id} already holds it"
+    );
+
+    // A blank name is a client error, not a row: whitespace only is empty.
+    for blank in ["", "   ", "\t\n"] {
+        let resp = client
+            .post(format!("{base}/api/suppliers"))
+            .json(&serde_json::json!({ "name": blank }))
+            .send()
+            .await
+            .expect("post blank supplier");
+        assert_eq!(
+            resp.status(),
+            400,
+            "{blank:?} is not a supplier name; storing it would make the picker unreadable"
+        );
+    }
+}

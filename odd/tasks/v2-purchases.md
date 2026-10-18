@@ -64,7 +64,7 @@ S19 work-unit commits carry their tests and docs; the last slice closes.
 | ID | Task | Specs | Route | Status | Commit |
 |---|---|---|---|---|---|
 | T1 | Migration `0009_purchases.sql` + its integration tests (guards, coherence, seed, sign) | S1, S4–S6, S9, S10 | inline | done | `bc189cf` |
-| T2 | `suppliers` endpoints (`GET`, `POST`, 400/409) | S4, S5 | inline | pending | — |
+| T2 | `suppliers` endpoints (`GET`, `POST`, 400/409) | S4, S5 | inline | done | `pending` |
 | T3 | `POST /api/purchases` — the transaction: header, lines, positive movements | S1, S7, S8, S11 | inline | pending | — |
 | T4 | `GET /api/purchases` — list with items, day scoping, paging | S12 | inline | pending | — |
 | T5 | `GET /api/cash` nets purchases + its existing-behaviour test | S13, S16 | inline | pending | — |
@@ -143,3 +143,40 @@ expected to be refused (`purchase`) was refused by the *vocabulary* instead of b
 the *coherence rule*. Asserting the positive case first is what distinguishes a
 working guard from a missing feature, and it is now the pattern for every guard
 test in this slice.
+
+### T2 (2026-10-17)
+
+- **RED observed first**: `v2_suppliers_list_and_create` failed with a `404` from
+  `POST /api/suppliers` — the route did not exist. The failure named the missing
+  feature, not a broken assertion.
+- **An incident, recorded because the repo already documented it and I repeated
+  it anyway.** `0009` was first applied with `psql -f` instead of through the
+  migrator. `plan-v1.5`'s L11 says exactly this: *"a migration is applied by its
+  migrator, including the first time; `psql -f` is a syntax check at best"*. The
+  schema existed with **no row in `_sqlx_migrations`**, so the migrator then
+  refused `0009` with `constraint "stock_movements_purchase_coherent" … already
+  exists` — while the real cause was that it had never been applied. The repair
+  was safe because every table was verified empty first (`purchases` 0, `items` 0,
+  purchase movements 0, suppliers 1 seed row): the 0009 objects were reversed by
+  hand and the migrator applied the file from scratch, reaching 9/9.
+- **The re-run bug that incident exposed is a real defect in `0009`, now fixed.**
+  Because the file has `CREATE TABLE IF NOT EXISTS` at the top and the guard
+  assertion in the middle, a second attempt recreated empty tables and reported
+  the *constraint* that failed next instead of the *guard* that was absent. Two
+  changes: every `ADD CONSTRAINT` is now preceded by `DROP CONSTRAINT IF EXISTS`
+  so the file is re-runnable, and the guard assertion moved to **last**, after
+  every `CREATE TRIGGER`, where its failure names the real cause.
+- **The host binary, not an image.** The running backend container is the old
+  build, and rebuilding it would re-tag the owner's `tempox-backend:latest` —
+  the hazard `plan-v1.5`'s L21 records. So the branch's binary ran from the host
+  on port 3099 against the same development database, which is the rule that
+  governs this repo (L22: one stack, one database, one backend image; the binary
+  is the branch's code). Stopped afterwards; the compose stack is untouched.
+- `cargo test --test integration v2_suppliers…` against the host binary:
+  **passed**; then the four v2 tests: **4 passed**.
+- Full integration suite against the host binary: **26 passed, 0 failed**.
+- `cargo test --bins`: 29 passed. `make sqlx-prepare` regenerated the cache (two
+  new query files committed); `make sqlx-check` passes.
+- `cargo fmt` clean; `cargo clippy --all-targets -- -D warnings` clean.
+- All nine migrations apply **from scratch** through the migrator to a throwaway
+  database created and dropped by the run, with `0009` last.
