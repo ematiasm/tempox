@@ -3253,3 +3253,288 @@ fn v2_the_coherence_pre_check_runs_before_the_constraints_it_protects() {
         );
     }
 }
+
+// ── v2.5 (T1): the supplier-returns schema ─────────────────────────────────
+//
+// plan-v2.5.md: a return is a second document that corrects a purchase, never an
+// edit of it. These tests pin the schema's own rules — the tables, the ledger's
+// fifth reason, its direction and coherence, and the immutability of both new
+// tables. Every one is self-relative and rolls back.
+
+/// Insert a purchase with one line and its movement, and return the ids the
+/// return tests need.
+#[allow(dead_code)]
+async fn v2_5_fixture(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tag: &str,
+) -> (uuid::Uuid, uuid::Uuid, uuid::Uuid) {
+    let pid: (uuid::Uuid,) =
+        sqlx::query_as("INSERT INTO products (name, list_price) VALUES ($1, 10.00) RETURNING id")
+            .bind(format!("v2_5-{tag}-{}", uuid::Uuid::new_v4()))
+            .fetch_one(&mut **tx)
+            .await
+            .expect("insert product");
+    let purchase_id: (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO purchases (supplier_id, total) VALUES ($1, 30.00) RETURNING id",
+    )
+    .bind(uuid::Uuid::parse_str(ONE_OFF_SUPPLIER_ID).expect("fixed uuid"))
+    .fetch_one(&mut **tx)
+    .await
+    .expect("insert purchase");
+    let item_id: (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO purchase_items
+            (purchase_id, product_id, product_name, quantity, unit_price, line_total, unit)
+         VALUES ($1, $2, 'v2_5 line', 3, 10.00, 30.00, 'unit') RETURNING id",
+    )
+    .bind(purchase_id.0)
+    .bind(pid.0)
+    .fetch_one(&mut **tx)
+    .await
+    .expect("insert purchase item");
+    (pid.0, purchase_id.0, item_id.0)
+}
+
+#[tokio::test]
+#[ignore]
+async fn v2_5_schema_creates_supplier_returns_tables() {
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
+    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+
+    for table in ["supplier_returns", "supplier_return_items"] {
+        let reg: Option<String> = sqlx::query_scalar("SELECT to_regclass($1)::text")
+            .bind(format!("public.{table}"))
+            .fetch_one(&pool)
+            .await
+            .expect("to_regclass");
+        assert_eq!(
+            reg.as_deref(),
+            Some(table),
+            "{table} does not exist: the v2.5 migration did not run"
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore]
+async fn v2_5_a_return_takes_stock_out_and_names_both_documents() {
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
+    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+    let mut tx = pool.begin().await.expect("begin");
+
+    let (pid, purchase_id, item_id) = v2_5_fixture(&mut tx, "happy").await;
+
+    let return_id: (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO supplier_returns (purchase_id, total) VALUES ($1, 10.00) RETURNING id",
+    )
+    .bind(purchase_id)
+    .fetch_one(&mut *tx)
+    .await
+    .expect("a return can be created");
+
+    sqlx::query(
+        "INSERT INTO supplier_return_items
+            (supplier_return_id, purchase_item_id, product_id, product_name, quantity,
+             unit_price, line_total, unit)
+         VALUES ($1, $2, $3, 'v2_5 line', 1, 10.00, 10.00, 'unit')",
+    )
+    .bind(return_id.0)
+    .bind(item_id)
+    .bind(pid)
+    .execute(&mut *tx)
+    .await
+    .expect("a return line can be created");
+
+    // POSITIVE case first, and it is load-bearing: without it a missing feature
+    // would satisfy the refusals below for the wrong reason — a rule absent from
+    // the vocabulary refuses everything, which proves nothing (measured in v2).
+    sqlx::query(
+        "INSERT INTO stock_movements (product_id, quantity, reason, purchase_id, supplier_return_id)
+         VALUES ($1, -1, 'supplier_return', $2, $3)",
+    )
+    .bind(pid)
+    .bind(purchase_id)
+    .bind(return_id.0)
+    .execute(&mut *tx)
+    .await
+    .expect("a coherent supplier_return movement must be accepted");
+
+    tx.rollback().await.expect("rollback");
+}
+
+#[tokio::test]
+#[ignore]
+async fn v2_5_the_ledger_refuses_incoherent_supplier_return_movements() {
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
+    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+    let mut tx = pool.begin().await.expect("begin");
+
+    let (pid, purchase_id, _item_id) = v2_5_fixture(&mut tx, "coherence").await;
+    let return_id: (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO supplier_returns (purchase_id, total) VALUES ($1, 10.00) RETURNING id",
+    )
+    .bind(purchase_id)
+    .fetch_one(&mut *tx)
+    .await
+    .expect("insert return");
+    let sale_id: (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO sales (customer_id, total) VALUES ('00000000-0000-0000-0000-000000000001', 0.00) RETURNING id",
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .expect("insert sale");
+
+    macro_rules! probe_denied {
+        ($label:expr, $sql:expr $(, $bind:expr)*) => {{
+            sqlx::query("SAVEPOINT probe").execute(&mut *tx).await.expect("savepoint");
+            let result = sqlx::query($sql) $(.bind($bind))*.execute(&mut *tx).await;
+            sqlx::query("ROLLBACK TO SAVEPOINT probe")
+                .execute(&mut *tx)
+                .await
+                .expect("rollback to savepoint");
+            assert!(result.is_err(), "{} was allowed", $label);
+        }};
+    }
+
+    // The direction. Stock LEAVES on a return; the ledger accepts negatives in
+    // general, so without this rule a return could add stock while its document
+    // says the goods went back — the mirror of 0009's measured purchase rule.
+    probe_denied!(
+        "a positive supplier_return movement",
+        "INSERT INTO stock_movements (product_id, quantity, reason, purchase_id, supplier_return_id)
+         VALUES ($1, 1, 'supplier_return', $2, $3)",
+        pid,
+        purchase_id,
+        return_id.0
+    );
+
+    // The document is required: a movement that cannot be traced to the return
+    // it corrects is not auditable.
+    probe_denied!(
+        "a supplier_return movement with no supplier_return_id",
+        "INSERT INTO stock_movements (product_id, quantity, reason, purchase_id)
+         VALUES ($1, -1, 'supplier_return', $2)",
+        pid,
+        purchase_id
+    );
+
+    // The equality, not a one-sided check: a `sale` row carrying a
+    // supplier_return_id must be refused. 0009 measured that a one-sided rule
+    // lets this through.
+    probe_denied!(
+        "a sale movement carrying a supplier_return_id",
+        "INSERT INTO stock_movements (product_id, quantity, reason, sale_id, supplier_return_id)
+         VALUES ($1, -1, 'sale', $2, $3)",
+        pid,
+        sale_id.0,
+        return_id.0
+    );
+
+    tx.rollback().await.expect("rollback");
+}
+
+#[tokio::test]
+#[ignore]
+async fn v2_5_the_return_tables_are_immutable() {
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
+    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+    let mut tx = pool.begin().await.expect("begin");
+
+    let (pid, purchase_id, item_id) = v2_5_fixture(&mut tx, "immutable").await;
+    let return_id: (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO supplier_returns (purchase_id, total) VALUES ($1, 10.00) RETURNING id",
+    )
+    .bind(purchase_id)
+    .fetch_one(&mut *tx)
+    .await
+    .expect("insert return");
+    let line_id: (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO supplier_return_items
+            (supplier_return_id, purchase_item_id, product_id, product_name, quantity,
+             unit_price, line_total, unit)
+         VALUES ($1, $2, $3, 'v2_5 line', 1, 10.00, 10.00, 'unit') RETURNING id",
+    )
+    .bind(return_id.0)
+    .bind(item_id)
+    .bind(pid)
+    .fetch_one(&mut *tx)
+    .await
+    .expect("insert return line");
+
+    macro_rules! probe_denied {
+        ($label:expr, $sql:expr $(, $bind:expr)*) => {{
+            sqlx::query("SAVEPOINT probe").execute(&mut *tx).await.expect("savepoint");
+            let result = sqlx::query($sql) $(.bind($bind))*.execute(&mut *tx).await;
+            sqlx::query("ROLLBACK TO SAVEPOINT probe")
+                .execute(&mut *tx)
+                .await
+                .expect("rollback to savepoint");
+            assert!(result.is_err(), "{} was allowed", $label);
+        }};
+    }
+
+    probe_denied!(
+        "supplier_return update",
+        "UPDATE supplier_returns SET total = 1.00 WHERE id = $1",
+        return_id.0
+    );
+    probe_denied!(
+        "supplier_return delete",
+        "DELETE FROM supplier_returns WHERE id = $1",
+        return_id.0
+    );
+    probe_denied!(
+        "supplier_return created_at rewrite",
+        "UPDATE supplier_returns SET created_at = now() WHERE id = $1",
+        return_id.0
+    );
+    probe_denied!(
+        "supplier_return_item update",
+        "UPDATE supplier_return_items SET quantity = 99 WHERE id = $1",
+        line_id.0
+    );
+    probe_denied!(
+        "supplier_return_item delete",
+        "DELETE FROM supplier_return_items WHERE id = $1",
+        line_id.0
+    );
+    // A finer-than-a-cent amount is refused on the new money columns.
+    probe_denied!(
+        "a supplier_return total finer than a cent",
+        "INSERT INTO supplier_returns (purchase_id, total) VALUES ($1, 10.005)",
+        purchase_id
+    );
+
+    tx.rollback().await.expect("rollback");
+}
+
+/// The pre-check ordering is a property of the migration text, so it is asserted
+/// against the text. Placed after the constraints it protects it can never fire:
+/// `ADD CONSTRAINT` validates existing rows first and PostgreSQL reports the
+/// symptom instead of the cause — a defect an independent verifier found in
+/// `0009` and that `46e93ca` fixed.
+#[test]
+fn v2_5_the_pre_check_runs_before_the_constraints_it_protects() {
+    let sql = include_str!("../migrations/0010_supplier_returns.sql");
+    let pre_check = sql
+        .find("contradict the v2.5 coherence rule")
+        .expect("0010 must keep its v2.5 coherence pre-check");
+    for constraint in [
+        "ADD CONSTRAINT stock_movements_document_coherent",
+        "ADD CONSTRAINT stock_movements_supplier_return_coherent",
+        "ADD CONSTRAINT stock_movements_supplier_return_is_outgoing",
+    ] {
+        let added = sql
+            .find(constraint)
+            .unwrap_or_else(|| panic!("0010 must add {constraint}"));
+        assert!(
+            pre_check < added,
+            "the defensive pre-check must run BEFORE {constraint}; placed after \
+             it, PostgreSQL reports the violation first and the pre-check can \
+             never fire"
+        );
+    }
+}
