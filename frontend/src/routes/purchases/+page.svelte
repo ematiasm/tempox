@@ -51,7 +51,14 @@
 
 <style>
   .band {
-    background: var(--indigo);
+    /* Crimson, like every other page. It was indigo, on the reasoning that
+       buying is the mirror of selling and money leaves instead of arriving —
+       which is a design decision this page is not allowed to make. DESIGN.md
+       fixes the band as the one saturated region, always the same shape so the
+       eye learns it once, and the Crimson Is Spent Rule spends the accent on
+       exactly four commitments including this band. Indigo has its own roles
+       (the rail, the cash footing); a second role here would be a third. */
+    background: var(--crimson);
     color: #fff;
     display: flex;
     align-items: center;

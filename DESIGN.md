@@ -213,14 +213,19 @@ demands one case is asserting the stylesheet, not the design.
 ## Layout
 
 A two-column grid: a fixed 92px navigation rail and a fluid work area. The rail
-carries the product name, the two destinations as vertical tabs, and the
-language toggle at its foot. The active tab is *extended* — it is 104px wide and
+carries the product name, the three destinations as vertical tabs — sell, buy,
+look after the catalogue — and the language toggle at its foot. The active tab is *extended* — it is 104px wide and
 overhangs 12px into the work area, which is what makes it read as a pulled-up
 index tab rather than as a second column.
 
 Below the rail, every page opens with a full-bleed crimson band: the page's
 heading and its single next action. The band is the one saturated region, and it
-is always the same shape, so the eye learns it once.
+is always the same shape, so the eye learns it once. **This rule is asserted, not
+just declared**: `shell.spec.ts` compares the computed background of
+`header.band` across every page and fails if one of them chooses another colour.
+It exists because it happened — the purchases screen shipped with an indigo band,
+on the reasoning that buying mirrors selling, and the behavioural tests could not
+see it.
 
 Content below the band is a single fluid column at 22–28px inset. Regions are
 separated by generous whitespace rather than by boxes where the content does not

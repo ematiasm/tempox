@@ -79,3 +79,31 @@ test('the notes demo stays reachable by URL but out of the rail', async ({ page 
   const rail = page.getByRole('navigation', { name: 'Principal' });
   await expect(rail.getByRole('link', { name: /notas/i })).toHaveCount(0);
 });
+
+test('every page opens with the same crimson band (DESIGN.md)', async ({ page }) => {
+  // DESIGN.md: "Below the rail, every page opens with a full-bleed crimson
+  // band... The band is the one saturated region, and it is always the same
+  // shape, so the eye learns it once." And the Crimson Is Spent Rule names the
+  // action band as one of its roles, which is what makes indigo on one page a
+  // violation rather than a taste.
+  //
+  // This test exists because ten behavioural e2e tests missed exactly this: a
+  // new screen chose a different band colour and nothing failed. Behaviour tests
+  // cannot see a design system; only an assertion about the rendered style can.
+  const bands: Record<string, string> = {};
+
+  for (const path of ['/sales', '/purchases', '/products']) {
+    await page.goto(path);
+    const band = page.locator('header.band');
+    await expect(band).toBeVisible();
+    // The computed colour, not the CSS variable name: a page could reference the
+    // right token and still be overridden by a later rule.
+    bands[path] = await band.evaluate((el) => getComputedStyle(el).backgroundColor);
+  }
+
+  const reference = bands['/sales'];
+  expect(reference).toBe('rgb(168, 27, 42)'); // --crimson #a81b2a
+  for (const [path, colour] of Object.entries(bands)) {
+    expect(colour, `${path} must wear the same band as /sales`).toBe(reference);
+  }
+});
