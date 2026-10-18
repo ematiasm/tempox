@@ -3,9 +3,9 @@
 Full design: `plan-v2.md` (gitignored working plan, like `plan-v1.md`/`plan-v1a.md`).
 Engram topic key: `tempox/odd/v2-purchases/tasks`.
 
-**State: backend closed.** T1–T6 done; the backend slice of v2 is complete and
-its checks are green. The UI slice (v2a, T7–T10) has not started. `main` was
-`03dc2b2` when the slice began; nothing is pushed.
+**State: backend merged.** T1–T6 done and delivered as **PR #45 → `0b6fd3e`**,
+CI 4/4 green on `main`. The UI slice (v2a, T7–T10) has not started; `main` is its
+base.
 
 v2 is the mirror of v1: a purchase raises stock and lowers cash, exactly as a sale
 lowers stock and raises cash. Suppliers mirror customers. What the mirror does
@@ -379,3 +379,62 @@ Two things about the delivery worth recording, because neither was obvious:
 Size, measured: 2 078 authored lines under `backend/` (of which 993 are the
 integration suite and 223 the migration) and 461 lines of documentation across
 `odd/`, `docs/`, `README.md` and `PRODUCT.md`.
+
+## Merged (2026-10-18)
+
+**PR #45 merged** → `0b6fd3e` (`--merge`, branch deleted). CI on `main` after the
+merge: run `39105377577`, **4/4 success**. Local `main` is level with
+`origin/main` (0/0).
+
+### Verified on a genuinely empty database, before merging
+
+The owner ran `docker compose down -v`, which is the only environment where a
+test that assumes pre-existing data fails. Used before merging rather than after:
+
+- All nine migrations applied by the **migrator** (not `psql`), `_sqlx_migrations`
+  9/9 `success = t`.
+- `/api/cash` → `{"total":"0.00"}`, `/api/purchases` → `[]`, `/api/suppliers` →
+  the seeded `one-off-supplier` and nothing else.
+- **The suite run three times in a row on the accumulating data**: 33 passed each
+  time, with 42 sales, 9 purchases and 102 products present by the third. This is
+  the idempotency the independent verification asked about, measured rather than
+  assumed — the defect that broke `v1a_sales_list…` depended on exactly this.
+- `make lint` (0 errors / 0 warnings), 71 frontend unit tests, `make sqlx-check`,
+  `.sqlx` unchanged.
+
+### The stack incident this caused, and its resolution
+
+Raising the full compose stack put `tempox-backend-1` into a restart loop:
+
+```
+Error: migration 9 was previously applied but is missing in the resolved migrations
+```
+
+The image `tempox-backend:latest` was built on **2026-10-17 13:31** and its
+`migrations/` stopped at `0008`, while the volume already carried `0009`. The
+image had been deliberately left un-rebuilt for the whole slice, to protect the
+owner's tag — correct at the time, and the reason it was behind.
+
+**A fact worth recording, because it is easy to over-trust green CI: CI never
+builds the backend image.** The `Frontend image (Docker)` job builds only the
+frontend; the Rust job compiles a host binary. A green CI therefore says nothing
+about this image's contents.
+
+Resolved with the owner's explicit authorization (`plan-v1.5` L21 forbids
+re-tagging the image by default, and that rule exists to stop a tag pointing at an
+in-progress branch — here `main` *is* the delivered state). Rebuilt from `main`
+(`0b6fd3e`): the new image contains `0009`, the container starts clean, and the
+development stack answers `/api/suppliers` and `/api/purchases` with `200`.
+
+Verified on the real stack afterwards, with no `BACKEND_BASE` override — the way
+the repository rule says integration tests must run:
+
+- `cargo test --all-features -- --include-ignored --test-threads=1` — **33 passed**
+- `npx playwright test` — **8 passed**
+
+### What is next
+
+The v2a UI slice (T7–T10) has not started: the rail, the purchases register, the
+purchases ledger and the new i18n strings. `main` is its base. The v1.5
+credit-note review (`review-a75a3be004742020`) remains the owner's accepted risk
+and is untouched by this slice.

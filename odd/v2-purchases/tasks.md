@@ -4,8 +4,8 @@ Full document: `odd/tasks/v2-purchases.md` (specs authority, verbatim user log).
 Design authority: `plan-v2.md` (gitignored working plan, like `plan-v1.md`).
 Engram topic key: `tempox/odd/v2-purchases/tasks`.
 
-**State: backend closed.** T1–T6 done, checks green. UI slice v2a (T7–T10) not
-started. Nothing pushed.
+**State: backend merged.** T1–T6 done and delivered as PR #45 → `0b6fd3e`,
+CI 4/4 green on `main`. UI slice v2a (T7–T10) not started; `main` is its base.
 
 v2 is the mirror of v1 — a purchase raises stock and lowers cash, suppliers
 mirror customers — except where the mirror does not fit, which is the whole
