@@ -3,7 +3,9 @@
 Full document: `odd/tasks/v2.5-supplier-returns.md` (specs authority, verification).
 Design authority: `plan-v2.5.md`. Engram topic key: `tempox/odd/v2.5-supplier-returns/tasks`.
 
-**State: in progress.** T1 done on `feat/v2.5-supplier-returns` off `82292a2`.
+**State: complete (T1–T8).** Backend merged in PR #47 (`4aaeb98`) and ledger
+integrity in PR #48 (`a8d2fa6`); the UI (T6–T8) is on `feat/v2.5a-returns-ui`
+off `a8d2fa6`.
 
 Returning goods to a supplier: the mirror of v1.5's credit note with the direction
 reversed. Stock leaves, money comes back, the purchase stays as recorded.
@@ -39,9 +41,10 @@ S16 work-unit commits with tests and docs.
 | T3 | `supplier_returns` in `GET /api/purchases` | S7 | done | `3b97e25` |
 | T4 | `GET /api/cash` nets returns | S5, S13 | done | `c6740cf` |
 | T5 | Docs | S15 | done | `1a9e1ec` |
-| T6 | Return action in an expanded purchase | S3, S6 | pending | — |
-| T7 | Returns under the purchase they correct | S7 | pending | — |
-| T8 | i18n, both languages | S15 | pending | — |
+| T6 | Return action in an expanded purchase | S3, S6 | done | `978ff81` |
+| T7 | Returns under the purchase they correct | S7 | done | `978ff81` |
+| T8 | i18n, both languages | S15 | done | `978ff81` |
+| — | `PUBLIC_API_BASE` reaches the bundle again (pre-existing defect) | — | done | `b632431` |
 
 ## Verified for T1
 
