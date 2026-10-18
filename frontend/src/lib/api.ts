@@ -291,6 +291,17 @@ export type ListPurchasesParams = {
 export type PurchaseListItem = {
   purchase: Purchase;
   items: PurchaseItem[];
+  /**
+   * The returns that corrected this purchase, oldest first.
+   *
+   * Always present, never absent: a purchase nobody returned answers with an
+   * empty array. The create endpoint answers empty because a purchase cannot be
+   * born corrected.
+   *
+   * Whether a purchase is fully returned is derived from this array, exactly as
+   * a sale's annulment is derived from its credit notes.
+   */
+  supplier_returns: SupplierReturnWithItems[];
 };
 
 export type Purchase = {
@@ -330,16 +341,82 @@ export async function listPurchases(params: ListPurchasesParams = {}): Promise<P
  * land in one transaction on the server, so there is no partial purchase to
  * clean up here.
  */
-export async function createPurchase(
-  purchase: NewPurchase
-): Promise<{ purchase: Purchase; items: PurchaseItem[] }> {
+export async function createPurchase(purchase: NewPurchase): Promise<PurchaseListItem> {
   const body: Record<string, unknown> = { items: purchase.items };
   // Omitted, not null: the server distinguishes "no supplier" (the seeded
   // one-off-supplier) from "an unknown supplier id" (404).
   if (purchase.supplier_id) body.supplier_id = purchase.supplier_id;
-  return request<{ purchase: Purchase; items: PurchaseItem[] }>(
-    new URL('/api/purchases', BASE),
-    json('POST', body)
+  // `PurchaseListItem`, not `{purchase, items}`: the server answers the same
+  // shape as the list endpoint, with `supplier_returns` empty because a purchase
+  // cannot be born corrected. The narrower type described the server wrongly and
+  // the comment above the list type claimed otherwise.
+  return request<PurchaseListItem>(new URL('/api/purchases', BASE), json('POST', body));
+}
+
+/**
+ * One line of a return: the purchase line being corrected, and how much goes
+ * back. It carries no price on purpose (S3).
+ */
+export type NewSupplierReturnLine = {
+  purchase_item_id: string;
+  /** Integer quantity, at most what the purchase line has left to return. */
+  quantity: number;
+};
+
+/** A return of goods to their supplier: the compensating document for a purchase. */
+export type SupplierReturn = {
+  id: string;
+  purchase_id: string;
+  /** Always positive: the amount coming back. The sign is the display's business. */
+  total: string;
+  created_at: string;
+};
+
+export type SupplierReturnItem = {
+  id: string;
+  supplier_return_id: string;
+  /** The purchase line this return corrects, so a reader never infers it. */
+  purchase_item_id: string;
+  product_id: string;
+  product_name: string;
+  quantity: number;
+  unit_price: string;
+  line_total: string;
+  unit: Unit;
+};
+
+/**
+ * A return with its lines, which is how both the create response and the nested
+ * reads answer.
+ *
+ * The header nests under `return` rather than being flattened, because the JSON
+ * key the server chose is `return` (a Rust keyword, escaped on that side). This
+ * type is the contract, not a guess: `GET /api/purchases` and
+ * `POST /api/purchases/{id}/supplier-returns` both answer this shape.
+ */
+export type SupplierReturnWithItems = {
+  return: SupplierReturn;
+  items: SupplierReturnItem[];
+};
+
+/**
+ * Returns goods to their supplier, correcting a purchase without writing it.
+ *
+ * The return, its lines and the negative stock movements land in one transaction
+ * on the server, so a refused return leaves nothing behind. The server is also
+ * the authority on how much a line has left: this client sends what the operator
+ * asked for and surfaces the refusal (409) rather than second-guessing it.
+ *
+ * No price is sent (S3): what the return is worth is read server-side from the
+ * purchase line, so a return can never be worth more than the purchase did.
+ */
+export async function createSupplierReturn(
+  purchaseId: string,
+  items: NewSupplierReturnLine[]
+): Promise<SupplierReturnWithItems> {
+  return request<SupplierReturnWithItems>(
+    new URL(`/api/purchases/${purchaseId}/supplier-returns`, BASE),
+    json('POST', { items })
   );
 }
 

@@ -150,7 +150,21 @@ const en: Dict = {
   purchases_ledger_error: 'Could not read the ledger: ',
   purchases_supplier_required: 'Choose a supplier before recording the purchase.',
   purchases_load_suppliers_failed: 'Could not load the suppliers: ',
-  purchases_create_supplier_error: 'Could not create the supplier: '
+  purchases_create_supplier_error: 'Could not create the supplier: ',
+  purchases_supplier_return: 'Supplier return',
+  purchases_return_action: 'Return to supplier…',
+  purchases_return_confirm:
+    'The listed units go back to the supplier, and cash rises by what comes back.',
+  purchases_return_yes: 'Yes, return',
+  purchases_return_no: 'No',
+  purchases_return_qty: 'Return',
+  purchases_return_left: (left, bought) => `${left} of ${bought} left`,
+  purchases_return_none: 'Every line has already gone back.',
+  purchases_return_error: 'Not returned: ',
+  purchases_return_recorded:
+    'The return was recorded — the day could not be reloaded, so what is left above may be out of date. Reload the page to see it.',
+  purchases_return_invalid: 'A return quantity is not valid — fix it before returning.',
+  purchases_return_line: (name) => `Return quantity for ${name}`
 };
 
 export default en;

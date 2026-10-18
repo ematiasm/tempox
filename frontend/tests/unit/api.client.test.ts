@@ -10,6 +10,7 @@ import {
   getCash,
   createPurchase,
   createSupplier,
+  createSupplierReturn,
   listCustomers,
   listProducts,
   listPurchases,
@@ -280,6 +281,63 @@ describe('createCreditNote (S3, S7)', () => {
 
     await expect(
       createCreditNote('s1', [{ sale_item_id: 'i1', quantity: 99 }])
+    ).rejects.toMatchObject({
+      status: 409
+    });
+  });
+});
+
+describe('createSupplierReturn (S3)', () => {
+  it('posts the return to the purchase it corrects, exactly as given', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ return: { id: 'r1' }, items: [] }, 201));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createSupplierReturn('p1', [
+      { purchase_item_id: 'i1', quantity: 3 },
+      { purchase_item_id: 'i2', quantity: 1 }
+    ]);
+
+    const url = calledUrl(fetchMock);
+    // The purchase is in the path, not in the body: the return belongs to a
+    // document, and a body-purchase_id would let the two disagree. This is the
+    // credit note's shape with the direction reversed.
+    expect(url.pathname).toBe('/api/purchases/p1/supplier-returns');
+    expect(calledInit(fetchMock)?.method).toBe('POST');
+    expect(JSON.parse(String(calledInit(fetchMock)?.body))).toEqual({
+      items: [
+        { purchase_item_id: 'i1', quantity: 3 },
+        { purchase_item_id: 'i2', quantity: 1 }
+      ]
+    });
+  });
+
+  it('never sends a price, because the price is the one already paid', async () => {
+    // S3 in one assertion. What a return is worth is read server-side from the
+    // purchase line, so a caller that sent a price would be proposing one. The
+    // body must carry exactly `items` and nothing else — not `unit_price`, not
+    // `total`.
+    const fetchMock = vi.fn(async () => jsonResponse({ return: { id: 'r1' }, items: [] }, 201));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createSupplierReturn('p1', [{ purchase_item_id: 'i1', quantity: 2 }]);
+
+    const body = JSON.parse(String(calledInit(fetchMock)?.body)) as Record<string, unknown>;
+    expect(Object.keys(body)).toEqual(['items']);
+    expect(JSON.stringify(body)).not.toContain('price');
+    expect(JSON.stringify(body)).not.toContain('total');
+  });
+
+  it('carries the status of a refused return so the caller can explain it', async () => {
+    // 409 is the server's cumulative guard answering: there is less left on the
+    // line than the form asked for. The client must not reproduce that
+    // arithmetic, only report it.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => jsonResponse({ error: 'too much' }, 409))
+    );
+
+    await expect(
+      createSupplierReturn('p1', [{ purchase_item_id: 'i1', quantity: 99 }])
     ).rejects.toMatchObject({
       status: 409
     });
