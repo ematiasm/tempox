@@ -88,10 +88,13 @@ export interface Dict {
   sales_refund_yes: string;
   sales_refund_no: string;
   sales_refund_qty: string;
+  sales_refund_include_col: string;
+  sales_refund_include: (name: string) => string;
   sales_refund_left: (left: number, sold: number) => string;
   sales_refund_none: string;
   sales_refund_error: string;
   sales_refund_invalid: string;
+  sales_refund_stale: string;
   sales_credit_note: string;
   sales_refunded: string;
   sales_refunded_note: string;

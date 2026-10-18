@@ -17,14 +17,14 @@
     type DayRange,
     type SaleListItem
   } from '#lib/api.js';
+  import { formatDay, formatMoney, formatQuantity, formatTime, sumAmounts } from '#lib/money.js';
   import {
-    formatDay,
-    formatMoney,
-    formatQuantity,
-    formatTime,
-    parseQuantity,
-    sumAmounts
-  } from '#lib/money.js';
+    isFullyRefunded as saleIsFullyRefunded,
+    parseRefundQuantity,
+    planRefund,
+    refundableOf as saleRefundableOf,
+    refundedByLine as saleRefundedByLine
+  } from '#lib/salesRefund.js';
   import { lang } from '#lib/i18n/index.svelte.js';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import Stamp from './Stamp.svelte';
@@ -61,9 +61,21 @@
   // The value is the text the cashier typed, exactly as typed; validation
   // happens when they submit, not on every keystroke.
   let refundDraft = new SvelteMap<string, Map<string, string>>();
+  // Which lines the cashier chose to include. Stored as the choice rather than
+  // as the default, so a line the form has never seen reads as selected: a
+  // refund starts with every line that still has something left, and unchecking
+  // is the deliberate act. Without this, a line left untouched was submitted at
+  // its full remaining amount -- stock and money moving on a line nobody chose.
+  let refundSelected = new SvelteMap<string, Map<string, boolean>>();
   let confirming = $state<string | null>(null);
   let refunding = $state<string | null>(null);
   let refundError = $state<string | null>(null);
+  // Set when the credit note was written and only the day's reload failed. Kept
+  // apart from `refundError` on purpose: the two carry opposite meanings, and the
+  // cashier acts differently on each. Keyed by document like every other piece of
+  // refund state: a global flag rendered its warning under every expanded row, and
+  // arming another row's confirm wiped the one that still mattered.
+  let refundStale = new SvelteMap<string, string>();
 
   // The server's current-day boundary is the sole authority for this state.
   const isToday = $derived(range !== null && todayFrom !== null && range.from === todayFrom);
@@ -162,21 +174,17 @@
    *
    * Derived from the notes the server sent rather than tracked locally: the
    * server is the authority on what was refunded, and a local tally would drift
-   * the moment a refund lands in another tab.
+   * the moment a refund lands in another tab. The arithmetic itself lives in
+   * `salesRefund.ts`, where a unit test can reach it -- see that module's header
+   * for what keeping it here cost.
    */
   function refundedByLine(row: SaleListItem): Map<string, number> {
-    const refunded = new SvelteMap<string, number>();
-    for (const note of row.credit_notes) {
-      for (const item of note.items) {
-        refunded.set(item.sale_item_id, (refunded.get(item.sale_item_id) ?? 0) + item.quantity);
-      }
-    }
-    return refunded;
+    return saleRefundedByLine(row.credit_notes);
   }
 
   /** What a line still has to return. Zero means it is done. */
   function refundableOf(itemId: string, sold: number, refunded: Map<string, number>): number {
-    return Math.max(0, sold - (refunded.get(itemId) ?? 0));
+    return saleRefundableOf(itemId, sold, refunded);
   }
 
   /**
@@ -188,11 +196,7 @@
    * status the server wrote on it.
    */
   function isFullyRefunded(row: SaleListItem): boolean {
-    const refunded = refundedByLine(row);
-    return (
-      row.items.length > 0 &&
-      row.items.every((item) => refundableOf(item.id, item.quantity, refunded) === 0)
-    );
+    return saleIsFullyRefunded(row.items, row.credit_notes);
   }
 
   /** The draft refund text for one line: what was refunded sits above it as "left". */
@@ -206,8 +210,24 @@
     refundDraft.set(rowId, draft);
   }
 
+  /**
+   * Whether a line is included in the refund. A line the form has not stored a
+   * choice for reads as selected: the form starts with every line that still has
+   * something left, and unchecking is the deliberate act.
+   */
+  function isRefundSelected(rowId: string, itemId: string): boolean {
+    return refundSelected.get(rowId)?.get(itemId) ?? true;
+  }
+
+  function setRefundSelected(rowId: string, itemId: string, selected: boolean) {
+    const choice = new SvelteMap(refundSelected.get(rowId) ?? []);
+    choice.set(itemId, selected);
+    refundSelected.set(rowId, choice);
+  }
+
   function clearRefundDraft(rowId: string) {
     refundDraft.delete(rowId);
+    refundSelected.delete(rowId);
   }
 
   /**
@@ -215,19 +235,21 @@
    *
    * A line left at its full remaining quantity is the common case and needs no
    * special casing: the server enforces the limit, this only refuses to send a
-   * quantity that is not a positive integer.
+   * quantity that is not a positive integer. What it does refuse to do is send a
+   * line the cashier unchecked -- that omission is the whole point of the
+   * checkbox, and `planRefund` owns the rule so a unit test can pin it.
    */
   function refundPlan(row: SaleListItem): { sale_item_id: string; quantity: number }[] | null {
     const refunded = refundedByLine(row);
-    const plan: { sale_item_id: string; quantity: number }[] = [];
+    const selected = new SvelteMap<string, boolean>();
+    const requested = new SvelteMap<string, number | null>();
     for (const item of row.items) {
+      selected.set(item.id, isRefundSelected(row.id, item.id));
       const remaining = refundableOf(item.id, item.quantity, refunded);
       if (remaining === 0) continue;
-      const quantity = parseQuantity(refundText(row.id, item.id, remaining));
-      if (quantity === null || quantity > remaining) return null;
-      plan.push({ sale_item_id: item.id, quantity });
+      requested.set(item.id, parseRefundQuantity(refundText(row.id, item.id, remaining)));
     }
-    return plan.length > 0 ? plan : null;
+    return planRefund(row.items, refunded, selected, requested);
   }
 
   async function submitRefund(row: SaleListItem) {
@@ -239,23 +261,36 @@
     if (!range) return;
     refunding = row.id;
     refundError = null;
+    refundStale.delete(row.id);
+    // The note and the reload are separate failures. Once `createCreditNote`
+    // answers 201 the stock and the money have moved; a reload that fails after
+    // that is a stale screen, not a failed annulment. Reporting both through the
+    // same "Not annulled" alert told the cashier a note did not exist when it did,
+    // and the retry it invited wrote a second partial note on top of the first.
     try {
       await createCreditNote(row.id, plan);
-      clearRefundDraft(row.id);
-      confirming = null;
-      // Reload the day rather than patching the row in place: the note the
-      // server wrote is the record, and the derived stamped state has to come
-      // from it, not from what this component believes it sent.
-      rows = await listSales({ from: range.from, to: range.to, limit: PAGE, offset: 0 });
-      const c = await getCash();
-      cash = c.total;
     } catch (e) {
       // A 409 is the cumulative guard answering, and it is the one refusal a
       // cashier can act on: the line has less left than the form asked for.
       refundError = e instanceof ApiError ? `${e.message} (${e.status})` : String(e);
-    } finally {
       refunding = null;
+      return;
     }
+    clearRefundDraft(row.id);
+    confirming = null;
+    // Reload the day rather than patching the row in place: the note the server
+    // wrote is the record, and the derived stamped state has to come from it, not
+    // from what this component believes it sent.
+    try {
+      rows = await listSales({ from: range.from, to: range.to, limit: PAGE, offset: 0 });
+      const c = await getCash();
+      cash = c.total;
+    } catch (e) {
+      // The note stands; only this screen is behind. It is said as that, and the
+      // confirm is closed, so the cashier does not read it as a refund to redo.
+      refundStale.set(row.id, e instanceof ApiError ? `${e.message} (${e.status})` : String(e));
+    }
+    refunding = null;
   }
 </script>
 
@@ -397,6 +432,9 @@
                       <caption>{lang.t.sales_lines_of} #{row.id.slice(0, 8)}</caption>
                       <thead>
                         <tr>
+                          <th scope="col" class="pick">
+                            <span class="sr-only">{lang.t.sales_refund_include_col}</span>
+                          </th>
                           <th scope="col">{lang.t.sales_product}</th>
                           <th scope="col" class="num">{lang.t.sales_qty}</th>
                           <th scope="col" class="num">{lang.t.sales_unit_price}</th>
@@ -409,6 +447,17 @@
                           {@const refunded = refundedByLine(row)}
                           {@const remaining = refundableOf(item.id, item.quantity, refunded)}
                           <tr>
+                            <td class="pick">
+                              {#if remaining > 0}
+                                <input
+                                  type="checkbox"
+                                  aria-label={lang.t.sales_refund_include(item.product_name)}
+                                  checked={isRefundSelected(row.id, item.id)}
+                                  onchange={(event) =>
+                                    setRefundSelected(row.id, item.id, event.currentTarget.checked)}
+                                />
+                              {/if}
+                            </td>
                             <td>
                               {item.product_name}
                               {#if item.unit_price === '0.00'}
@@ -424,11 +473,13 @@
                             <td class="num figures">{formatMoney(item.line_total)}</td>
                             <td class="num return-cell">
                               {#if remaining > 0}
+                                {@const picked = isRefundSelected(row.id, item.id)}
                                 <input
                                   type="text"
                                   inputmode="numeric"
                                   aria-label={lang.t.sales_return_line(item.product_name)}
                                   value={refundText(row.id, item.id, remaining)}
+                                  disabled={!picked}
                                   oninput={(event) =>
                                     setRefundText(row.id, item.id, event.currentTarget.value)}
                                 />
@@ -504,6 +555,7 @@
                           onclick={() => {
                             confirming = row.id;
                             refundError = null;
+                            refundStale.delete(row.id);
                           }}
                         >
                           {lang.t.sales_refund_action}
@@ -511,6 +563,11 @@
                       {/if}
                       {#if refundError}
                         <p role="alert">{lang.t.sales_refund_error}{refundError}</p>
+                      {/if}
+                      {#if refundStale.get(row.id)}
+                        <p class="refund-stale" role="status">
+                          {lang.t.sales_refund_stale}{refundStale.get(row.id)}
+                        </p>
                       {/if}
                     </div>
                   </div>
@@ -805,6 +862,16 @@
   .return-cell {
     white-space: nowrap;
   }
+  .pick {
+    width: 1.5em;
+    padding-right: 0;
+  }
+  .pick input {
+    width: 1.05em;
+    height: 1.05em;
+    accent-color: var(--indigo, var(--ink));
+    cursor: pointer;
+  }
   .return-cell input {
     width: 5.5em;
     padding: 5px 7px;
@@ -816,6 +883,14 @@
     font-size: var(--step-1);
     font-variant-numeric: tabular-nums;
     text-align: right;
+  }
+  /* An excluded line is not gone, it is set aside: the cashier can change their
+     mind, so the field stays readable while it stops being an input. */
+  .return-cell input:disabled {
+    background: var(--paper);
+    border-style: dashed;
+    color: var(--ink-soft);
+    cursor: not-allowed;
   }
   .left {
     display: block;
@@ -840,6 +915,22 @@
   .refund-warn {
     flex-basis: 100%;
     color: var(--ink-soft);
+  }
+  .refund-stale {
+    flex-basis: 100%;
+    color: var(--ink-soft);
+    font-size: var(--step--1);
+  }
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
   .refund button {
     border: 1px solid var(--rule-strong);
