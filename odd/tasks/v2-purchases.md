@@ -67,7 +67,7 @@ S19 work-unit commits carry their tests and docs; the last slice closes.
 | T2 | `suppliers` endpoints (`GET`, `POST`, 400/409) | S4, S5 | inline | done | `a61ba7d` |
 | T3 | `POST /api/purchases` — the transaction: header, lines, positive movements | S1, S7, S8, S11 | inline | done | `8bc22fa` |
 | T4 | `GET /api/purchases` — list with items, day scoping, paging | S12 | inline | done | `11eeee1` |
-| T5 | `GET /api/cash` nets purchases + its existing-behaviour test | S13, S16 | inline | pending | — |
+| T5 | `GET /api/cash` nets purchases + its existing-behaviour test | S13, S16 | inline | done | `pending` |
 | T6 | Docs: architecture, README, PRODUCT | S18 | inline | pending | — |
 | T7 | Rail destination + suppliers screen | S4, S5 | inline | pending | — |
 | T8 | `/purchases` register: supplier picker, lines, live total, keyboard | S7 | inline | pending | — |
@@ -235,3 +235,31 @@ test in this slice.
   confirmed serving.
 - GREEN: 7 v2 tests; full integration suite **29 passed, 0 failed**; 29 unit
   tests; `make sqlx-check` passes; `fmt` and `clippy -D warnings` clean.
+
+### T5 (2026-10-17)
+
+- **RED observed first**: `v2_cash_nets_purchases…` failed with `a purchase lowers
+  the till by its total` — `0` moved instead of `40000` cents. The endpoint was
+  answering the previous definition.
+- **Two v1 tests failed on the change, and this is the interesting part.** Both
+  asserted `GET /api/cash` against the *old* definition of a changed endpoint:
+  `v1_5_cash_still_counts_every_confirmed_sale_and_nothing_else` and
+  `v1_read_endpoints_reflect_writes`. The evidence that this was the semantic
+  change and not a regression was arithmetic, not judgement: both were off by
+  **exactly 1332.00**, and both are self-relative against the same database.
+  - The fix is not to loosen them. Each now restates the full rule —
+    `sales − credit_notes − purchases` — so the test mirrors the *rule* rather
+    than the implementation's query. A test that copies the query would agree
+    with a wrong query.
+- **Mutation check**: removing the `− purchases` term fails
+  `v2_cash_nets_purchases…` at `a purchase lowers the till by its total: money
+  left` (0 vs 40000). Restored; `sqlx` cache regenerated for the restored SQL
+  (the cache key changes with the query text, so restoring means regenerating).
+- **The existing-behaviour test this slice owed** (S16): a sale must still raise
+  cash by exactly its own total after the query changed. It is inside the same
+  test as the purchase case, in that order, so a sign error in either direction
+  fails rather than producing a plausible number.
+- `cents()` in the test parses the wire string exactly; no float touches money.
+- GREEN: **30 passed, 0 failed** on the full integration suite; 29 unit tests;
+  `make sqlx-check` passes; `fmt` and `clippy -D warnings` clean; all nine
+  migrations still apply from scratch to a throwaway database.

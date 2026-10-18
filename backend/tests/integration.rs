@@ -779,12 +779,14 @@ async fn v1_read_endpoints_reflect_writes() {
     );
     assert!(lines.iter().any(|l| l["product_name"] == beans_name));
 
-    // GET /api/cash: the total moved by exactly this sale. Since v1.5 the
-    // endpoint is net of credit notes, so the test's own arithmetic is too —
-    // otherwise it would assert the old definition of a changed endpoint.
+    // GET /api/cash: the total moved by exactly this sale. The endpoint is net
+    // of credit notes (v1.5) and of purchases (v2), so the test's own arithmetic
+    // is too — otherwise it would assert the old definition of a changed
+    // endpoint, which is precisely how this test failed when purchases landed.
     let cash_before: (rust_decimal::Decimal,) = sqlx::query_as(
         "SELECT COALESCE((SELECT SUM(total) FROM sales WHERE status = 'confirmed'), 0)::numeric
               - COALESCE((SELECT SUM(total) FROM credit_notes), 0)::numeric
+              - COALESCE((SELECT SUM(total) FROM purchases), 0)::numeric
               - $1::numeric",
     )
     .bind(rust_decimal::Decimal::new(300300, 2))
@@ -1917,10 +1919,21 @@ async fn v1_5_cash_still_counts_every_confirmed_sale_and_nothing_else() {
         !refunded.is_zero(),
         "the fixture's own refund must appear in the refunded sum"
     );
+    // Since v2 the endpoint is also net of purchases. The test's own arithmetic
+    // has to be too, or it asserts the previous definition of an endpoint whose
+    // meaning changed — which is what happened here first and read as a
+    // regression. The definition is restated in full on purpose: a test that
+    // mirrors the implementation's query instead of the rule would agree with a
+    // wrong query.
+    let spent: rust_decimal::Decimal =
+        sqlx::query_scalar("SELECT COALESCE(SUM(total), 0)::numeric FROM purchases")
+            .fetch_one(&pool)
+            .await
+            .expect("purchases sum");
     assert_eq!(
         cash(&base).await,
-        confirmed - refunded,
-        "cash on hand is confirmed sales net of every credit note"
+        confirmed - refunded - spent,
+        "cash on hand is confirmed sales, net of every credit note and of every purchase"
     );
 
     // And the sale path itself still only moves cash up: a second sale raises it
@@ -2985,5 +2998,107 @@ async fn v2_purchases_list_carries_its_lines_and_is_scoped_by_day() {
         negative.status(),
         200,
         "a negative offset is clamped, not a 500"
+    );
+}
+
+// ── v2 (T5): GET /api/cash nets purchases ──────────────────────────────────
+//
+// plan-v2.md S13: the response shape does not change — one decimal string — but
+// its meaning does. Money in the till is sales, minus refunds, minus purchases.
+//
+// The second test here is the "existing behaviour still holds" test the slice
+// owes: the query changed, so a sale must still move cash by exactly its total
+// and a purchase must move it by exactly its own. Without it, a subtraction
+// added in the wrong direction would look green in the new test alone.
+
+#[tokio::test]
+#[ignore]
+async fn v2_cash_nets_purchases_and_still_counts_sales() {
+    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
+    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+    let client = reqwest::Client::new();
+
+    let stamp = uuid::Uuid::new_v4();
+    let product: (uuid::Uuid,) =
+        sqlx::query_as("INSERT INTO products (name, list_price) VALUES ($1, 100.00) RETURNING id")
+            .bind(format!("v2-cash-{stamp}"))
+            .fetch_one(&pool)
+            .await
+            .expect("insert product");
+
+    async fn cash(client: &reqwest::Client, base: &str) -> String {
+        client
+            .get(format!("{base}/api/cash"))
+            .send()
+            .await
+            .expect("get cash")
+            .error_for_status()
+            .expect("2xx")
+            .json::<serde_json::Value>()
+            .await
+            .expect("json")["total"]
+            .as_str()
+            .expect("cash total is a decimal string")
+            .to_string()
+    }
+    fn cents(s: &str) -> i64 {
+        // Test-only arithmetic on a wire amount: parse the two-decimal string
+        // exactly, never through a float.
+        let (sign, rest) = match s.strip_prefix('-') {
+            Some(r) => (-1i64, r),
+            None => (1i64, s),
+        };
+        let (whole, frac) = rest.split_once('.').expect("two decimals");
+        sign * (whole.parse::<i64>().expect("whole") * 100 + frac.parse::<i64>().expect("fraction"))
+    }
+
+    let before = cents(&cash(&client, &base).await);
+
+    // A purchase of 4 * 100.00 = 400.00 must take exactly 400.00 out.
+    let resp = client
+        .post(format!("{base}/api/purchases"))
+        .json(&serde_json::json!({
+            "items": [{ "product_id": product.0, "quantity": 4, "unit_price": "100.00" }]
+        }))
+        .send()
+        .await
+        .expect("post purchase");
+    assert_eq!(resp.status(), 201);
+
+    let after_purchase = cents(&cash(&client, &base).await);
+    assert_eq!(
+        before - after_purchase,
+        40_000,
+        "a purchase lowers the till by its total: money left"
+    );
+
+    // And the sale side still counts in the other direction, by its own total.
+    // This is the regression the changed query could have introduced: a sign
+    // error would still produce a plausible number.
+    let resp = client
+        .post(format!("{base}/api/sales"))
+        .json(&serde_json::json!({
+            "items": [{ "product_id": product.0, "quantity": 2, "unit_price": "25.00" }]
+        }))
+        .send()
+        .await
+        .expect("post sale");
+    assert_eq!(resp.status(), 201);
+
+    let after_sale = cents(&cash(&client, &base).await);
+    assert_eq!(
+        after_sale - after_purchase,
+        5_000,
+        "a sale still raises the till by its total: money came in"
+    );
+
+    // The shape is unchanged: one decimal string with two places, which is what
+    // every consumer already reads.
+    let raw = cash(&client, &base).await;
+    assert!(
+        raw.split('.').nth(1).map(|f| f.len()) == Some(2),
+        "cash is still a two-decimal string, got {raw:?}"
     );
 }
