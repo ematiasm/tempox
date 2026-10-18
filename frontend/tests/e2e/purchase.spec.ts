@@ -1,0 +1,90 @@
+import { expect, test } from '@playwright/test';
+
+/**
+ * The purchase flow, end to end, through the real UI against the real API.
+ *
+ * The mirror of `sale.spec.ts`, with the direction reversed: recording a
+ * purchase raises stock and lowers cash. What this barrier uniquely proves is
+ * that the screen and the ledger agree — a unit test can check that the client
+ * sent the right body, but only this can show that the document the operator
+ * just typed appears in the day's ledger with its lines behind it.
+ *
+ * Every run uses a product name unique to it, so the test never depends on what
+ * a previous run left behind and never asserts on someone else's data.
+ */
+test('a purchase is recorded and raises the stock it brought in', async ({ page }) => {
+  const name = `e2e-purchase-${Date.now().toString(36)}`;
+
+  // 1. The product exists first, created through the catalog's own form so this
+  //    test also covers that screen. The stock field is LEFT ALONE on purpose:
+  //    an empty initial stock is 0, while typing `0` is refused — a quantity
+  //    must be at least 1 — and the form then disables its own create button.
+  //    Measured while writing this test: filling `0` hangs the click for the
+  //    full 30s timeout instead of failing where the reader can see why.
+  await page.goto('/products');
+  await page.locator('#new-name').fill(name);
+  await page.locator('#new-price').fill('10,00');
+  await page.getByRole('button', { name: 'Crear producto' }).click();
+  await expect(page.getByRole('status')).toContainText(name);
+
+  await page.locator('#catalog-search').fill(name);
+  const row = page.locator('table.catalog tbody tr', { hasText: name });
+  await expect(row).toBeVisible();
+  await expect(row).toContainText('0');
+
+  // 2. Record the purchase: type-ahead, keyboard pick, quantity, live total.
+  await page.goto('/purchases');
+  await page.getByRole('combobox', { name: 'Producto' }).fill(name);
+  // Scoped to the product listbox on purpose. A bare `getByRole('option')`
+  // resolves to the supplier <select>'s options instead, because that control
+  // sits earlier in the DOM than the sale sheet's — the assertion then fails
+  // with "Proveedor ocasional" as the received text, which names the symptom
+  // rather than the cause. The sales spec never hit this because its customer
+  // select comes after the picker.
+  const matches = page.getByRole('listbox', { name: 'Productos encontrados' });
+  const option = matches.getByRole('option').first();
+  await expect(option).toContainText(name);
+
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('Enter');
+
+  const line = page.locator('.sheet table.lines tbody tr').first();
+  await expect(line).toContainText(name);
+  // The price is prefilled from the list price, written in the shop's own shape
+  // so the field's parser accepts it, and stays overridable: a purchase price
+  // that differs from the catalogue is the normal case.
+  await expect(line.locator('input[aria-label^="Precio"]')).toHaveValue('10,00');
+  await expect(page.locator('.sheet .total')).toHaveText('$ 10,00');
+
+  await line.locator('input[aria-label^="Cant"]').fill('7');
+  await expect(page.locator('.sheet .total')).toHaveText('$ 70,00');
+
+  // 3. The supplier defaults to the seeded one, which is what a purchase with no
+  //    named supplier means. It reads in the shop's language, not as the stored
+  //    English string.
+  const supplier = page.locator('#purchase-supplier');
+  await expect(supplier).toHaveValue('00000000-0000-0000-0000-000000000002');
+  await expect(supplier.locator('option:checked')).toHaveText('Proveedor ocasional');
+
+  // 4. Record it. The band's action is the page's single next action.
+  await page.getByRole('button', { name: /Registrar compra/ }).click();
+
+  await expect(page.locator('.sheet .done')).toContainText('$ 70,00');
+  await expect(page.locator('.sheet table.lines tbody tr')).toHaveCount(0);
+
+  // 5. It is in the day's ledger with its lines behind it.
+  const doc = page.locator('.ledger .document').first();
+  await expect(doc).toContainText('Proveedor ocasional');
+  await expect(doc).toContainText('$ 70,00');
+
+  await doc.locator('.head').click();
+  await expect(doc.locator('table.lines')).toContainText(name);
+  await expect(doc.locator('table.lines')).toContainText('$ 70,00');
+
+  // 6. The point of the slice, measured where the operator reads it: the stock
+  //    went UP by what arrived. This is the assertion that would fail if the
+  //    movement were ever written with the sale's sign.
+  await page.goto('/products');
+  await page.locator('#catalog-search').fill(name);
+  await expect(page.locator('table.catalog tbody tr', { hasText: name })).toContainText('7');
+});

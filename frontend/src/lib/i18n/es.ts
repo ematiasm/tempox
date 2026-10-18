@@ -18,6 +18,7 @@ const es: Dict = {
   notes_empty: 'Todavía no hay notas.',
   nav_sales: 'Ventas',
   nav_products: 'Productos',
+  nav_purchases: 'Compras',
   nav_main: 'Principal',
   lang_toggle: 'Cambiar idioma',
   sales_title: 'Registrar venta',
@@ -131,7 +132,36 @@ const es: Dict = {
   picker_empty: 'Todavía no hay productos — creá el primero',
   picker_in_stock: (stock) => `${stock} en stock`,
   sales_remove_column: 'Quitar',
-  sales_return_line: (name) => `Devolver ${name}`
+  sales_return_line: (name) => `Devolver ${name}`,
+  purchases_title: 'Registrar compra',
+  purchases_tagline: 'El stock entra y la caja sale, desde una sola carga',
+  purchases_action: 'Registrar compra',
+  purchases_draft_title: 'Compra nueva',
+  purchases_ledger_title: 'Libro de compras',
+  purchases_ledger_sub:
+    'Cada compra es un comprobante; el día se lee de arriba abajo, lo último primero',
+  purchases_supplier: 'Proveedor',
+  purchases_one_off_supplier: 'Proveedor ocasional',
+  purchases_new_supplier: 'Proveedor nuevo',
+  purchases_new_supplier_placeholder: 'Nombre del proveedor nuevo…',
+  purchases_supplier_existing: (name) =>
+    `“${name}” ya existe — elegilo de la lista para esta compra.`,
+  purchases_no_lines:
+    'Todavía no hay líneas — elegí un producto arriba y aparece acá con su precio.',
+  purchases_live_total: 'Total en vivo',
+  purchases_price_unit: '$ / unidad',
+  purchases_draft_hint: 'Ctrl+Enter registra',
+  purchases_error_title: 'No se registró: ',
+  purchases_invalid: 'Un campo no tiene un número válido — corregilo antes de registrar.',
+  purchases_legend: 'Compra registrada — el stock entró y la plata salió',
+  purchases_no_purchases_today: 'Todavía no hay compras hoy — la primera aparece acá con su sello.',
+  purchases_no_purchases_day: 'No hay compras ese día.',
+  purchases_document_one: 'comprobante',
+  purchases_documents: 'comprobantes',
+  purchases_ledger_error: 'No se pudo leer el libro: ',
+  purchases_supplier_required: 'Elegí un proveedor antes de registrar la compra.',
+  purchases_load_suppliers_failed: 'No se pudieron cargar los proveedores: ',
+  purchases_create_supplier_error: 'No se pudo crear el proveedor: '
 };
 
 export default es;

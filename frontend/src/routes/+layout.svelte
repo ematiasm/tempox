@@ -14,10 +14,10 @@
     document.documentElement.lang = lang.current;
   });
 
-  // The rail carries Sales and Products only. `/notes` stays reachable by URL
-  // as the walking-skeleton proof, but it is not a destination: the shop does
-  // not sell notes, and a nav that lists everything it can reach is a map of
-  // the repo rather than of the job.
+  // The rail carries the three jobs the shop does: sell, buy, and look after
+  // the catalog. `/notes` stays reachable by URL as the walking-skeleton proof,
+  // but it is not a destination: the shop does not sell notes, and a nav that
+  // lists everything it can reach is a map of the repo rather than of the job.
   // The route ids, not the resolved paths: `resolve()` runs at the three places
   // that actually render or compare a URL, so a configured `paths.base` would
   // reach the rail without the comparison and the href ever disagreeing.
@@ -25,6 +25,7 @@
   // typed to the app's own route ids, not to any string.
   const tabs = $derived([
     { href: '/sales', label: lang.t.nav_sales },
+    { href: '/purchases', label: lang.t.nav_purchases },
     { href: '/products', label: lang.t.nav_products }
   ] as const);
 </script>
@@ -50,7 +51,7 @@
       <button class="lang" onclick={() => lang.toggle()} aria-label={lang.t.lang_toggle}>
         {lang.other}
       </button>
-      <span class="version">v1.5</span>
+      <span class="version">v2</span>
     </div>
   </nav>
 
