@@ -65,6 +65,32 @@ export function isFullyReturned(
 }
 
 /**
+ * Reads one line's return field into what `planReturn` expects.
+ *
+ * Deliberately NOT `parseQuantity`, which is right for a quantity you sell or
+ * buy and wrong here: it answers `null` for `0` and for an empty field, because a
+ * movement of zero units is not a movement. But on this form zero is meaningful —
+ * it is how the operator says "nothing from this line" while returning another.
+ * Wiring `parseQuantity` here made a multi-line purchase impossible to return in
+ * part: one emptied field turned the whole plan to `null` and no request left.
+ *
+ * So: blank and `0` mean zero; a positive whole number means itself; anything
+ * else (a fraction, a negative, a stray letter) is `null` and the caller shows
+ * the error. The server is still the authority on how much is left — this only
+ * refuses what it already knows is not a number.
+ */
+export function parseReturnQuantity(text: string): number | null {
+  const normalized = text.trim();
+  if (normalized === '') return 0;
+  // Digits only, like the shop's quantity fields: no decimal point, no sign, no
+  // thousands separator. Every language writes a count as digits.
+  if (!/^\d+$/.test(normalized)) return null;
+  const value = Number(normalized);
+  if (!Number.isSafeInteger(value)) return null;
+  return value;
+}
+
+/**
  * The lines a return would send, or `null` when the form is not valid.
  *
  * A line already fully returned is skipped rather than rejected: the form

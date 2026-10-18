@@ -135,3 +135,69 @@ test('a return beyond what is left is refused and writes nothing (S8, S9)', asyn
   await page.locator('#catalog-search').fill(name);
   await expect(page.locator('table.catalog tbody tr', { hasText: name })).toContainText('3');
 });
+
+test('a return of one line leaves the other line alone, which is the normal case (S6)', async ({
+  page
+}) => {
+  // The defect this pins: the return field went through `parseQuantity`, which
+  // answers `null` for `0` and for a blank field because zero units is not a
+  // movement. On this form zero is how the operator says "nothing from this
+  // line", so one emptied field turned the whole plan to `null` and NO request
+  // left. The only return this screen accepted was "every line, all of it",
+  // which is the rarest case there is.
+  const stamp = Date.now().toString(36);
+  const keep = `e2e-keep-${stamp}`;
+  const back = `e2e-back-${stamp}`;
+
+  for (const name of [keep, back]) {
+    await page.goto('/products');
+    await page.locator('#new-name').fill(name);
+    await page.locator('#new-price').fill('10,00');
+    await page.getByRole('button', { name: 'Crear producto' }).click();
+    await expect(page.getByRole('status')).toContainText(name);
+  }
+
+  // One purchase with two lines: 2 of one, 3 of the other.
+  await page.goto('/purchases');
+  for (const [name, qty] of [
+    [keep, '2'],
+    [back, '3']
+  ] as const) {
+    await page.getByRole('combobox', { name: 'Producto' }).fill(name);
+    await expect(
+      page.getByRole('listbox', { name: 'Productos encontrados' }).getByRole('option').first()
+    ).toContainText(name);
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('Enter');
+    await page
+      .locator('.sheet table.lines tbody tr')
+      .filter({ hasText: name })
+      .locator('input[aria-label^="Cant"]')
+      .fill(qty);
+  }
+  await page.getByRole('button', { name: /Registrar compra/ }).click();
+  await expect(page.locator('.sheet .done')).toContainText('$ 50,00');
+
+  const doc = page.locator('.ledger .document').first();
+  await doc.locator('.head').click();
+
+  // Return the whole of `back` and nothing of `keep`.
+  await doc.getByRole('textbox', { name: `Cantidad a devolver de ${keep}` }).fill('0');
+  await doc.getByRole('textbox', { name: `Cantidad a devolver de ${back}` }).fill('3');
+  await doc.getByRole('button', { name: 'Devolver al proveedor…' }).click();
+  await doc.getByRole('button', { name: 'Sí, devolver' }).click();
+
+  // 3 units at the price paid is $30, and only that line moved.
+  const returnBlock = doc.locator('.return-block').first();
+  await expect(returnBlock).toContainText(back);
+  await expect(returnBlock.locator('.return-total')).toHaveText('+$ 30,00');
+  await expect(returnBlock).not.toContainText(keep);
+
+  // The untouched line still has everything left to return.
+  await expect(doc.getByRole('textbox', { name: `Cantidad a devolver de ${keep}` })).toHaveValue(
+    '2'
+  );
+
+  // And the purchase is still worth what it was.
+  await expect(doc.locator('.head')).toContainText('$ 50,00');
+});

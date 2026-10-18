@@ -20,9 +20,10 @@
     type PurchaseListItem,
     type Supplier
   } from '#lib/api.js';
-  import { formatDay, formatMoney, formatQuantity, formatTime, parseQuantity } from '#lib/money.js';
+  import { formatDay, formatMoney, formatQuantity, formatTime } from '#lib/money.js';
   import {
     isFullyReturned,
+    parseReturnQuantity,
     planReturn,
     returnableOf,
     returnedByLine
@@ -163,7 +164,10 @@
     for (const item of row.items) {
       const remaining = returnableOf(item.id, item.quantity, returned);
       if (remaining === 0) continue;
-      requested.set(item.id, parseQuantity(returnText(row.purchase.id, item.id, remaining)));
+      // `parseReturnQuantity`, not `parseQuantity`: on this form a zero (or a
+      // blank) means "nothing from this line", while `parseQuantity` reads both
+      // as `null` — which turned the whole plan invalid.
+      requested.set(item.id, parseReturnQuantity(returnText(row.purchase.id, item.id, remaining)));
     }
     return planReturn(row.items, returned, requested);
   }

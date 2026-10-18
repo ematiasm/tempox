@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { isFullyReturned, planReturn, returnableOf, returnedByLine } from '#lib/supplierReturns.js';
+import {
+  isFullyReturned,
+  parseReturnQuantity,
+  planReturn,
+  returnableOf,
+  returnedByLine
+} from '#lib/supplierReturns.js';
 import type { PurchaseItem, SupplierReturnWithItems } from '#lib/api.js';
 
 /**
@@ -200,5 +206,40 @@ describe('planReturn', () => {
     expect(plan).toEqual([{ purchase_item_id: 'i1', quantity: 6 }]);
     const ids = plan!.map((entry) => entry.purchase_item_id);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+});
+
+describe('parseReturnQuantity', () => {
+  it('reads a blank field as zero, because an emptied line means "nothing here"', () => {
+    // This is the defect a whole e2e caught: `parseQuantity` answers `null` for
+    // blank and for "0", and on a return form zero is a legitimate instruction,
+    // not an error. With the old parser one emptied field made the entire plan
+    // invalid, so a multi-line purchase could only be returned in full.
+    expect(parseReturnQuantity('')).toBe(0);
+    expect(parseReturnQuantity('   ')).toBe(0);
+  });
+
+  it('reads "0" as zero rather than as an invalid quantity', () => {
+    expect(parseReturnQuantity('0')).toBe(0);
+    expect(parseReturnQuantity('00')).toBe(0);
+  });
+
+  it('reads a positive whole number as itself', () => {
+    expect(parseReturnQuantity('1')).toBe(1);
+    expect(parseReturnQuantity('42')).toBe(42);
+  });
+
+  it('refuses what is not a count, so the server never sees it', () => {
+    // A fraction, a sign, a letter and a separator are all things the field does
+    // not accept. `null` makes the caller show the error instead of sending a
+    // request whose refusal is already known.
+    expect(parseReturnQuantity('1.5')).toBeNull();
+    expect(parseReturnQuantity('-1')).toBeNull();
+    expect(parseReturnQuantity('2x')).toBeNull();
+    expect(parseReturnQuantity('1,000')).toBeNull();
+  });
+
+  it('refuses a number too large to be exact, instead of rounding it', () => {
+    expect(parseReturnQuantity('99999999999999999999')).toBeNull();
   });
 });
