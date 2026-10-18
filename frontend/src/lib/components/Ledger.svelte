@@ -111,6 +111,16 @@
 
     loading = true;
     error = null;
+    // Both reads have to succeed before this screen counts as current, and they
+    // are independent requests that run in parallel: retiring the notice on the
+    // sales read alone cleared the warning while the cash figure was still stale.
+    // A retry where `listSales` succeeds and `getCash` fails is exactly that case.
+    let salesFresh = false;
+    let cashFresh = false;
+    const retireIfCurrent = () => {
+      if (cancelled || !salesFresh || !cashFresh) return;
+      refundStale.retireAll();
+    };
     // Resolve both scoped and current-day boundaries through the server before
     // requesting sales; a failed day lookup must never invent a client range.
     Promise.all([fetchDay(at), fetchDay(new Date())])
@@ -128,7 +138,8 @@
         // learns to ignore it will not read it on the day it is true. This is the
         // rule the first implementation was missing: it only ever retired a
         // notice on a click that happened to touch that same row.
-        refundStale.retireAll();
+        salesFresh = true;
+        retireIfCurrent();
       })
       .catch((e: unknown) => {
         if (!cancelled) error = e instanceof ApiError ? `${e.message} (${e.status})` : String(e);
@@ -141,9 +152,15 @@
     // the day's: it is labelled as such rather than implying a daily total.
     getCash()
       .then((c) => {
-        if (!cancelled) cash = c.total;
+        if (cancelled) return;
+        cash = c.total;
+        cashFresh = true;
+        retireIfCurrent();
       })
       .catch(() => {
+        // A cash read that fails leaves the balance visually unknown but does not
+        // discredit the day's rows, so it is not turned into a page error. It does
+        // keep the stale notice alive, because the figures are not all current.
         if (!cancelled) cash = null;
       });
 
