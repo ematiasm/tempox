@@ -1,0 +1,84 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT pi.product_id, pi.product_name, pi.quantity, pi.unit_price, pi.unit,\n                    COALESCE(SUM(sri.quantity), 0)::int AS \"returned!\"\n             FROM purchase_items pi\n             LEFT JOIN supplier_return_items sri ON sri.purchase_item_id = pi.id\n             WHERE pi.id = $1 AND pi.purchase_id = $2\n             GROUP BY pi.product_id, pi.product_name, pi.quantity, pi.unit_price, pi.unit",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "product_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "purchase_items",
+            "name": "product_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "product_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "purchase_items",
+            "name": "product_name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "quantity",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "purchase_items",
+            "name": "quantity"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "unit_price",
+        "type_info": "Numeric",
+        "origin": {
+          "Table": {
+            "table": "purchase_items",
+            "name": "unit_price"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "unit",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "purchase_items",
+            "name": "unit"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "returned!",
+        "type_info": "Int4",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "7bd9aebc169d78287af976d0f26f017c28a3b2f5096b7c79cc40cc5b590f682d"
+}

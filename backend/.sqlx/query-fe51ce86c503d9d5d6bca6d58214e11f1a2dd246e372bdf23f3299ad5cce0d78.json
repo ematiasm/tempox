@@ -1,0 +1,114 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, supplier_return_id, purchase_item_id, product_id, product_name,\n                        quantity, round(unit_price, 2) AS \"unit_price!\",\n                        round(line_total, 2) AS \"line_total!\", unit\n                 FROM supplier_return_items WHERE supplier_return_id = $1\n                 ORDER BY product_name, id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "supplier_return_items",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "supplier_return_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "supplier_return_items",
+            "name": "supplier_return_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "purchase_item_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "supplier_return_items",
+            "name": "purchase_item_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "product_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "supplier_return_items",
+            "name": "product_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "product_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "supplier_return_items",
+            "name": "product_name"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "quantity",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "supplier_return_items",
+            "name": "quantity"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "unit_price!",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "line_total!",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 8,
+        "name": "unit",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "supplier_return_items",
+            "name": "unit"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null,
+      null,
+      false
+    ]
+  },
+  "hash": "fe51ce86c503d9d5d6bca6d58214e11f1a2dd246e372bdf23f3299ad5cce0d78"
+}

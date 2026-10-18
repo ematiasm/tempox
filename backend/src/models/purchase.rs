@@ -4,6 +4,8 @@ use serde::Serialize;
 use sqlx::FromRow;
 use uuid::Uuid;
 
+use crate::models::supplier_return::SupplierReturnWithItems;
+
 /// A purchase: goods that arrived and money that left.
 ///
 /// There is no `status` column, and the absence is the design rather than an
@@ -36,10 +38,14 @@ pub struct PurchaseItem {
     pub unit: String,
 }
 
-/// A purchase with its lines, which is what both the create response and the
-/// list endpoint answer with.
+/// A purchase with its lines, and — in the list — the returns that corrected it.
+///
+/// The create response leaves `supplier_returns` empty because a purchase cannot
+/// have any yet; the list fills it. It is an array and never an `Option`, so a
+/// client has one shape to read instead of two code paths for one state.
 #[derive(Debug, Clone, Serialize)]
 pub struct PurchaseWithItems {
     pub purchase: Purchase,
     pub items: Vec<PurchaseItem>,
+    pub supplier_returns: Vec<SupplierReturnWithItems>,
 }
