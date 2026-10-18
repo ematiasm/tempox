@@ -21,6 +21,7 @@
     type Supplier
   } from '#lib/api.js';
   import { formatDay, formatMoney, formatQuantity, formatTime } from '#lib/money.js';
+  import { createStaleNotice } from '#lib/screenTrust.js';
   import {
     isFullyReturned,
     parseReturnQuantity,
@@ -68,7 +69,10 @@
   // Kept apart from `returnError` on purpose: "the return did not happen" and
   // "the return happened but the day could not be re-read" are opposite facts,
   // and one message for both told the operator the opposite of the truth.
-  let reloadNotice = new SvelteMap<string, string>();
+  // The lifetime rule lives in `screenTrust.ts`, shared with the sales ledger:
+  // a successful reload retires every notice, because a warning that the screen
+  // is behind is a lie once the screen has caught up.
+  const reloadNotice = createStaleNotice(new SvelteMap<string, string>());
 
   // The shop's zone, as the server names it. Every time on the page renders in
   // it rather than in the machine's, so a shop in Buenos Aires reads its own
@@ -111,6 +115,10 @@
     range = day;
     rows = list;
     suppliers = supplierList;
+    // The figures are current again, so nothing on this screen is stale. The
+    // first version only ever retired a notice on a click that happened to touch
+    // that same row, so a warning survived every successful reload.
+    reloadNotice.retireAll();
     return true;
   }
 
@@ -199,7 +207,7 @@
   async function submitReturn(row: PurchaseListItem) {
     const rowId = row.purchase.id;
     returnError.delete(rowId);
-    reloadNotice.delete(rowId);
+    reloadNotice.forget(rowId);
 
     const plan = planFor(row);
     if (plan === null) {
@@ -228,7 +236,7 @@
     try {
       await reload(scopeInstant);
     } catch (e) {
-      reloadNotice.set(
+      reloadNotice.mark(
         rowId,
         `${lang.t.purchases_return_recorded}${e instanceof ApiError ? ` (${e.status})` : ''}`
       );
@@ -271,6 +279,22 @@
     </div>
   </header>
 
+  <!-- The retry the alert below cannot offer. A failed re-read after a written
+       return sets the stale notice and never `error`, so this state had no way to
+       refresh the day at all. It re-reads the day already on screen rather than
+       jumping to today, because the notice is about that day. -->
+  {#if !error && !reloadNotice.empty}
+    <p class="error" role="status">
+      {lang.t.purchases_stale_title}
+      <button type="button" class="ghost" onclick={() => (refreshToken = refreshToken + 1)}>
+        {lang.t.sales_retry}
+      </button>
+    </p>
+  {/if}
+
+  <!-- Mutually exclusive with the loading, empty and table states, as it was
+       before: a failed read must replace the ledger region, never sit beside an
+       empty-state paragraph claiming there are no purchases, or beside stale rows. -->
   {#if error}
     <p class="error" role="alert">
       {lang.t.purchases_ledger_error}{error}
@@ -425,7 +449,9 @@
                   onclick={() => {
                     confirming.add(row.purchase.id);
                     returnError.delete(row.purchase.id);
-                    reloadNotice.delete(row.purchase.id);
+                    // Not "the operator dealt with this document": they may cancel.
+                    // Dropping the stale notice here left the figures stale with no
+                    // warning and no retry. Only a reload that succeeds retires it.
                   }}
                 >
                   {lang.t.purchases_return_action}

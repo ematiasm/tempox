@@ -64,6 +64,7 @@ export interface Dict {
   sales_document_one: string;
   sales_documents: string;
   sales_ledger_error: string;
+  sales_stale_title: string;
   sales_retry: string;
   sales_no_sales_today: string;
   sales_no_sales_day: string;
@@ -163,6 +164,7 @@ export interface Dict {
   purchases_document_one: string;
   purchases_documents: string;
   purchases_ledger_error: string;
+  purchases_stale_title: string;
   purchases_supplier_required: string;
   purchases_load_suppliers_failed: string;
   purchases_create_supplier_error: string;

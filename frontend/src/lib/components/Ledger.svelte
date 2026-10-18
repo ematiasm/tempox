@@ -26,6 +26,7 @@
     refundedByLine as saleRefundedByLine
   } from '#lib/salesRefund.js';
   import { lang } from '#lib/i18n/index.svelte.js';
+  import { createStaleNotice } from '#lib/screenTrust.js';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import Stamp from './Stamp.svelte';
 
@@ -72,10 +73,11 @@
   let refundError = $state<string | null>(null);
   // Set when the credit note was written and only the day's reload failed. Kept
   // apart from `refundError` on purpose: the two carry opposite meanings, and the
-  // cashier acts differently on each. Keyed by document like every other piece of
-  // refund state: a global flag rendered its warning under every expanded row, and
-  // arming another row's confirm wiped the one that still mattered.
-  let refundStale = new SvelteMap<string, string>();
+  // cashier acts differently on each. The lifetime rule lives in
+  // `screenTrust.ts`: a successful reload retires every notice, because the
+  // figures are current and a warning saying otherwise is a lie. Backed by a
+  // `SvelteMap` so retiring it re-renders.
+  const refundStale = createStaleNotice(new SvelteMap<string, string>());
 
   // The server's current-day boundary is the sole authority for this state.
   const isToday = $derived(range !== null && todayFrom !== null && range.from === todayFrom);
@@ -109,6 +111,16 @@
 
     loading = true;
     error = null;
+    // Both reads have to succeed before this screen counts as current, and they
+    // are independent requests that run in parallel: retiring the notice on the
+    // sales read alone cleared the warning while the cash figure was still stale.
+    // A retry where `listSales` succeeds and `getCash` fails is exactly that case.
+    let salesFresh = false;
+    let cashFresh = false;
+    const retireIfCurrent = () => {
+      if (cancelled || !salesFresh || !cashFresh) return;
+      refundStale.retireAll();
+    };
     // Resolve both scoped and current-day boundaries through the server before
     // requesting sales; a failed day lookup must never invent a client range.
     Promise.all([fetchDay(at), fetchDay(new Date())])
@@ -121,6 +133,13 @@
         if (cancelled) return;
         rows = sales;
         expanded.clear();
+        // The figures are current again, so nothing on this screen is stale. A
+        // warning here would contradict the data beside it, and an operator who
+        // learns to ignore it will not read it on the day it is true. This is the
+        // rule the first implementation was missing: it only ever retired a
+        // notice on a click that happened to touch that same row.
+        salesFresh = true;
+        retireIfCurrent();
       })
       .catch((e: unknown) => {
         if (!cancelled) error = e instanceof ApiError ? `${e.message} (${e.status})` : String(e);
@@ -133,9 +152,15 @@
     // the day's: it is labelled as such rather than implying a daily total.
     getCash()
       .then((c) => {
-        if (!cancelled) cash = c.total;
+        if (cancelled) return;
+        cash = c.total;
+        cashFresh = true;
+        retireIfCurrent();
       })
       .catch(() => {
+        // A cash read that fails leaves the balance visually unknown but does not
+        // discredit the day's rows, so it is not turned into a page error. It does
+        // keep the stale notice alive, because the figures are not all current.
         if (!cancelled) cash = null;
       });
 
@@ -261,7 +286,7 @@
     if (!range) return;
     refunding = row.id;
     refundError = null;
-    refundStale.delete(row.id);
+    refundStale.forget(row.id);
     // The note and the reload are separate failures. Once `createCreditNote`
     // answers 201 the stock and the money have moved; a reload that fails after
     // that is a stale screen, not a failed annulment. Reporting both through the
@@ -285,10 +310,17 @@
       rows = await listSales({ from: range.from, to: range.to, limit: PAGE, offset: 0 });
       const c = await getCash();
       cash = c.total;
+      // This is a successful reload of the whole day, so the same rule applies as
+      // in the effect above: nothing on this screen is stale any more. The rule
+      // lives in one place (`screenTrust.ts`) precisely so both success paths
+      // honour it -- the first version only retired notices on the effect path,
+      // which would have left a warning standing over figures that had just been
+      // re-read.
+      refundStale.retireAll();
     } catch (e) {
       // The note stands; only this screen is behind. It is said as that, and the
       // confirm is closed, so the cashier does not read it as a refund to redo.
-      refundStale.set(row.id, e instanceof ApiError ? `${e.message} (${e.status})` : String(e));
+      refundStale.mark(row.id, e instanceof ApiError ? `${e.message} (${e.status})` : String(e));
     }
     refunding = null;
   }
@@ -334,6 +366,24 @@
     </span>
   </div>
 
+  <!-- One retry for the whole screen, for the state the alert below cannot reach.
+       A failed reload after a written credit note sets the stale notice and never
+       `error`, so the alert's own retry was never rendered in that state: the
+       warning told the cashier the figures were stale with no way to refresh
+       them. One control here serves every row, because re-reading the day is the
+       same action regardless of which document exposed it. -->
+  {#if !error && !refundStale.empty}
+    <div class="alert" role="status">
+      <strong>{lang.t.sales_stale_title}</strong>
+      <button type="button" onclick={() => (refreshToken = refreshToken + 1)}>
+        {lang.t.sales_retry}
+      </button>
+    </div>
+  {/if}
+
+  <!-- Mutually exclusive with the loading, empty and table states, as it was
+       before: a failed read must replace the ledger region, never sit beside an
+       empty-state paragraph claiming there are no sales, or beside stale rows. -->
   {#if error}
     <div class="alert" role="alert">
       <strong>{lang.t.sales_ledger_error}</strong>
@@ -555,7 +605,12 @@
                           onclick={() => {
                             confirming = row.id;
                             refundError = null;
-                            refundStale.delete(row.id);
+                            // Deliberately NOT forgetting the stale notice here. Arming
+                            // the confirm is not "the cashier dealt with this
+                            // document": they may still cancel, and dropping the
+                            // notice would leave the figures stale with neither a
+                            // warning nor the retry that refreshes them. Only a
+                            // reload that actually succeeds retires it.
                           }}
                         >
                           {lang.t.sales_refund_action}
