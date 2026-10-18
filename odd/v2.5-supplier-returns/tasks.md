@@ -67,3 +67,30 @@ S16 work-unit commits with tests and docs.
 L1 (user, verbatim): "vamos con 2.5 el hueco visual lo cerramos en otro slice cuando definamos bien el UI/UX"
 L2 (user, verbatim): "vamos solo con devoluciones, ordenes de compras lo dejamos para otro slice mas adelante"
 L3 (user, verbatim): "Despues medimos y probamos. Dejalo como supplier-returns, la nota de de debito se usan para otra cosa, no para devoluciones."
+
+## Independent verification of T6–T8
+
+`assess` said **unassessable** (native binary absent), which the contract treats as
+high risk, so a verifier ran over the committed range: **2 blockers + 5 risks**,
+all reproduced, all closed.
+
+- **B1** (`13887de`): the return field used `parseQuantity`, which is `null` for
+  `0` and for blank — on this form zero means "nothing from this line". One
+  emptied field cancelled the whole plan, so a multi-line purchase could only be
+  returned **in full**. Measured: zero POSTs. `parseReturnQuantity` fixes it.
+- **B2** (`f7bbbfb`): the spec titled "(S8,S9)" read the catalog row, so
+  `toContainText('3')` also matched the generated product name — and with stock
+  `"0"` the row still contained `"0"` because the price renders `$ 10,00`. It also
+  never contacted the server. Retitled, and it now asserts the `.stock` cell.
+- **Risks 1–5** (`0ff4453`): recorded return reported as not recorded; one row's
+  error under every row; a slow reload undid paging; `loadDay` duplicated;
+  `createPurchase` typed narrower than the server answers.
+
+**Final: 14 e2e, 103 unit, lint and check clean.** R1 and R3 are failure-path and
+timing behaviours with no e2e here — recorded as known gaps, not claimed covered.
+
+**The lesson worth keeping**: the suite passed 13 e2e and 98 unit tests while
+containing two tests that could not fail for what they claimed. Both specs
+returned a purchase's only line, so "return everything" was the only path ever
+exercised, and the refusal spec asserted against text that contained the digit it
+looked for. A green suite is evidence about the paths it walks and nothing more.
