@@ -235,7 +235,14 @@ async fn create_purchase(
 
     Ok((
         StatusCode::CREATED,
-        Json(PurchaseWithItems { purchase, items }),
+        Json(PurchaseWithItems {
+            purchase,
+            items,
+            // A purchase that was just recorded cannot have been returned yet.
+            // An empty array rather than an omitted field, so a client reads one
+            // shape in both responses.
+            supplier_returns: Vec::new(),
+        }),
     ))
 }
 
@@ -291,6 +298,46 @@ async fn list_purchases(
             tracing::error!(?e, "purchase items read failed");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
+        // The returns that corrected this purchase, oldest first, each with its
+        // own lines. Two extra queries per purchase, bounded by `limit` and
+        // deliberately simple: the json-aggregated single query is the
+        // optimization, later, exactly as the items read above says.
+        let return_rows = sqlx::query_as!(
+            SupplierReturn,
+            "SELECT id, purchase_id, round(total, 2) AS \"total!\", created_at
+             FROM supplier_returns WHERE purchase_id = $1 ORDER BY created_at, id",
+            row.id
+        )
+        .fetch_all(&state.db)
+        .await
+        .map_err(|e| {
+            tracing::error!(?e, "supplier returns read failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+        let mut supplier_returns = Vec::with_capacity(return_rows.len());
+        for sup_return in return_rows {
+            let return_items = sqlx::query_as!(
+                SupplierReturnItem,
+                "SELECT id, supplier_return_id, purchase_item_id, product_id, product_name,
+                        quantity, round(unit_price, 2) AS \"unit_price!\",
+                        round(line_total, 2) AS \"line_total!\", unit
+                 FROM supplier_return_items WHERE supplier_return_id = $1
+                 ORDER BY product_name, id",
+                sup_return.id
+            )
+            .fetch_all(&state.db)
+            .await
+            .map_err(|e| {
+                tracing::error!(?e, "supplier return items read failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+            supplier_returns.push(SupplierReturnWithItems {
+                supplier_return: sup_return,
+                items: return_items,
+            });
+        }
+
         purchases.push(PurchaseWithItems {
             purchase: Purchase {
                 id: row.id,
@@ -299,6 +346,7 @@ async fn list_purchases(
                 created_at: row.created_at,
             },
             items,
+            supplier_returns,
         });
     }
 

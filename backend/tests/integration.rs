@@ -3836,3 +3836,114 @@ async fn v2_5_a_rejected_return_writes_nothing() {
         "a rejected return wrote something: document, line or movement survived"
     );
 }
+
+// ── v2.5 (T3): GET /api/purchases carries its returns ──────────────────────
+//
+// plan-v2.5.md S7. A purchase and its returns are read together, the way the sales
+// ledger carries its credit notes: the corrected document is never rewritten, so
+// the only place a correction is visible is alongside the thing it corrects.
+
+#[tokio::test]
+#[ignore]
+async fn v2_5_the_purchase_list_carries_its_returns() {
+    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
+    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+    let client = reqwest::Client::new();
+
+    let product = v2_5_product(&pool, "nested").await;
+    let purchase = v2_5_create_purchase(&client, &base, product, 4, "2.50").await;
+    let purchase_id = purchase["purchase"]["id"].as_str().expect("purchase id");
+    let item_id = purchase["items"][0]["id"].as_str().expect("item id");
+
+    // A purchase with no returns must carry an EMPTY ARRAY, never an absent field:
+    // a client that has to tell "no returns" from "field missing" is a client with
+    // two code paths for one state, which is what the credit-note shape already
+    // avoids.
+    let before: serde_json::Value = client
+        .get(format!("{base}/api/purchases"))
+        .query(&[("limit", "200")])
+        .send()
+        .await
+        .expect("get purchases")
+        .json()
+        .await
+        .expect("json");
+    let mine = before
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|p| p["purchase"]["id"] == purchase_id)
+        .expect("the purchase is listed");
+    assert_eq!(
+        mine["supplier_returns"],
+        serde_json::json!([]),
+        "a purchase with no returns carries an empty array, not a missing field"
+    );
+
+    // Record two partial returns, so ordering is observable.
+    for qty in [1, 2] {
+        let resp = client
+            .post(format!(
+                "{base}/api/purchases/{purchase_id}/supplier-returns"
+            ))
+            .json(
+                &serde_json::json!({ "items": [{ "purchase_item_id": item_id, "quantity": qty }] }),
+            )
+            .send()
+            .await
+            .expect("post return");
+        assert_eq!(resp.status(), 201);
+    }
+
+    let after: serde_json::Value = client
+        .get(format!("{base}/api/purchases"))
+        .query(&[("limit", "200")])
+        .send()
+        .await
+        .expect("get purchases")
+        .json()
+        .await
+        .expect("json");
+    let mine = after
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|p| p["purchase"]["id"] == purchase_id)
+        .expect("the purchase is still listed");
+
+    let returns = mine["supplier_returns"]
+        .as_array()
+        .expect("returns array present");
+    assert_eq!(returns.len(), 2, "both returns travel with the purchase");
+
+    // Oldest first: the ledger reads top-down, so a correction appears in the
+    // order it happened, not the order a query happened to return it.
+    assert_eq!(
+        returns[0]["return"]["total"], "2.50",
+        "the 1-unit return came first"
+    );
+    assert_eq!(
+        returns[1]["return"]["total"], "5.00",
+        "the 2-unit return came second"
+    );
+
+    // Each return carries its own lines, nested — a reader expands the purchase,
+    // then the return, without a request per document.
+    let first_items = returns[0]["items"].as_array().expect("return items");
+    assert_eq!(first_items.len(), 1);
+    assert_eq!(first_items[0]["quantity"], 1);
+    assert_eq!(
+        first_items[0]["unit_price"], "2.50",
+        "the snapshot of the purchase line"
+    );
+    assert_eq!(first_items[0]["purchase_item_id"], item_id);
+
+    // And the purchase itself is unchanged: its total is what was bought, not
+    // what is left after returns.
+    assert_eq!(
+        mine["purchase"]["total"], "10.00",
+        "the purchase keeps the total it was recorded with"
+    );
+}

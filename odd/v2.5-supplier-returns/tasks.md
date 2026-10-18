@@ -36,7 +36,7 @@ S16 work-unit commits with tests and docs.
 |---|---|---|---|---|
 | T1 | Migration `0010` + integration tests | S1, S2, S4, S10, S11 | done | `f567307` |
 | T2 | `POST /api/purchases/{id}/supplier-returns` | S3, S6, S8, S9 | done | `f5aa238` |
-| T3 | `supplier_returns` in `GET /api/purchases` | S7 | pending | — |
+| T3 | `supplier_returns` in `GET /api/purchases` | S7 | done | pending |
 | T4 | `GET /api/cash` nets returns | S5, S13 | pending | — |
 | T5 | Docs | S15 | pending | — |
 | T6 | Return action in an expanded purchase | S3, S6 | pending | — |
