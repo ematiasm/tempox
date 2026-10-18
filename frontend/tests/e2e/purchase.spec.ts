@@ -88,3 +88,31 @@ test('a purchase is recorded and raises the stock it brought in', async ({ page 
   await page.locator('#catalog-search').fill(name);
   await expect(page.locator('table.catalog tbody tr', { hasText: name })).toContainText('7');
 });
+
+test('the purchase screen speaks the shop language and its English side (S3, S11)', async ({
+  page
+}) => {
+  // The stored supplier name is the English string `one-off-supplier`; the screen
+  // must never show it. Both directions are asserted, because a dictionary that
+  // has the key in one language and the raw value in the other is the failure
+  // this catches — and it is invisible if only the default language is checked.
+  await page.goto('/purchases');
+
+  const supplier = page.locator('#purchase-supplier option:checked');
+  await expect(supplier).toHaveText('Proveedor ocasional');
+  await expect(supplier).not.toHaveText('one-off-supplier');
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Registrar compra');
+  await expect(page.getByRole('heading', { level: 2, name: 'Libro de compras' })).toBeVisible();
+
+  // The rail's third destination is named, not borrowed from another language.
+  const rail = page.getByRole('navigation', { name: 'Principal' });
+  await expect(rail.getByRole('link', { name: 'Compras' })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Cambiar idioma' }).click();
+
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Record purchase');
+  await expect(page.getByRole('heading', { level: 2, name: 'Purchases ledger' })).toBeVisible();
+  await expect(page.locator('#purchase-supplier option:checked')).toHaveText('One-off supplier');
+  const railEn = page.getByRole('navigation', { name: 'Main' });
+  await expect(railEn.getByRole('link', { name: 'Purchases' })).toBeVisible();
+});
