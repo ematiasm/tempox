@@ -66,7 +66,7 @@ S19 work-unit commits carry their tests and docs; the last slice closes.
 | T1 | Migration `0009_purchases.sql` + its integration tests (guards, coherence, seed, sign) | S1, S4–S6, S9, S10 | inline | done | `bc189cf` |
 | T2 | `suppliers` endpoints (`GET`, `POST`, 400/409) | S4, S5 | inline | done | `a61ba7d` |
 | T3 | `POST /api/purchases` — the transaction: header, lines, positive movements | S1, S7, S8, S11 | inline | done | `8bc22fa` |
-| T4 | `GET /api/purchases` — list with items, day scoping, paging | S12 | inline | pending | — |
+| T4 | `GET /api/purchases` — list with items, day scoping, paging | S12 | inline | done | `pending` |
 | T5 | `GET /api/cash` nets purchases + its existing-behaviour test | S13, S16 | inline | pending | — |
 | T6 | Docs: architecture, README, PRODUCT | S18 | inline | pending | — |
 | T7 | Rail destination + suppliers screen | S4, S5 | inline | pending | — |
@@ -205,3 +205,33 @@ test in this slice.
   inside the insert loop would have written the valid prefix and returned 404.
 - `make sqlx-prepare` regenerated the cache (5 new query files); `make
   sqlx-check` passes. `cargo fmt --check` and `clippy -D warnings` clean.
+
+### T4 (2026-10-17)
+
+- **RED observed first**: `GET /api/purchases` answered `501` — the route was
+  declared in T3 on purpose, so the RED named the missing behaviour rather than a
+  missing route.
+- **A first draft of the test was discarded, and why matters.** It rewrote
+  `created_at` by disabling the immutability trigger with `ALTER TABLE … DISABLE
+  TRIGGER` and re-enabling it. On a *shared* development database a panic between
+  those two statements leaves `purchases` unguarded for every later test and for
+  the app. The rewrite measures the same contract against the document's own
+  recorded instant, so no fixture surgery is needed. A test that can leave the
+  schema weaker than it found it is not an acceptable trade for convenience.
+- **The `[from, to)` contract is measured on both sides**, which is the only way
+  an inequality can be tested: `from` is inclusive (a window starting at the
+  document's instant contains it) and `to` is exclusive (a window ending at it
+  excludes it). Adjacent days then partition the ledger instead of either
+  double-counting or losing the document recorded at midnight.
+- **Mutation check**: changing `created_at < $2` to `<= $2` fails the test at the
+  assertion whose message reads *"`to` is exclusive: a window ending at the
+  document's instant excludes it"*. Restored afterwards; `sqlx` cache regenerated
+  for the restored SQL (a mutated query text is a different cached query, which is
+  itself worth knowing).
+- **A false green caught again, same shape as T3's**: one run failed while the
+  backend was down because `BACKEND_BASE` was not exported, so the test hit port
+  3001 — the *old container*, which answers `404` for a route it does not have.
+  The RED was real (`501` from the branch binary) only after the binary was
+  confirmed serving.
+- GREEN: 7 v2 tests; full integration suite **29 passed, 0 failed**; 29 unit
+  tests; `make sqlx-check` passes; `fmt` and `clippy -D warnings` clean.

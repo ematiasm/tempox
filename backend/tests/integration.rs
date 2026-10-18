@@ -2846,3 +2846,144 @@ async fn v2_a_rejected_purchase_writes_nothing() {
         "a rejected purchase wrote something: header, line or movement survived"
     );
 }
+
+// ── v2 (T4): GET /api/purchases ────────────────────────────────────────────
+//
+// plan-v2.md S12: the same half-open [from, to) day scoping the sales ledger
+// uses, the same clamped paging, and each purchase returned with its lines.
+// The contract is shared with sales on purpose — a day filter that means one
+// thing on one screen and another on the next is a bug that reads as a UI fault.
+
+#[tokio::test]
+#[ignore]
+async fn v2_purchases_list_carries_its_lines_and_is_scoped_by_day() {
+    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
+    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+    let client = reqwest::Client::new();
+
+    let stamp = uuid::Uuid::new_v4();
+    let product: (uuid::Uuid,) =
+        sqlx::query_as("INSERT INTO products (name, list_price) VALUES ($1, 3.00) RETURNING id")
+            .bind(format!("v2-list-{stamp}"))
+            .fetch_one(&pool)
+            .await
+            .expect("insert product");
+
+    let resp = client
+        .post(format!("{base}/api/purchases"))
+        .json(&serde_json::json!({
+            "items": [{ "product_id": product.0, "quantity": 2, "unit_price": "3.00" }]
+        }))
+        .send()
+        .await
+        .expect("post purchase");
+    assert_eq!(resp.status(), 201, "a valid purchase is created");
+    let created: serde_json::Value = resp.json().await.expect("json");
+    let id = created["purchase"]["id"].as_str().expect("id").to_string();
+
+    // Its own recorded instant is the boundary. Measuring the contract against
+    // the real timestamp needs no fixture surgery: disabling the immutability
+    // trigger to rewrite `created_at` would leave a shared database unguarded if
+    // this test panicked halfway, which is a worse failure than the one being
+    // tested for.
+    let at = created["purchase"]["created_at"]
+        .as_str()
+        .expect("created_at");
+
+    async fn listed(client: &reqwest::Client, base: &str, from: &str, to: &str) -> Vec<String> {
+        client
+            .get(format!("{base}/api/purchases"))
+            .query(&[("from", from), ("to", to), ("limit", "200")])
+            .send()
+            .await
+            .expect("get purchases")
+            .error_for_status()
+            .expect("2xx")
+            .json::<serde_json::Value>()
+            .await
+            .expect("json")
+            .as_array()
+            .expect("array")
+            .iter()
+            .filter_map(|p| p["purchase"]["id"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    // `from` is INCLUSIVE: a window that starts exactly at the document's own
+    // instant contains it. An exclusive `from` would lose a document recorded at
+    // midnight from both neighbouring days.
+    let after_boundary = "9999-01-01T00:00:00Z";
+    assert!(
+        listed(&client, &base, at, after_boundary)
+            .await
+            .contains(&id),
+        "`from` is inclusive: a window starting at the document's instant contains it"
+    );
+
+    // `to` is EXCLUSIVE: a window ending exactly at that instant does not. This
+    // is the assertion an inclusive `to` fails, and the reason adjacent days
+    // partition the ledger instead of double-counting.
+    let before_boundary = "1970-01-01T00:00:00Z";
+    assert!(
+        !listed(&client, &base, before_boundary, at)
+            .await
+            .contains(&id),
+        "`to` is exclusive: a window ending at the document's instant excludes it"
+    );
+
+    // And the document travels with its lines, so a ledger row can be expanded
+    // without a second request per document.
+    let body = client
+        .get(format!("{base}/api/purchases"))
+        .query(&[("from", at), ("to", after_boundary), ("limit", "200")])
+        .send()
+        .await
+        .expect("get purchases")
+        .json::<serde_json::Value>()
+        .await
+        .expect("json");
+    let mine = body
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|p| p["purchase"]["id"] == id.as_str())
+        .expect("the purchase is in its own day");
+    let items = mine["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 1, "the line travels with its purchase");
+    assert_eq!(items[0]["quantity"], 2);
+    assert_eq!(items[0]["unit_price"], "3.00");
+    assert_eq!(items[0]["line_total"], "6.00");
+
+    // Paging is a page size, not a filter: a limit of one returns one document.
+    let one = client
+        .get(format!("{base}/api/purchases"))
+        .query(&[("from", at), ("to", after_boundary), ("limit", "1")])
+        .send()
+        .await
+        .expect("get purchases limit 1")
+        .json::<serde_json::Value>()
+        .await
+        .expect("json");
+    assert_eq!(
+        one.as_array().expect("array").len(),
+        1,
+        "limit is a page size, not a filter"
+    );
+
+    // A negative offset is a client mistake, not a server error. Postgres refuses
+    // a negative OFFSET, and turning that into a 500 blames the server for a bad
+    // query — the same clamp the sales ledger applies.
+    let negative = client
+        .get(format!("{base}/api/purchases"))
+        .query(&[("offset", "-5")])
+        .send()
+        .await
+        .expect("get purchases negative offset");
+    assert_eq!(
+        negative.status(),
+        200,
+        "a negative offset is clamped, not a 500"
+    );
+}

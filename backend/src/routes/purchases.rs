@@ -1,4 +1,9 @@
-use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
+use axum::{
+    Json, Router,
+    extract::{Query, State},
+    http::StatusCode,
+    routing::post,
+};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use uuid::Uuid;
@@ -14,6 +19,27 @@ const ONE_OFF_SUPPLIER_ID: Uuid = Uuid::from_u128(2);
 
 pub fn routes() -> Router<AppState> {
     Router::new().route("/purchases", post(create_purchase).get(list_purchases))
+}
+
+/// Upper bound for a single list query, whatever the client asks for. Mirrors
+/// the sales ledger's limit, for the same reason: an unbounded list is a way to
+/// make the server do the client's paging badly.
+const MAX_LIST_LIMIT: i64 = 200;
+
+#[derive(Debug, Deserialize)]
+pub struct PurchasesQuery {
+    #[serde(default)]
+    pub limit: Option<i64>,
+    #[serde(default)]
+    pub offset: Option<i64>,
+    /// Inclusive lower bound on `created_at`. Absent means no lower bound.
+    #[serde(default)]
+    pub from: Option<chrono::DateTime<chrono::Utc>>,
+    /// Exclusive upper bound on `created_at`. Absent means no upper bound.
+    /// Exclusive is what makes adjacent days partition the ledger instead of
+    /// double-counting a document recorded at midnight.
+    #[serde(default)]
+    pub to: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -207,8 +233,68 @@ async fn create_purchase(
     ))
 }
 
-async fn list_purchases() -> Result<Json<Vec<PurchaseWithItems>>, StatusCode> {
-    // Filled in by T4. Declared here so the route table is the slice's final
-    // shape, and so the router compiles while the read side is being written.
-    Err(StatusCode::NOT_IMPLEMENTED)
+async fn list_purchases(
+    State(state): State<AppState>,
+    Query(params): Query<PurchasesQuery>,
+) -> Result<Json<Vec<PurchaseWithItems>>, StatusCode> {
+    let limit = params.limit.unwrap_or(50).clamp(1, MAX_LIST_LIMIT);
+    // A negative offset is not a page request: OFFSET refuses it in Postgres, and
+    // turning that into a 500 would blame the server for a bad query. The sales
+    // ledger clamps it the same way, because a day filter that behaves
+    // differently on two screens is a bug that reads as a UI fault.
+    let offset = params.offset.unwrap_or(0).max(0);
+
+    // One statement for both cases, the same shape as `list_sales`: a NULL bound
+    // is not a filter, `from` is inclusive and `to` is exclusive, so the two
+    // ranges that meet at midnight partition the ledger — no purchase is counted
+    // twice or lost between them.
+    let rows = sqlx::query!(
+        "SELECT id, supplier_id, round(total, 2) AS \"total!\", created_at
+         FROM purchases
+         WHERE ($1::timestamptz IS NULL OR created_at >= $1)
+           AND ($2::timestamptz IS NULL OR created_at < $2)
+         ORDER BY created_at DESC
+         LIMIT $3 OFFSET $4",
+        params.from,
+        params.to,
+        limit,
+        offset
+    )
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| {
+        tracing::error!(?e, "list_purchases failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    // One extra query per purchase for its lines: bounded by `limit` and simple
+    // on purpose — the json-aggregated single query is the optimization, later.
+    let mut purchases = Vec::with_capacity(rows.len());
+    for row in rows {
+        let items = sqlx::query_as!(
+            PurchaseItem,
+            "SELECT id, purchase_id, product_id, product_name, quantity,
+                    round(unit_price, 2) AS \"unit_price!\",
+                    round(line_total, 2) AS \"line_total!\", unit
+             FROM purchase_items WHERE purchase_id = $1 ORDER BY product_name, id",
+            row.id
+        )
+        .fetch_all(&state.db)
+        .await
+        .map_err(|e| {
+            tracing::error!(?e, "purchase items read failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+        purchases.push(PurchaseWithItems {
+            purchase: Purchase {
+                id: row.id,
+                supplier_id: row.supplier_id,
+                total: row.total,
+                created_at: row.created_at,
+            },
+            items,
+        });
+    }
+
+    Ok(Json(purchases))
 }
