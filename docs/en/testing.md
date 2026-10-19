@@ -173,9 +173,22 @@ suite as well.
 
 ## What makes a test flaky here
 
-- **Parallel writes to one database.** `make test-backend` passes
-  `--test-threads=1` because several tests read the cash total before and after
-  their own sale. A concurrent test would perturb it.
+- **Parallel writes to one database.** Two kinds of test live in this suite and only
+  one of them is exposed to this.
+
+  The converted domains are not: each runs on the database `#[sqlx::test]` creates
+  for it, so a test that reads the cash total before and after its own sale reads
+  its own writes. This is what F3 bought, and it was measured over ten consecutive
+  runs without `--test-threads=1`.
+
+  The two tests that still drive a live server — `health_endpoint_returns_ok` and
+  `notes_crud_roundtrip` — are. Neither uses `#[sqlx::test]`; both talk to whatever
+  database `scripts/test-stack.sh` started, so `make test-backend` keeps
+  `--test-threads=1` for them. The flag is there for the notes roundtrip racing a
+  concurrent reader, not for the cash total it used to be documented for.
+
+  If you add a test that reads global state through something other than its own
+  pool, you have extended the second category. Convert it, or serialize it.
 - **A leftover backend on the test port.** If something already answers on
   `:3099`, the suite would talk to it. `scripts/test-stack.sh` refuses to start and
   says so, instead of testing someone else's build.
@@ -209,8 +222,14 @@ decision: it is `docker compose down -v`, and it takes the volume.
 CI has no development stack, so it builds its own:
 
 - **Backend job**: a `postgres:18-alpine` service, migrations applied through
-  `sqlx`, then `./target/debug/tempox` started by the job. The integration tests run
-  against it with `--test-threads=1`.
+  `sqlx`, then two separate runs. `cargo test --locked --all-features` runs the
+  converted domains with no thread limit, since each creates and drops its own
+  database. The live-server step then starts `./target/debug/tempox` and runs
+  `--ignored --test-threads=1`, because those two tests share the one database the
+  job started.
+
+  That job still starts the binary from the workspace build, and CI never builds the
+  backend image — see the note above about a green CI saying nothing about it.
 - **Frontend job**: lint, `svelte-check`, Vitest, build.
 - **Image job**: builds the frontend image and asserts it serves `/sales`.
 - **E2E job**: the same ephemeral shape, with the backend started by the job, then

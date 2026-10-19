@@ -299,3 +299,113 @@ green one, which is the reason three runs were worth more than one.
 With the flag: three consecutive runs, 46 passed each time.
 
 L24 (verification): 46 integration + 39 unit + 139 frontend; fmt and clippy clean.
+
+## Slice 5: `v2_5`, and the flag finally goes (2026-10-19)
+
+L25 (inventory, measured before touching anything): `v2_5` has nine tests, not the
+twelve the domain-prefix count produced. Four were already pool-only (`schema_creates_*`,
+`the_ledger_refuses_*`, `the_return_tables_are_immutable`, `the_pre_check_runs_*`);
+five spoke HTTP. Two helpers needed converting (`v2_5_create_purchase`, `v2_5_product`),
+and `v2_5_fixture` was already transactional and untouched.
+
+L26 (the fix the previous slice's mistake pointed at): this time I read the call sites
+first. Both helpers are used **only** by `v2_5` tests, which is what made them safe to
+convert — the opposite of the `v2` slice, where the same helper name belonged to a
+later slice. Reading first cost one grep; not reading cost two reverts.
+
+L27 (RED, in plain Rust, per the lesson about `SQLX_OFFLINE`): `backend/.sqlx/` is
+populated and `SQLX_OFFLINE` is on, so breaking a `sqlx::query!` string yields a cache
+error rather than a failing test — a false signal. The probe instead changed a decision
+the build does not verify: `let line_total = line_totals[idx];` became
+`Decimal::ZERO` in `create_supplier_return`.
+
+Observed RED, exactly one test:
+
+```text
+test v2_5_a_return_takes_stock_out_and_returns_the_money_paid ... FAILED
+assertion `left == right` failed
+  left: String("0.00")
+```
+
+One finding worth recording: **only one of the five failed.** `v2_5_cash_...` stayed
+green because it asserts deltas of 1000 and 4000 against a return worth 10.00 — the
+return total comes from `supplier_returns.total`, written from `return_total`, not from
+`line_totals`. So the probe broke a value the list test and the money test both read,
+and the cash test never touches. A suite where every test failed for one change would
+mean the tests are not measuring different things; this one gates each fact separately,
+which is what makes it worth trusting.
+
+Reverted; `git diff backend/src/` empty before running GREEN.
+
+L28 (the flag, measured properly this time): **ten consecutive runs without
+`--test-threads=1`, all 44 passed**, in 2.9s instead of 15s. The previous slice's
+mistake was trusting one green run; this slice's rule is that the number has to survive
+repetition before an instruction is removed from the build.
+
+> **Superseded by L30.** What follows in this entry was acted on and then partly
+> reversed. It is kept because the reasoning is the evidence for L30, not because it
+> describes the delivered tree.
+
+So the flag came out of all three places that carried it:
+
+- `Makefile` — `test-backend` no longer passes it, with a comment saying why.
+- `.github/workflows/ci.yml` — the integration step no longer passes it. Leaving it
+  here while the Makefile dropped it would have been an inconsistency introduced by
+  this very slice: the documented reason and the executed command would disagree.
+- `docs/en/testing.md` — the flakiness section and the CI section both described the
+  flag as current. Both now describe what is true: each test owns its database, and a
+  test that reads global state through something other than its own pool reintroduces
+  the problem.
+
+That last bullet is the one I nearly missed. Removing a flag from a Makefile is a
+two-line change; removing the *sentence that explains it* from three files is the part
+that keeps the next reader from re-adding it.
+
+L29 (verification): `make test` 46 integration + 39 unit + 139 frontend + 16 e2e, with
+the flag gone and the suite at 2.88s. `cargo fmt --check` and
+`clippy --all-targets -D warnings` clean. Two tests remain on the harness by design —
+`health_endpoint_returns_ok` and `notes_crud_roundtrip` — and both need a real server,
+which is F4's job.
+
+L30 (a correction the review earned, and it was mine): the first version of this slice
+removed `--test-threads=1` from `ci.yml` and the `Makefile` outright, and
+`docs/en/testing.md` was rewritten to say each test owns its database. The readability
+lens flagged the `ci.yml` hunk as a warning, and it was right about the substance even
+though the finding was advisory:
+
+The `--ignored` selection in CI does **not** contain converted tests. It contains
+`health_endpoint_returns_ok` and `notes_crud_roundtrip`, and neither has a
+`#[sqlx::test]` attribute. Both read `BACKEND_BASE` and talk to the single database
+the job started. Removing the flag there, while writing a comment saying they own
+their databases, made the file assert something false about the two tests it was
+running — and the comment three lines above it already said "They are serialized on
+purpose". Two adjacent comments disagreeing is the kind of thing a reader hits before
+the reviewer does.
+
+The honest shape: `--test-threads=1` is still needed, for a **narrower and different**
+reason than the one documented for years. It is needed by the two live-server tests
+sharing one database, not by the cash tests reading a global total. The ten parallel
+runs remain valid and remain the evidence for the converted domains — they are simply
+not evidence about those two.
+
+All three files were corrected to say that, and `make test` re-run green.
+
+The lesson is not "restore the flag". It is that **removing a mechanism and removing
+its explanation are different edits, and only the first one is safe to do by search and
+replace.** The sentence I wrote to replace the old explanation was read by the reviewer
+as a claim about the code; it was false, and it survived my own verification because I
+verified the tests, not the comment.
+
+L31 (slice boundary): this change is 431 authored lines in one commit, past the ~400
+guideline. It stays one commit on purpose. The code and the three files that explain it
+are one fact — "the flag is needed for the live-server pair, not for the cash total" —
+and splitting the tests from the sentences describing them is exactly the edit
+separation that produced L30. A reader of `ci.yml` alone would otherwise see a flag
+with no tests behind it, or tests with no explanation.
+
+L32 (the approval no longer matches the tree): `review-4be5c9ac3105602f` approved the
+candidate that *removed* the flag from `ci.yml`. The correction that restored it came
+after acknowledgement, so the authority is burned and the tree has moved. The approved
+receipt therefore describes a candidate that is not the one being delivered. A fresh
+review is required, and the previous receipt is recorded here as history rather than
+reused as cover.

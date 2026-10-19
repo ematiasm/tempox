@@ -120,6 +120,13 @@ jobs:
             kill "$server_pid" 2>/dev/null || true
             exit 1
           fi
+          # `--test-threads=1` stays here, but for a narrower reason than before.
+          # `--ignored` selects only the two tests that still drive the live server
+          # (`health_endpoint_returns_ok`, `notes_crud_roundtrip`); neither uses
+          # `#[sqlx::test]`, so both talk to the one database this job started, and
+          # the notes roundtrip would race a concurrent reader. The domains F3
+          # converted are not in this selection and run above, without a thread
+          # limit, because each owns its own database.
           cargo test --locked --all-features -- --ignored --test-threads=1
           status=$?
           kill "$server_pid" 2>/dev/null || true
