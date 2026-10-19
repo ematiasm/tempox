@@ -9,7 +9,7 @@ description = "Tempox — Rust + Axum + sqlx backend."
 [dependencies]
 axum = { version = "0.8", features = ["macros"] }
 tokio = { version = "1", features = ["full"] }
-tower = "0.5"
+tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.7", features = ["cors", "trace"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -27,3 +27,6 @@ chrono-tz = "0.10"
 [dev-dependencies]
 reqwest = { version = "0.13", features = ["json", "query"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# Draining an in-process response body. Already in the lock as a transitive
+# dependency of axum; declaring it is what makes it usable from a test.
+http-body-util = "0.1"
