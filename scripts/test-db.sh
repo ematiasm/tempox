@@ -176,6 +176,32 @@ CREATE DATABASE "$TESTDB";
 SQL
 
 echo "recreated $TESTDB"
+
+# Leftovers from `#[sqlx::test]`. Each converted test creates its own database,
+# named `_sqlx_test_<sha512 of the test path>`, and drops it when it finishes. A
+# run that is killed mid-test leaves it behind, and the name is stable per test, so
+# the next run reuses it with whatever state the dead run had.
+#
+# This is the only place that sweeps them, and it is safe: the prefix is reserved
+# by the framework, and nothing else in this project names a database that way.
+stale="$(psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d postgres -tA -c \
+  "SELECT datname FROM pg_database WHERE datname LIKE '\_sqlx\_test\_%';")"
+
+if [ -n "$stale" ]; then
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    # Two statements, two calls: DROP DATABASE cannot run inside a transaction
+    # block, and psql wraps a multi-statement -c in one.
+    psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d postgres -q -c \
+      "SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+        WHERE datname = '$d' AND pid <> pg_backend_pid();" >/dev/null
+    psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d postgres -q -c \
+      "DROP DATABASE IF EXISTS \"$d\";" >/dev/null
+    echo "dropped leftover $d"
+  done <<EOF
+$stale
+EOF
+fi
 INNER
 
 echo "==> the next test run applies the migrations on boot"
