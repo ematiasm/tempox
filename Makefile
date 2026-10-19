@@ -78,14 +78,33 @@ test-frontend:
 # `_sqlx_test_*` leftovers a killed run leaves behind. Dropping the external
 # backend without carrying this over would have made the target require a database
 # a fresh checkout does not have — R3-001 and R3-002, both CRITICAL, both right.
+#
+# `TEST_DATABASE_URL` is resolved ONCE, as a make variable, before any prerequisite
+# runs — `test-db` needs it too, and a default set inside this recipe arrives too
+# late.
+#
+# Three sources, most specific first: the caller's value, then `.env`, then
+# `.env.example`. The last one is what makes a fresh checkout work: it is the file a
+# new checkout copies, so it names the URL that checkout's database will actually
+# have. Hardcoding credentials here instead was wrong within a minute of trying it —
+# this repository's volume was created with a password the compose defaults do not
+# produce, and the run failed with "password authentication failed for user tempox".
+# Exiting when the value was absent was worse still: the baseline reached the tests
+# (R3-001, third round).
+#
+# The recipe still refuses a URL that is not a test database. That is the one failure
+# worth stopping for: the development ledger is append-only and tests must never
+# reach it.
+TEST_DATABASE_URL ?= $(shell sed -n 's/^TEST_DATABASE_URL=//p' .env .env.example 2>/dev/null | tail -1)
+test-backend: export TEST_DATABASE_URL := $(TEST_DATABASE_URL)
 test-backend: test-db
-	@url="$${TEST_DATABASE_URL:-$$(sed -n 's/^TEST_DATABASE_URL=//p' .env 2>/dev/null | tail -1)}"; \
-	if [ -z "$$url" ]; then \
-		echo "error: TEST_DATABASE_URL is not set and .env has no TEST_DATABASE_URL." >&2; \
-		echo "       Copy .env.example to .env, or pass it directly:" >&2; \
-		echo "       make test-backend TEST_DATABASE_URL=postgres://tempox:tempox@localhost:5432/tempox_test" >&2; \
-		exit 1; \
-	fi; \
+	@url="$$TEST_DATABASE_URL"; \
+	case "$$url" in \
+		*_test|*_test\?*) : ;; \
+		*) echo "error: refusing to run the suite against '$$url': it must end in '_test'." >&2; \
+		   echo "       The development database is append-only; tests never touch it." >&2; \
+		   exit 1 ;; \
+	esac; \
 	cd backend && TEST_DATABASE_URL="$$url" DATABASE_URL="$$url" \
 		cargo test --all-features -- --include-ignored
 

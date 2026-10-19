@@ -573,3 +573,48 @@ and they are not separable: the corrections are what make the first commit's cla
 ("the suite owns its process and its database") true. Splitting them into separate PRs
 would ship the false version first and the truth second, which is precisely the delivery
 shape that let a green suite sit on the wrong database twice.
+
+## R3-001, third round: the refuter was right about the fallback (2026-10-19)
+
+L45 (what the refuter found, and it is the most precise of the three): my guard exited
+`1` when `TEST_DATABASE_URL` was absent from both the environment and `.env`. **A fresh
+checkout has no `.env`**, so `make test-backend` alone stopped before reaching cargo,
+while the baseline started the external stack and reached the tests. A regression on a
+valid baseline state, marked `deterministic` and `introduced`.
+
+This is the third finding in this phase about the same variable, and each was a different
+mistake: first the suite silently took `DATABASE_URL` from `.env` (wrong database), then
+nothing created the test database (no database), now refusing to run without one (no
+run at all). The first two taught me to demand the value; the refuter caught that
+demanding it was itself the regression.
+
+L46 (the fix, and the wrong fix I caught before shipping it): I first defaulted to
+`postgres://tempox:tempox@localhost:5432/tempox_test`, reasoning from the compose
+`${POSTGRES_PASSWORD:-tempox}` default. **It failed immediately**, and informatively:
+
+```text
+severity: Fatal, code: "28P01", message: "password authentication failed for user \"tempox\""
+```
+
+Those compose defaults apply to a **new** volume. This repository's volume was created
+with the password `.env.example` names, so a hardcoded credential was wrong for the one
+machine that could test it. A fallback invented here would have been wrong for every
+checkout whose `.env` differs — which is the same class of error as the `.env`
+inheritance, in the opposite direction.
+
+The fallback therefore comes from `.env.example`, the file a new checkout copies, so it
+names the URL that checkout's own database will have. Resolution order: caller, `.env`,
+`.env.example`, resolved once as a make variable **before** the `test-db` prerequisite,
+which needs it too.
+
+L47 (verified across the three states, not just the one that prompted the fix):
+
+| state | result |
+| --- | --- |
+| with `.env` | 47 passed |
+| **no `.env`, falls back to `.env.example`** | **47 passed** |
+| `TEST_DATABASE_URL` naming the development database | refused by `test-db.sh`, which already guarded it |
+
+The middle row is the finding. The third is the guard worth keeping: refusing a non-test
+database is the one failure that must stop the run, because the development ledger is
+append-only and tests must never reach it.
