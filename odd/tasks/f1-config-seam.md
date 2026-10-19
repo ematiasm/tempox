@@ -37,9 +37,9 @@ S6. `main.rs` keeps only boot: dotenv, tracing, `Config::from_env()`, the pool, 
 S7. A bind on port `0` logs the port the OS actually assigned. Without this, F4's
    spawned-server tests cannot learn where to connect.
 
-S8. **The `DATABASE_URL` fallback is not changed.** Making a missing variable an
-   error is a behaviour change and is proposed separately, as its own commit, for
-   an explicit decision.
+S8. **Superseded by S9.** Originally: the `DATABASE_URL` fallback was not changed,
+   and making a missing variable an error was proposed separately for an explicit
+   decision. The owner approved it (L11); S9 is the requirement that replaced it.
 
 ## Tasks
 
@@ -128,3 +128,38 @@ but that is evidence, not authorization.
 What it would cost: `DEFAULT_DATABASE_URL` becomes dead and its test changes from
 "falls back" to "is an error that names the variable". `Config::from_source` is
 already the seam, so the test exists and flips.
+
+
+## S9 (approved, applied)
+
+A missing `DATABASE_URL` is an **error that names the variable**, not a silent
+fallback to a concrete local URL.
+
+The reasoning, in the owner's terms: a default that connects somewhere real, in
+code, with nothing saying it happened, is the same class of defect as the
+template's invented `skilluv` credential — which this branch's predecessor
+removed. `BACKEND_PORT` and `SHOP_TIMEZONE` keep their forgiving behaviour,
+because neither can connect a process to the wrong database.
+
+L11 (user, verbatim): "aplica B primero".
+
+L12 (evidence, RED observed first): the new test
+`a_missing_database_url_is_an_error_that_names_the_variable` failed with
+`expect_err` on an `Ok` value before any code changed, and the real binary proved
+it afterwards:
+
+```text
+$ env -u DATABASE_URL ./target/debug/tempox
+Error: DATABASE_URL is not set. Copy .env.example to .env, or export it. It is
+required: this process must be told which database to use, because guessing one
+means writing to whatever happens to be there.
+```
+
+L13 (defect I introduced while applying B, and it is worth recording): five tests
+that exercise the port or the zone started failing, correctly — they build a
+`Config` and B made one input mandatory. Fixed by giving them `A_DATABASE_URL`
+explicitly, so each test still varies exactly one value. A test that supplied
+every value would prove nothing about the fallbacks.
+
+L14 (evidence, after B): 37 unit + 46 integration + 139 frontend + 16 e2e,
+`cargo fmt --check` and `clippy -D warnings` clean.

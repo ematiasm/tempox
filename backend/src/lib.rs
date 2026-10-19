@@ -43,9 +43,15 @@ pub struct Config {
     pub shop_timezone: chrono_tz::Tz,
 }
 
-/// The three defaults, named so the fallback behaviour is stated once and is
-/// visible in one place instead of embedded in three `unwrap_or_else` calls.
-const DEFAULT_DATABASE_URL: &str = "postgres://tempox:tempox@localhost:5432/tempox";
+/// The two values that still fall back, named so the behaviour is stated once
+/// instead of being embedded in two `unwrap_or_else` calls.
+///
+/// `DATABASE_URL` is deliberately **not** here. A missing one used to fall back to
+/// a concrete local URL, which is the same class of defect as the template's
+/// invented `skilluv` credential: a default that connects somewhere real, in code,
+/// with nothing saying it happened. Missing configuration must name itself, so
+/// that value is an error instead. Neither of these can connect a process to the
+/// wrong database, which is why they keep their forgiving behaviour.
 const DEFAULT_PORT: u16 = 3001;
 const DEFAULT_SHOP_TIMEZONE: &str = "America/Argentina/Buenos_Aires";
 
@@ -57,9 +63,12 @@ impl Config {
 
     /// Read the configuration from an arbitrary key lookup.
     ///
-    /// The behaviour is exactly what `main` did inline before this module existed:
+    /// Two values fall back, one does not, and the difference is the point:
     ///
-    /// - a missing `DATABASE_URL` falls back to the local development database;
+    /// - a missing `DATABASE_URL` is an **error** that names the variable. It is
+    ///   the one value that decides which database the process writes to, and a
+    ///   silent default there means a misplaced environment reaches real data
+    ///   without a word;
     /// - a missing or unparseable `BACKEND_PORT` falls back to `3001`;
     /// - a missing `SHOP_TIMEZONE` falls back to the shop's zone;
     /// - a *present but invalid* `SHOP_TIMEZONE` is an error, because silently
@@ -69,8 +78,13 @@ impl Config {
     where
         F: Fn(&str) -> Option<String>,
     {
-        let database_url =
-            lookup("DATABASE_URL").unwrap_or_else(|| DEFAULT_DATABASE_URL.to_owned());
+        let database_url = lookup("DATABASE_URL").ok_or_else(|| {
+            anyhow::anyhow!(
+                "DATABASE_URL is not set. Copy .env.example to .env, or export it. \
+                 It is required: this process must be told which database to use, \
+                 because guessing one means writing to whatever happens to be there."
+            )
+        })?;
 
         let port = lookup("BACKEND_PORT")
             .and_then(|raw| raw.parse().ok())
@@ -117,6 +131,9 @@ pub fn build_app(state: AppState) -> Router {
 mod tests {
     use super::*;
 
+    /// The one value a config cannot be built without, now that B made it required.
+    const A_DATABASE_URL: (&str, &str) = ("DATABASE_URL", "postgres://u:p@localhost:5432/db_test");
+
     /// A lookup over a fixed set of pairs. `None` for anything not listed.
     fn source<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
         move |key| {
@@ -128,14 +145,31 @@ mod tests {
     }
 
     #[test]
-    fn empty_environment_yields_the_documented_defaults() {
-        let config = Config::from_source(source(&[])).expect("defaults are valid");
+    fn a_missing_database_url_is_an_error_that_names_the_variable() {
+        // B: a missing DATABASE_URL used to fall back silently to a concrete local
+        // URL. That is the same class of defect as the template's invented
+        // `skilluv` credential: a default that connects somewhere real, in code,
+        // with nothing saying it happened. Missing configuration must name itself.
+        let error = Config::from_source(source(&[]))
+            .expect_err("a missing DATABASE_URL must fail the boot");
 
-        assert_eq!(
-            config.database_url, DEFAULT_DATABASE_URL,
-            "a missing DATABASE_URL still falls back, which is the behaviour this \
-             slice deliberately preserves"
+        let message = error.to_string();
+        assert!(
+            message.contains("DATABASE_URL"),
+            "the message must name the variable, got: {message}"
         );
+    }
+
+    #[test]
+    fn the_other_values_still_fall_back_when_database_url_is_present() {
+        // B changes exactly one value. The port and the zone keep their forgiving
+        // behaviour, because neither can connect the process to the wrong database.
+        let config = Config::from_source(source(&[(
+            "DATABASE_URL",
+            "postgres://someone:secret@db.example:6543/shop",
+        )]))
+        .expect("a present DATABASE_URL is enough to boot");
+
         assert_eq!(config.port, DEFAULT_PORT);
         assert_eq!(config.shop_timezone.to_string(), DEFAULT_SHOP_TIMEZONE);
     }
@@ -164,7 +198,7 @@ mod tests {
     fn an_unparseable_port_falls_back_instead_of_failing() {
         // Preserved from the original: `BACKEND_PORT=abc` used to be ignored, not
         // fatal. A port is easy to get wrong and costs nothing to recover from.
-        let config = Config::from_source(source(&[("BACKEND_PORT", "not-a-port")]))
+        let config = Config::from_source(source(&[A_DATABASE_URL, ("BACKEND_PORT", "not-a-port")]))
             .expect("an unparseable port is not fatal");
 
         assert_eq!(config.port, DEFAULT_PORT);
@@ -172,7 +206,7 @@ mod tests {
 
     #[test]
     fn a_port_above_u16_is_rejected_by_the_parser_and_falls_back() {
-        let config = Config::from_source(source(&[("BACKEND_PORT", "70000")]))
+        let config = Config::from_source(source(&[A_DATABASE_URL, ("BACKEND_PORT", "70000")]))
             .expect("out of range is not fatal either");
 
         assert_eq!(config.port, DEFAULT_PORT);
@@ -182,8 +216,9 @@ mod tests {
     fn an_invalid_timezone_is_an_error_that_names_the_variable() {
         // This is the one value that must NOT fall back: a wrong zone files sales
         // under the wrong day, silently.
-        let error = Config::from_source(source(&[("SHOP_TIMEZONE", "Mars/Olympus")]))
-            .expect_err("an invalid timezone must fail the boot");
+        let error =
+            Config::from_source(source(&[A_DATABASE_URL, ("SHOP_TIMEZONE", "Mars/Olympus")]))
+                .expect_err("an invalid timezone must fail the boot");
 
         let message = error.to_string();
         assert!(
@@ -194,7 +229,7 @@ mod tests {
 
     #[test]
     fn a_valid_timezone_that_differs_from_the_default_is_kept() {
-        let config = Config::from_source(source(&[("SHOP_TIMEZONE", "UTC")]))
+        let config = Config::from_source(source(&[A_DATABASE_URL, ("SHOP_TIMEZONE", "UTC")]))
             .expect("UTC is a valid IANA name");
 
         assert_eq!(config.shop_timezone.to_string(), "UTC");
@@ -204,8 +239,8 @@ mod tests {
     fn the_bind_address_is_port_zero_safe() {
         // F4 spawns servers on an OS-assigned port; the config has to carry `0`
         // through unchanged so the caller can then read the assigned one.
-        let config =
-            Config::from_source(source(&[("BACKEND_PORT", "0")])).expect("0 is a valid port");
+        let config = Config::from_source(source(&[A_DATABASE_URL, ("BACKEND_PORT", "0")]))
+            .expect("0 is a valid port");
 
         assert_eq!(config.port, 0);
         assert_eq!(config.bind_addr().port(), 0);
