@@ -3,15 +3,15 @@ services:
     image: postgres:18-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-skilluv}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-skilluv}
-      POSTGRES_DB: ${POSTGRES_DB:-skilluv}
+      POSTGRES_USER: ${POSTGRES_USER:-tempox}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tempox}
+      POSTGRES_DB: ${POSTGRES_DB:-tempox}
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-skilluv}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tempox}"]
       interval: 3s
       timeout: 3s
       retries: 20
@@ -22,7 +22,11 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-skilluv}:${POSTGRES_PASSWORD:-skilluv}@postgres:5432/${POSTGRES_DB:-skilluv}
+      # The `tempox` defaults are what a clone with no `.env` gets. They used to
+      # say `skilluv`, from the template this repository started as, so a fresh
+      # checkout silently created a database and a role named after a project
+      # that is not this one.
+      DATABASE_URL: postgres://${POSTGRES_USER:-tempox}:${POSTGRES_PASSWORD:-tempox}@postgres:5432/${POSTGRES_DB:-tempox}
       BACKEND_PORT: 3001
       RUST_LOG: ${RUST_LOG:-info}
       # The shop's calendar zone. `/api/day` answers from this, never from the

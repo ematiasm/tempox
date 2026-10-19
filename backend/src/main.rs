@@ -31,7 +31,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://skilluv:skilluv@localhost:5432/skilluv".into());
+        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
     let port: u16 = std::env::var("BACKEND_PORT")
         .ok()
         .and_then(|s| s.parse().ok())
