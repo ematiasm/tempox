@@ -2596,7 +2596,7 @@ async fn v2_a_purchase_raises_stock_and_returns_its_lines() {
         .await
         .expect("post purchase");
     assert_eq!(resp.status(), 201, "a valid purchase is created");
-    let body: serde_json::Value = resp.json().await.expect("json");
+    let body: serde_json::Value = resp.json().await.expect("purchase json");
 
     // The header carries the seeded supplier and the summed total: 4 * 12.50 +
     // 2 * 10.00 = 70.00.
@@ -3457,7 +3457,7 @@ async fn v2_5_a_return_takes_stock_out_and_returns_the_money_paid() {
         .await
         .expect("post return");
     assert_eq!(resp.status(), 201, "a valid return is created");
-    let body: serde_json::Value = resp.json().await.expect("json");
+    let body: serde_json::Value = resp.json().await.expect("return json");
 
     // The document values what was PAID, read server-side (S3): the client sent
     // no price, and 2 × 10.00 is 20.00 whatever today's catalogue says.
