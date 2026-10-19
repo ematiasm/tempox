@@ -72,7 +72,13 @@ test-frontend:
 # DEVELOPMENT database, and on a clean checkout with no `.env` it failed outright
 # with "DATABASE_URL must be set". Both are mapped here, from `TEST_DATABASE_URL`,
 # so the database under test is the test one whether or not a `.env` exists.
-test-backend:
+#
+# It depends on `test-db`, which is what the baseline got as a side effect of
+# starting the stack: `make test-db` recreates the test database AND sweeps the
+# `_sqlx_test_*` leftovers a killed run leaves behind. Dropping the external
+# backend without carrying this over would have made the target require a database
+# a fresh checkout does not have — R3-001 and R3-002, both CRITICAL, both right.
+test-backend: test-db
 	@url="$${TEST_DATABASE_URL:-$$(sed -n 's/^TEST_DATABASE_URL=//p' .env 2>/dev/null | tail -1)}"; \
 	if [ -z "$$url" ]; then \
 		echo "error: TEST_DATABASE_URL is not set and .env has no TEST_DATABASE_URL." >&2; \

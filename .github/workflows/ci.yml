@@ -91,6 +91,17 @@ jobs:
         run: |
           sqlx migrate run --source migrations
           sqlx migrate info --source migrations
+      # `#[sqlx::test]` connects to `TEST_DATABASE_URL` to create one database per
+      # test. That master database has to exist, and the service container starts
+      # with only the development one — creating it is this step's job, the same way
+      # `make test-db` does it locally. Without this the integration step fails to
+      # connect before any test runs.
+      - name: Create the test database
+        env:
+          PGPASSWORD: tempox
+        run: >-
+          psql -h localhost -U tempox -d postgres
+          -c 'CREATE DATABASE tempox_test'
       # `.sqlx/` is what lets the crate compile with no database at all, which is
       # how `make build` and `make lint` work on a laptop and how the image builds
       # without reaching this job's Postgres. Compiling against a stale cache

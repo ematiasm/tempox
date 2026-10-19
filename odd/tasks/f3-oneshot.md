@@ -519,3 +519,57 @@ L40 (what this says about the F4 claim): the "no external backend" result was tr
 was resting on an unexamined environment variable. The review caught the dependency, not
 the test suite — no test could have caught it, because every test passed in the environment
 that hid the defect. That is item 6 on the risk list in its exact form.
+
+## R3-001 and R3-002: the refuter was right twice (2026-10-19)
+
+L41 (second review, second escalation, both findings CRITICAL). After fixing the
+`DATABASE_URL` inheritance, a fresh review ran on the corrected tree. The three lenses
+finished and the provider demanded a refuter; the refuter corroborated R3-001 and raised
+R3-002. Both are the same defect seen from two files:
+
+> **R3-001** (`ci.yml:119`): the integration step points `DATABASE_URL` at the test
+> database, but the candidate adds no step that creates it. On a fresh CI service, the
+> step fails to connect before any test runs.
+>
+> **R3-002** (`Makefile:77-85`): the target no longer starts the stack or creates the
+> test database. On a clean checkout with no pre-existing Postgres/test database,
+> `make test-backend` fails, whereas the baseline started the stack and worked.
+
+Both correct. The baseline created `tempox_test` as a **side effect** of
+`scripts/test-stack.sh` calling `scripts/test-db.sh` — which also swept the
+`_sqlx_test_*` leftovers a killed run leaves behind. Removing the external backend
+removed that side effect, and nothing replaced it. I had verified "no external backend
+needed" against a machine where the database already existed, which is the same class of
+error as the previous finding: **a green run against prepared state.**
+
+L42 (the fix, verified by destroying the precondition rather than reasoning about it):
+
+- `test-backend` now depends on `test-db`. That is the piece the baseline supplied
+  implicitly: it recreates the master test database and sweeps stale per-test databases.
+- `ci.yml` creates `tempox_test` explicitly before the test step. The service container
+  starts with only the development database, so a `TEST_DATABASE_URL` naming a database
+  nobody created is a connect failure, not a test failure.
+
+Verified the only way that counts — by removing what the fix is supposed to create:
+
+```text
+$ psql -c "DROP DATABASE IF EXISTS tempox_test WITH (FORCE)"
+$ psql -tAc "SELECT count(*) FROM pg_database WHERE datname='tempox_test'"
+0
+$ make test-backend
+==> recreating the test database: tempox_test
+test result: ok. 47 passed; 0 failed
+```
+
+L43 (what the two rounds establish): neither round was about the tests. The first found
+that the suite silently took its database from `.env`; the second, that the fix assumed a
+database the run had not created. **Both were invisible to the test suite, because both
+were properties of the environment the suite ran in** — which is exactly why the review
+earned its cost here rather than duplicating what verify already knew.
+
+L44 (slice boundary): F4 is 478 authored lines in three commits, past the ~400
+guideline. The three commits are the work plus the two corrections its reviews earned,
+and they are not separable: the corrections are what make the first commit's claim
+("the suite owns its process and its database") true. Splitting them into separate PRs
+would ship the false version first and the truth second, which is precisely the delivery
+shape that let a green suite sit on the wrong database twice.
