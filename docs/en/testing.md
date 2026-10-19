@@ -184,11 +184,21 @@ suite as well.
 
   If you add a test that reads global state through something other than its own
   pool, you have reintroduced the problem. Convert it, do not serialize it.
-- **A leftover backend on a fixed port.** The backend suite no longer has this
-  failure mode: it binds port `0` and reads the real address from the binary's own
-  log, so there is no port to collide over. `scripts/test-stack.sh` still guards
-  `:3099` for the e2e suite, which does borrow a long-lived backend — that is the
-  level where a leftover process is still possible.
+- **A leftover backend on a fixed port.** Neither suite has this failure mode any
+  more, and the two levels solved it differently because they own different things.
+
+  The backend suite binds port `0` and reads the real address from the binary's own
+  log, so there is no port to collide over. The e2e level cannot do that: it runs one
+  long-lived backend and one long-lived frontend, and the frontend is a **compiled
+  artifact** — `vite` inlines `PUBLIC_API_BASE` at build time (measured: a build given
+  `PUBLIC_API_BASE=http://probe-1234` contains that literal in
+  `_app/immutable/chunks/*.js`). So the URL must be known before the build runs, which
+  rules out discovering it.
+
+  Playwright therefore starts the backend on the fixed `:3099` and owns its lifetime,
+  replacing the external `scripts/test-stack.sh` backend. `reuseExistingServer` is on
+  outside CI, so a stale backend on `:3099` can still be adopted — stop it if the
+  result looks wrong.
 - **A leftover preview on `:4173`.** `reuseExistingServer` is on outside CI, so a
   stale preview is reused. Stop it before trusting an e2e result.
 - **Running a suite directly.** `npx playwright test` on its own reaches
@@ -268,7 +278,7 @@ authorized.**
 | **F2** | `tests/common/mod.rs` harness on `#[sqlx::test]`; converts the 14 pool-only tests. `--test-threads=1` stops being needed for those. | per domain |
 | **F3** | `tower::oneshot` for the 29 HTTP tests, including the 23 that use both. Removes the desync. | per domain |
 | **F4** | **Done.** T3: the test spawns `CARGO_BIN_EXE_tempox` on `BACKEND_PORT=0` against its own database, with `migrations = false` so boot's migration step is what gets proven. `docker-compose` no longer needs a backend for tests. | small |
-| **F5** | E2E: Playwright's `webServer` starts the backend on its own database; the harness guard becomes the preview guard. | small |
+| **F5** | **Done.** E2E: Playwright's `webServer` starts the backend on its own database, in array order, and owns its lifetime. `PUBLIC_API_BASE` still comes from the target, because `webServer.env` cannot reach the build. | small |
 | **F6** | Retire the old plumbing: the 38 hardcoded URLs, the `Makefile` health guard, the `sqlx-prepare` rewrite, and **make a direct suite invocation unable to reach the development backend** (`api.ts` currently defaults to `:3001`, so a bare `npx playwright test` writes to it). **Last, not first.** | cleanup |
 
 Cut each phase by domain, which is how the tests are already named: `v1` (7),

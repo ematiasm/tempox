@@ -38,8 +38,9 @@ dev:
 # to `tempox`. Same stack, same image, one container. `make test-db` recreates it;
 # it is disposable and needs nobody's permission.
 #
-# `scripts/test-stack.sh` starts the branch's binary on a dedicated port (`:3099`)
-# with DATABASE_URL pointing at the test database, then runs the suite against it.
+# Neither level needs a backend from outside any more. `make test-backend` gives each
+# test its own database and lets it start its own process (F4); `make test-e2e` lets
+# Playwright start the branch's binary on `:3099` against the test database (F5).
 # The development backend on `:3001` is never stopped or disturbed, and there is no
 # way for the suite and the server to end up on different databases: the run owns
 # the process. That property — not a check — is what prevents the desync.
@@ -116,6 +117,13 @@ test-backend: test-db
 	cd backend && TEST_DATABASE_URL="$$url" DATABASE_URL="$$url" \
 		cargo test --all-features -- --include-ignored
 
+# The binary the e2e level serves. Separate on purpose: `cargo build` from
+# `backend/`, never `--manifest-path` from the root, because cargo reads
+# `.cargo/config.toml` from the current directory up and that is where
+# `SQLX_OFFLINE=true` lives.
+test-backend-binary:
+	cd backend && cargo build --all-features
+
 # Playwright builds and serves the frontend itself on :4173, and reaches the
 # backend through PUBLIC_API_BASE, which the harness sets. Chromium is a
 # machine-level artifact, not a repo one, so its absence is reported in one line
@@ -124,13 +132,31 @@ test-backend: test-db
 # The check reads the browser binary rather than `playwright install --dry-run`:
 # the dry run prints where it WOULD install and exits 0 either way, so it cannot
 # tell an installed browser from a missing one. Measured, not assumed.
-test-e2e:
+# Playwright now owns the backend (see `frontend/playwright.config.ts`): it starts
+# the branch's binary against the test database, waits for `/health`, runs the
+# frontend build, serves the preview, and tears all of it down. So this target no
+# longer needs a backend from `scripts/test-stack.sh`.
+#
+# It still prepares the database (`test-db`, which recreates it and sweeps the
+# `_sqlx_test_*` leftovers) and still exports `PUBLIC_API_BASE`, because `vite`
+# inlines that value into the bundle at BUILD time and Playwright's `webServer.env`
+# only reaches the process it spawns. Measured: a build given
+# `PUBLIC_API_BASE=http://probe-1234` contains that literal in
+# `_app/immutable/chunks/*.js`.
+#
+# Building the binary here rather than inside Playwright's command keeps the build
+# failure legible: a compile error should read as a compile error, not as
+# "webServer failed to start".
+test-e2e: test-db
 	@ls ~/.cache/ms-playwright/chromium-*/chrome-linux*/chrome >/dev/null 2>&1 || { \
 		echo "error: Playwright's chromium is not installed." >&2; \
 		echo "       install it once: cd frontend && npx playwright install chromium" >&2; \
 		exit 1; \
 	}
-	./scripts/test-stack.sh sh -c 'cd frontend && npx playwright test'
+	@$(MAKE) --no-print-directory test-backend-binary
+	cd frontend && TEST_DATABASE_URL='$(TEST_DATABASE_URL)' \
+		PUBLIC_API_BASE="http://localhost:$${TEST_BACKEND_PORT:-3099}" \
+		npx playwright test
 
 # Recreating the test database. The SQL and the safety checks live in
 # `scripts/test-db.sh`: a heredoc cannot span Make's recipe lines, because Make
