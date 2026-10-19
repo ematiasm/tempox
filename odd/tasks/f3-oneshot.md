@@ -686,3 +686,58 @@ The size is the cost of four review rounds on one variable. The honest lesson is
 of the review: `TEST_DATABASE_URL` versus `DATABASE_URL` is a two-name problem that should
 have been settled by reading `sqlx-postgres`'s source *before* writing the target, not
 after three rounds of reviewers reading it for me.
+
+## F5: Playwright owns the backend (2026-10-19)
+
+L51 (what F5 had to solve, measured before any code): `webServer` can start a process,
+but three facts decide what it can actually give.
+
+1. `webServer` accepts `TestConfigWebServer | TestConfigWebServer[]` — verified in the
+   installed Playwright's `test.d.ts`, not from documentation.
+2. Entries are set up **sequentially**: `for (const task of this._tasks) { await
+   task.setup?.(...) }` in `runner/index.js:6332`. So the backend can be serving before
+   the frontend build runs.
+3. `env` is merged as `{ ...DEFAULT_ENVIRONMENT_VARIABLES, ...process.env, ...
+   this._options.env }` (`runner/index.js:869`), so an entry adds to the environment
+   rather than replacing it.
+
+And the fact that constrains the whole design: **`PUBLIC_API_BASE` is inlined at build
+time.** Proven by building with `PUBLIC_API_BASE=http://probe-1234` and finding that
+literal inside `_app/immutable/chunks/*.js`. Playwright's `webServer.env` reaches only
+the process the entry spawns, never the build, so a `webServer` alone can never tell the
+frontend where the backend is.
+
+L52 (the owner's decision, and the honest scope it sets): option A — the backend becomes
+a `webServer` entry on the fixed `:3099`, and `PUBLIC_API_BASE` keeps coming from the
+target. The fixed port is a deliberate difference from F4: that level owns one process
+per test and can bind `0` because the test reads the bound address; this level owns one
+long-lived backend and one compiled frontend, and the artifact has to be built knowing
+the URL.
+
+So F5 does **not** delete `test-stack.sh` from the e2e path in the sense of removing the
+target's responsibility for the environment. What it changes: Playwright now owns the
+backend's lifetime, its database comes from the repo config instead of a script, and
+`make test-e2e` no longer invokes `test-stack.sh` at all.
+
+L53 (three failures worth recording, each fixed and each explained by the error text):
+
+- `relative URL without a base` — twice, and the message names neither the path nor the
+  directory. First cause: `cwd: '.'`, which Playwright resolves against the config
+  directory. Second cause, and the real one: the Makefile recipe used `$$TEST_DATABASE_URL`,
+  a **shell** variable, for a value defined as a **make** variable two thirds of the file
+  earlier. It expanded to empty, the backend could not start, and Playwright reported it as
+  a URL-parsing error.
+- `307` on the preview. The frontend entry used `url:`, and Playwright treats a redirect as
+  "not ready". `port:` is what that entry needs — the backend entry keeps `url:`, because
+  reaching `/health` there is a real readiness signal rather than mere liveness.
+
+L54 (what proves it works, and what does not): `make test-e2e` passes 16/16 with no `.env`
+and no `test-stack.sh` involved. `docker compose ps` shows only `postgres` and `adminer` —
+no backend container. A negative probe confirms the ownership is real: running the config
+directly with a wrong database password fails with the backend's own error
+(`password authentication failed for user "tempox"`), not with a silent timeout, which is
+what a borrowed process would have produced.
+
+Not proven: that a stale backend on `:3099` is still adopted outside CI
+(`reuseExistingServer` stays on, same as before). That hazard predates F5 and is
+documented rather than fixed.

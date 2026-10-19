@@ -221,6 +221,9 @@ jobs:
           --health-retries 20
     env:
       DATABASE_URL: postgres://tempox:tempox@localhost:5432/tempox
+      # What the backend Playwright starts actually uses, and what the run must
+      # never point at: the development database's ledger is append-only.
+      TEST_DATABASE_URL: postgres://tempox:tempox@localhost:5432/tempox_test
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -254,24 +257,19 @@ jobs:
       - name: Apply migrations
         working-directory: backend
         run: sqlx migrate run --source migrations
+      - name: Create the test database
+        env:
+          PGPASSWORD: tempox
+        run: >-
+          psql -h localhost -U tempox -d postgres
+          -c 'CREATE DATABASE tempox_test'
 
-      # The API has to be running: the tests drive the real screen, and the
-      # screen talks to the real backend.
-      - name: Build and start the backend
+      # The binary Playwright's `webServer` will start. Building it here, and not
+      # inside the Playwright command, keeps a compile error reading as a compile
+      # error rather than as "webServer failed to start".
+      - name: Build the backend binary
         working-directory: backend
-        run: |
-          cargo build --locked --all-features
-          ./target/debug/tempox > /tmp/backend.log 2>&1 &
-          ready=""
-          for _ in $(seq 1 60); do
-            if curl -sf http://localhost:3001/health >/dev/null; then ready=1; break; fi
-            sleep 1
-          done
-          if [ -z "$ready" ]; then
-            echo "::error::backend did not become healthy in 60s"
-            cat /tmp/backend.log
-            exit 1
-          fi
+        run: cargo build --locked --all-features
 
       - uses: actions/setup-node@v7
         with:
@@ -288,17 +286,15 @@ jobs:
         working-directory: frontend
         run: npx playwright install --with-deps chromium
 
-      # `playwright.config.ts` starts the preview server itself on 4173, so no
-      # separate dev-server step is needed here.
+      # `playwright.config.ts` starts BOTH servers: the backend on :3099 and the
+      # preview on 4173, with no separate dev-server step. This step only has to say
+      # where the backend will be, because `vite` inlines `PUBLIC_API_BASE` at build
+      # time and `webServer.env` never reaches the build.
       - name: Run the sale flow
         working-directory: frontend
         env:
-          PUBLIC_API_BASE: http://localhost:3001
+          PUBLIC_API_BASE: http://localhost:3099
         run: npx playwright test
-
-      - name: Backend log
-        if: always()
-        run: cat /tmp/backend.log || true
 
       # v6, not v5: v5 does not move this action off Node 20.
       # `test-results`, not `playwright-report`: this config declares no
