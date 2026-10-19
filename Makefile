@@ -55,18 +55,19 @@ test-unit: test-frontend
 test-frontend:
 	cd frontend && npm run test:unit -- --run
 
-# `--include-ignored` mixes two kinds of test, and only one of them needs a thread
-# limit. The converted domains run on the database `#[sqlx::test]` creates for each
-# test, so they are safe in parallel — that is what F3 bought, measured over ten
-# consecutive runs. The two tests that still drive the live server
-# (`health_endpoint_returns_ok`, `notes_crud_roundtrip`) share the one database
-# `scripts/test-stack.sh` started, so they stay serialized.
+# No external backend, and no `--test-threads=1`.
 #
-# The flag is here for those two, not for the cash total. If they are ever
-# converted, this goes with them.
+# Both went in F4. Every test now owns what it needs: `#[sqlx::test]` creates a
+# database per test, and the ones that need a real socket start `CARGO_BIN_EXE_tempox`
+# themselves on an ephemeral port (see `common::spawn_backend`). Nothing is shared, so
+# nothing has to be serialized, and no separate process has to be started first.
+#
+# This is what the `test-stack.sh` backend used to do, and why `test-stack.sh` is no
+# longer in this path: it exists for the levels that legitimately borrow a process —
+# the e2e suite, which drives the real screen against an external backend.
 test-backend:
-	./scripts/test-stack.sh sh -c 'cd backend && cargo test \
-		--all-features -- --include-ignored --test-threads=1'
+	cd backend && TEST_DATABASE_URL="$${TEST_DATABASE_URL:-$$(grep -m1 '^TEST_DATABASE_URL=' ../.env | cut -d= -f2-)}" \
+		cargo test --all-features -- --include-ignored
 
 # Playwright builds and serves the frontend itself on :4173, and reaches the
 # backend through PUBLIC_API_BASE, which the harness sets. Chromium is a

@@ -26,7 +26,9 @@ chrono-tz = "0.10"
 
 [dev-dependencies]
 reqwest = { version = "0.13", features = ["json", "query"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# `process` is for F4: a test starts `CARGO_BIN_EXE_tempox` and must kill it.
+# `io-util` is what reads the binary's stdout to learn the port it bound.
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "io-util", "time"] }
 # Draining an in-process response body. Already in the lock as a transitive
 # dependency of axum; declaring it is what makes it usable from a test.
 http-body-util = "0.1"

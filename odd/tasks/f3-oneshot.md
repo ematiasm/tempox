@@ -409,3 +409,60 @@ after acknowledgement, so the authority is burned and the tree has moved. The ap
 receipt therefore describes a candidate that is not the one being delivered. A fresh
 review is required, and the previous receipt is recorded here as history rather than
 reused as cover.
+
+## F4: T3, the spawned binary (2026-10-19)
+
+L33 (what F4 had to prove that F3 could not): `oneshot` never binds a socket, never
+runs `serve()`'s middleware, and never runs migrations at boot. Worse, the obvious way
+to write a boot test proves nothing: `#[sqlx::test]` applies migrations to the
+throwaway database by default, so a spawned binary would find the schema already there
+and a passing test would say nothing about boot.
+
+The seam that fixes it is `#[sqlx::test(migrations = false)]`, verified present in
+sqlx 0.9 (`sqlx-macros-core-0.9.0/src/test_attr.rs`). The test's database is **empty**;
+the binary boots, migrates, binds, serves. A `GET /api/notes` returning 200 then
+depends on the migration having run, because `0001_notes.sql` is what creates the table.
+
+L34 (the harness): `common::spawn_backend(&pool) -> SpawnedBackend`.
+
+- `DATABASE_URL` is derived from the test's own pool via `connect_options()`, and then
+  **asserted** against `SELECT current_database()`. Deriving it was not enough to trust:
+  the property F4 buys is "the process and the test are on the same database by
+  construction", and an assertion is what makes that a property rather than a hope.
+- `BACKEND_PORT=0`, so the OS picks the port and the binary logs the one it actually
+  bound. No fixed test port, so no leftover-server collision.
+- Readiness is the log line, not `/health`. Polling health would have made the harness
+  depend on an endpoint to learn that the socket exists, when the binary already says so
+  after `TcpListener::bind` succeeds.
+- `Drop` calls `start_kill()`, plus `kill_on_drop(true)`. A panicking test must not leak
+  a server into the next one.
+
+L35 (RED, verified by the parent rather than taken from the writer's report): commenting
+out `sqlx::migrate!("./migrations").run(&db).await?;` in `main.rs` turns the proof test
+red at exactly the assertion that matters:
+
+```text
+test f4_the_spawned_binary_migrates_an_empty_database_and_serves ... FAILED
+  left: 500
+ right: 200
+```
+
+Restored, `git diff backend/src/` empty. This is the probe that `SQLX_OFFLINE` would not
+have allowed through a `sqlx::query!` string, and it is the one that proves the test
+measures boot rather than the schema a fixture happened to leave behind.
+
+L36 (what F4 retired, each verified rather than assumed): with both remaining tests moved
+to the spawn harness, the whole suite runs with **no external backend** — 47 passed in
+3.18s, invoked directly rather than through `scripts/test-stack.sh`. Measured
+**10 consecutive runs without `--test-threads=1`, all 47 green**. So:
+
+- `make test-backend` no longer starts a backend and no longer passes the flag.
+- `ci.yml` no longer starts a server, no longer runs `--ignored --test-threads=1`, and
+  runs the integration level once.
+- `scripts/test-stack.sh` stays, because the e2e level still legitimately borrows a
+  long-lived backend. It is no longer in the backend test path.
+
+`notes_crud_roundtrip` gained the assertion the old two-process harness could only hope
+for: it reads the created row back through **its own pool**, and reads it gone after the
+delete. Before, "the binary wrote it" and "the test read it" agreed by configuration;
+now they agree because it is the same database by construction.
