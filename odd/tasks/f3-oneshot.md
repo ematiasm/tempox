@@ -99,3 +99,16 @@ pool-only from F2, 3 others), 39 unit, 139 frontend; `fmt` and `clippy -D warnin
 clean, with `delete` explicitly allowed since no `v1` test uses it yet and the later
 domains will. The unconverted HTTP tests still pass through the harness, so the two
 styles coexist as S5 requires.
+
+L9 (review, lineage review-eade4ce806cb395c, approved, authority burned): tier
+**medium**, three lenses, no refuter. Four advisory findings, all non-blocking. One
+was closed anyway:
+
+`R1-query-encoding` — the search helper interpolates a name into
+`/api/products?q={name}` with no encoding. Dormant today, because `unique` produces
+hex, but a name carrying `&` or `+` would silently split the query and the failure
+would name the assertion rather than the URL. `unique` now guarantees the property
+itself, and `common::encode_query` percent-encodes for the general case. The guarantee
+belongs to the helper, not to the caller's knowledge of what `uuid` returns.
+
+The other three are wording in comments and this document.

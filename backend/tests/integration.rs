@@ -692,7 +692,8 @@ async fn v1_read_endpoints_reflect_writes(pool: sqlx::PgPool) {
     let read_product = |name: String| {
         let client = &client;
         async move {
-            let response = client.get(&format!("/api/products?q={name}")).await;
+            let query = common::encode_query(&name);
+            let response = client.get(&format!("/api/products?q={query}")).await;
             response.expect_status(axum::http::StatusCode::OK);
             response
                 .json()

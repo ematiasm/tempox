@@ -151,6 +151,33 @@ pub fn client(pool: sqlx::PgPool) -> Client {
 /// Tests share a process but not a database, so this is about readability in a
 /// failure message more than about collision. It is still run entropy rather than a
 /// counter: two runs must not be distinguishable by nothing.
+///
+/// The result is safe to place in a query string unencoded. It is hex today, but the
+/// guarantee belongs to the function rather than to the caller's knowledge of `uuid`:
+/// a future prefix with `&` or `+` would silently split the query and the failure
+/// would name the assertion, not the URL.
 pub fn unique(prefix: &str) -> String {
-    format!("{prefix}-{}", uuid::Uuid::new_v4().simple())
+    let suffix = uuid::Uuid::new_v4().simple();
+    format!("{prefix}-{suffix}")
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .collect()
+}
+
+/// Percent-encode a value for use in a query string.
+///
+/// Written out rather than added as a dependency: the rules needed here are the
+/// unreserved set from RFC 3986, and a test helper should not pull a URL crate for
+/// six lines.
+pub fn encode_query(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
 }
