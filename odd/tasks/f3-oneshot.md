@@ -112,3 +112,10 @@ itself, and `common::encode_query` percent-encodes for the general case. The gua
 belongs to the helper, not to the caller's knowledge of what `uuid` returns.
 
 The other three are wording in comments and this document.
+
+L10 (state, slice boundary): **563 authored lines in 2 commits**, over the ~400
+guidance. Kept as one PR on purpose, same reasoning as F1: the first commit builds the
+harness and converts four tests, the second fixes what review found in it. Parting them
+would leave a PR with a harness and no consumer, or a fix for a defect that the first
+PR has not introduced yet. The four remaining domains are separate branches by design
+(S4), so the size does not repeat.
