@@ -46,7 +46,11 @@ dev:
 test: test-unit test-backend test-e2e
 
 test-unit: test-frontend
-	cd backend && cargo test --all-features --bins
+	# `--lib` and `--bins` both: the unit tests live in the library now (`src/lib.rs`,
+	# plus `day` and `money`), while `--bins` still covers anything added to the
+	# binary. Running only `--bins` silently reported "0 tests" once the crate grew
+	# a `[lib]` target, which is a green that proves nothing.
+	cd backend && cargo test --all-features --lib --bins
 
 test-frontend:
 	cd frontend && npm run test:unit -- --run
