@@ -5,6 +5,10 @@ import tailwindcss from '@tailwindcss/vite';
 // Vite 8's own `defineConfig` no longer accepts a `test` key (it is not part of its
 // `UserConfigExport`), so the type comes from vitest, whose config type extends Vite's
 // with the `test` block this project uses.
+// `loadEnv` comes from `vite`, not from `vitest/config`: that module re-exports
+// `defineConfig` but not this helper, and importing it from there fails at config-load
+// time with "does not provide an export named 'loadEnv'".
+import { loadEnv } from 'vite';
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig(({ command }) => {
@@ -22,7 +26,21 @@ export default defineConfig(({ command }) => {
   // is, when `command === 'build'` and the variable is set to an empty string by a
   // caller that meant to configure it, or when `REQUIRE_PUBLIC_API_BASE` is set (the
   // e2e build does that, in `playwright.config.ts`).
-  const configured = process.env.PUBLIC_API_BASE;
+  // Read Vite's own resolution, not only `process.env`.
+  //
+  // The first version of this read `process.env.PUBLIC_API_BASE` alone, which silently
+  // discarded a value supplied through a `.env` file — and `envPrefix` below is exactly
+  // what exposes those. Measured: with `.env.local` holding `:4000`, `loadEnv` reports
+  // 4000 while `process.env` reports nothing, so a developer who configured their
+  // backend that way silently got the hardcoded default (dev) or a throwing client
+  // (build). `loadEnv` is Vite's own order of resolution, and `process.env` still wins
+  // over it, which matches how Vite itself behaves.
+  const fromEnv = loadEnv(command === 'serve' ? 'development' : 'production', process.cwd(), [
+    'VITE_',
+    'PUBLIC_'
+  ]).PUBLIC_API_BASE;
+
+  const configured = process.env.PUBLIC_API_BASE ?? fromEnv;
   const mustBeExplicit = process.env.REQUIRE_PUBLIC_API_BASE === '1';
 
   if (command === 'build' && mustBeExplicit && !configured) {
@@ -68,7 +86,7 @@ export default defineConfig(({ command }) => {
     // to close.
     define: {
       'import.meta.env.PUBLIC_API_BASE': JSON.stringify(
-        process.env.PUBLIC_API_BASE ?? (command === 'serve' ? 'http://localhost:3001' : '')
+        configured ?? (command === 'serve' ? 'http://localhost:3001' : '')
       )
     },
     test: {
