@@ -342,6 +342,10 @@ L28 (the flag, measured properly this time): **ten consecutive runs without
 mistake was trusting one green run; this slice's rule is that the number has to survive
 repetition before an instruction is removed from the build.
 
+> **Superseded by L30.** What follows in this entry was acted on and then partly
+> reversed. It is kept because the reasoning is the evidence for L30, not because it
+> describes the delivered tree.
+
 So the flag came out of all three places that carried it:
 
 - `Makefile` — `test-backend` no longer passes it, with a comment saying why.
