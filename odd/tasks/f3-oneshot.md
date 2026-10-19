@@ -119,3 +119,32 @@ harness and converts four tests, the second fixes what review found in it. Parti
 would leave a PR with a harness and no consumer, or a fix for a defect that the first
 PR has not introduced yet. The four remaining domains are separate branches by design
 (S4), so the size does not repeat.
+
+## Slice 2: `v1a` (2026-10-19)
+
+L11 (decision, and it is the one this domain forced): `v1a_sales_list` carried a 2001
+date window **and** a `clear_window` helper that deleted those rows before and after.
+Both existed because the database was shared — the window avoided colliding with other
+tests, and the clear made the absolute counts true. In a per-test database the clear is
+a no-op describing a mechanism that cannot happen. Removed, with the comment rewritten
+to say why the dates stayed: the boundary rule reads better with concrete instants.
+
+The tail assertion also changed shape: it counted rows *inside the 2001 window* on a
+shared ledger, and now counts `SELECT count(*) FROM sales` on a database that holds
+only this test's rows. The second is strictly stronger — an exact total rather than a
+window into someone else's data.
+
+L12 (RED observed, both tests, and the first two probes were blocked by design):
+
+- Breaking `to` from `<` to `<=` in the sales list query is **not possible** without
+  regenerating the sqlx offline cache: `SQLX_OFFLINE=true but there is no cached data
+  for this query`. That is the guard working as intended, not an obstacle to route
+  around — the cache is what lets the crate compile with no database.
+- So both probes moved to plain Rust that feeds the query: adding `+ 1` to the
+  computed `offset` made `v1a_sales_list` fail with *"the day's last sale is missing"*,
+  and clamping `limit` to `2` instead of `MAX_LIST_LIMIT` made the products test fail.
+  Restored, both pass. **A probe should change the input a test controls, not the SQL a
+  macro verifies at compile time.**
+
+L13 (verification): 46 integration + 39 unit + 139 frontend; fmt and clippy clean. The
+four domains still on the harness (`v1_5` 11, `v2` 11, `v2_5` 12) continue to pass.

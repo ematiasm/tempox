@@ -811,14 +811,9 @@ async fn v1_product_without_initial_stock_starts_at_zero(pool: sqlx::PgPool) {
 // days never double-count; absent bounds keep the recent-50 behaviour.
 // The window lives in 2001 so rows other tests created never interfere.
 // Ignored by default: needs the live stack (backend + db).
-#[tokio::test]
-#[ignore]
-async fn v1a_sales_list_is_scoped_by_date_and_offset() {
-    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
-    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
-    let client = reqwest::Client::new();
+#[sqlx::test]
+async fn v1a_sales_list_is_scoped_by_date_and_offset(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
 
     // Three documents around one midnight boundary, plus one at the exact
     // boundary instant. The boundary row is the whole point: it belongs to the
@@ -847,24 +842,12 @@ async fn v1a_sales_list_is_scoped_by_date_and_offset() {
         }
     };
 
-    // This test asserts absolute counts inside its window, so the window has
-    // to start empty: a previous run's probe rows would otherwise be counted as
-    // this run's. Probe sales carry no lines and no movements, so deleting them
-    // touches neither the ledger nor another test's data.
-    let clear_window = || {
-        let pool = pool.clone();
-        async move {
-            sqlx::query(
-                "DELETE FROM sales WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz",
-            )
-            .bind("2001-03-04T00:00:00Z")
-            .bind("2001-03-06T00:00:00Z")
-            .execute(&pool)
-            .await
-            .expect("clear probe window")
-        }
-    };
-    clear_window().await;
+    // The 2001 window used to be a collision-avoidance device: the database was
+    // shared, so this test had to pick dates no other test wrote and clear its
+    // window before and after. `#[sqlx::test]` gives this test its own database,
+    // so the window is now only what it says — four documents placed around one
+    // midnight — and nothing needs clearing. The dates stayed because the
+    // boundary rule is easier to read with concrete instants.
 
     let late_today = insert("2001-03-04T23:30:00Z").await;
     let midnight = insert("2001-03-05T00:00:00Z").await;
@@ -880,16 +863,11 @@ async fn v1a_sales_list_is_scoped_by_date_and_offset() {
     };
 
     let get = |query: String| {
-        let client = client.clone();
-        let base = base.clone();
+        let client = &client;
         async move {
-            let resp = client
-                .get(format!("{base}/api/sales?{query}"))
-                .send()
-                .await
-                .expect("get");
-            assert!(resp.status().is_success(), "list failed: {}", resp.status());
-            resp.json::<serde_json::Value>().await.expect("json")
+            let response = client.get(&format!("/api/sales?{query}")).await;
+            response.expect_status(axum::http::StatusCode::OK);
+            response.json().clone()
         }
     };
 
@@ -993,39 +971,29 @@ async fn v1a_sales_list_is_scoped_by_date_and_offset() {
     assert!(row["items"].is_array(), "items is missing");
     assert_eq!(row["status"], "confirmed");
 
-    // Nothing above may have written: the probe rows are the only ones this
-    // test added, and they are still exactly four.
-    let mine: (i64,) = sqlx::query_as(
-        "SELECT count(*) FROM sales WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz",
-    )
-    .bind("2001-03-04T00:00:00Z")
-    .bind("2001-03-06T00:00:00Z")
-    .fetch_one(&pool)
-    .await
-    .expect("probe count");
+    // Nothing above may have written, and this database holds only this test's
+    // rows, so the count is exact rather than a window into a shared ledger.
+    let mine: (i64,) = sqlx::query_as("SELECT count(*) FROM sales")
+        .fetch_one(&pool)
+        .await
+        .expect("probe count");
     assert_eq!(mine.0, 4, "listing a range must not change stored sales");
-
-    // Leave the window as it was found.
-    clear_window().await;
 }
 
 // v1a (work-unit 2, S3) — GET /api/products is searchable by name and
 // offset-paginated, while stock stays derived and the name ordering holds.
 // Ignored by default: needs the live stack (backend + db).
-#[tokio::test]
-#[ignore]
-async fn v1a_products_list_is_searchable_and_paginated() {
-    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
-    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
-    let client = reqwest::Client::new();
+#[sqlx::test]
+async fn v1a_products_list_is_searchable_and_paginated(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
 
-    // A marker no other row can carry, so the assertions never depend on what
-    // the rest of the suite left in the catalog. Mixed case on purpose: `q` is
-    // a case-insensitive substring match, so a lowercase needle must find it.
-    let suffix = uuid::Uuid::new_v4().simple();
-    let marker = format!("v1a-q-{suffix}");
+    // A marker unique to this run, so a failure message names its own rows. The
+    // database is this test's alone now, so the marker is no longer what keeps
+    // the assertions true; it is what makes a failure readable.
+    //
+    // Mixed case on purpose: `q` is a case-insensitive substring match, so a
+    // lowercase needle must find it.
+    let marker = common::unique("v1a-q");
     let names = [
         format!("{marker}-Alfajor"),
         format!("{marker}-banana"),
@@ -1052,16 +1020,11 @@ async fn v1a_products_list_is_searchable_and_paginated() {
         .expect("insert decoy");
 
     let get = |query: String| {
-        let client = client.clone();
-        let base = base.clone();
+        let client = &client;
         async move {
-            let resp = client
-                .get(format!("{base}/api/products?{query}"))
-                .send()
-                .await
-                .expect("get");
-            assert!(resp.status().is_success(), "list failed: {}", resp.status());
-            resp.json::<serde_json::Value>().await.expect("json")
+            let response = client.get(&format!("/api/products?{query}")).await;
+            response.expect_status(axum::http::StatusCode::OK);
+            response.json().clone()
         }
     };
 
