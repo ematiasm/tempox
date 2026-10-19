@@ -3,6 +3,17 @@ services:
     image: postgres:18-alpine
     restart: unless-stopped
     environment:
+      # These defaults are for a NEW volume. Docker only applies POSTGRES_* when
+      # it initializes `pgdata`, so a volume created by an older checkout keeps
+      # whatever role it was born with, and these values silently do nothing.
+      #
+      # They used to say `skilluv`, from the template this repository started as.
+      # Changing them is not free: an existing volume has no `tempox` role, so the
+      # backend's composed URL would reach a database that does not exist for it.
+      # Upgrading such a checkout means either setting POSTGRES_* in `.env` to the
+      # names the volume already has, or discarding the volume with
+      # `docker compose down -v`. That is stated here because the failure it
+      # produces (`role "tempox" does not exist`) reads like a code defect.
       POSTGRES_USER: ${POSTGRES_USER:-tempox}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tempox}
       POSTGRES_DB: ${POSTGRES_DB:-tempox}
@@ -22,10 +33,7 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
-      # The `tempox` defaults are what a clone with no `.env` gets. They used to
-      # say `skilluv`, from the template this repository started as, so a fresh
-      # checkout silently created a database and a role named after a project
-      # that is not this one.
+      # The `tempox` defaults are what a clone with no `.env` gets.
       DATABASE_URL: postgres://${POSTGRES_USER:-tempox}:${POSTGRES_PASSWORD:-tempox}@postgres:5432/${POSTGRES_DB:-tempox}
       BACKEND_PORT: 3001
       RUST_LOG: ${RUST_LOG:-info}
