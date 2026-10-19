@@ -163,3 +163,38 @@ every value would prove nothing about the fallbacks.
 
 L14 (evidence, after B): 37 unit + 46 integration + 139 frontend + 16 e2e,
 `cargo fmt --check` and `clippy -D warnings` clean.
+
+L15 (review, lineage review-d9439f6ec7be4156, approved, authority burned): F1
+including B passed with three lenses (risk, readability, reliability) and no
+refuter. Five advisory findings, all non-blocking:
+
+| id | where | disposition |
+| --- | --- | --- |
+| `R1-config-debug-credentials` | `lib.rs` `Config` | **fixed in this slice**, see L16 |
+| `R1-cors-wildcard-preserved` | `lib.rs` `build_app` | known production debt, unchanged |
+| `R1-port-silent-fallback` | `lib.rs` `from_source` | deliberate, documented in the doc comment |
+| `R2-001`, `R3-001` | this document | wording, apply below |
+
+L16 (defect found by review, fixed, and it was the *same class* as the shell one):
+`Config` derived `Debug`, and `database_url` carries the password. Measured:
+
+```text
+Config { database_url: "postgres://user:SECRETPASS@host:5432/db", port: 3001, ... }
+```
+
+A single `tracing::debug!("{:?}", config)` in any future handler would have written
+the database password into the logs. `Debug` is now hand-written and reduces the URL
+to everything after the last `@`, so the host and database still appear and the
+credentials never do:
+
+```text
+Config { database_url: "host:5432/db", port: 3001, shop_timezone: UTC }
+```
+
+Two tests pin it: one asserts the password is absent *and* that the host survives,
+the other that a URL with no userinfo is left intact. That second case matters —
+a naive "split on the first `:`" would have mangled `postgres://db.example:5432/shop`.
+
+This is the second time in this work that a credential leak came from a value being
+formatted for a human. The rule that generalises: **anything that holds a secret
+must not derive `Debug`, and the reduction must be tested in both directions.**

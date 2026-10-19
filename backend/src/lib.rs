@@ -36,11 +36,35 @@ pub struct AppState {
 /// in edition 2024 `std::env::set_var` is `unsafe`, and a test that mutates the
 /// process environment races every other test in the binary. Passing a lookup
 /// function is the seam that makes the values testable at all.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Config {
     pub database_url: String,
     pub port: u16,
     pub shop_timezone: chrono_tz::Tz,
+}
+
+/// A hand-written `Debug`, because the derived one prints `database_url`, and a
+/// connection string carries the password. A single `tracing::debug!("{:?}",
+/// config)` would then write it into the logs — the same leak this repository
+/// spent a review round removing from `scripts/test-db.sh`. The URL is reduced to
+/// its scheme, host and database; the credentials are never formatted.
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        /// Everything after the last `@` in the authority, i.e. without
+        /// `user:password`. A string with no `@` is returned unchanged.
+        fn without_credentials(url: &str) -> &str {
+            match url.split_once("@") {
+                Some((_, rest)) => rest,
+                None => url,
+            }
+        }
+
+        f.debug_struct("Config")
+            .field("database_url", &without_credentials(&self.database_url))
+            .field("port", &self.port)
+            .field("shop_timezone", &self.shop_timezone)
+            .finish()
+    }
 }
 
 /// The two values that still fall back, named so the behaviour is stated once
@@ -172,6 +196,42 @@ mod tests {
 
         assert_eq!(config.port, DEFAULT_PORT);
         assert_eq!(config.shop_timezone.to_string(), DEFAULT_SHOP_TIMEZONE);
+    }
+
+    #[test]
+    fn debug_does_not_print_the_credentials() {
+        // A connection string carries the password. The derived `Debug` would print
+        // it, and one `tracing::debug!("{:?}", config)` would put it in the logs.
+        let config = Config {
+            database_url: "postgres://someone:LEAKME@db.example:6543/shop".into(),
+            port: 3001,
+            shop_timezone: "UTC".parse().expect("UTC is a valid zone"),
+        };
+
+        let printed = format!("{config:?}");
+        assert!(
+            !printed.contains("LEAKME"),
+            "Debug must not print the password, got: {printed}"
+        );
+        assert!(
+            printed.contains("db.example:6543/shop"),
+            "Debug should still say which database, got: {printed}"
+        );
+    }
+
+    #[test]
+    fn debug_leaves_a_url_without_credentials_alone() {
+        let config = Config {
+            database_url: "postgres://db.example:5432/shop".into(),
+            port: 3001,
+            shop_timezone: "UTC".parse().expect("UTC is a valid zone"),
+        };
+
+        let printed = format!("{config:?}");
+        assert!(
+            printed.contains("db.example:5432/shop"),
+            "a URL with no userinfo must survive intact, got: {printed}"
+        );
     }
 
     #[test]
