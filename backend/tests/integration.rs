@@ -2437,31 +2437,28 @@ async fn v2_the_ledger_refuses_a_purchase_movement_without_its_document(pool: sq
 
 /// Create a supplier over HTTP and return it. Names are made unique per call so
 /// a second run against the same database does not collide with the first.
-async fn v2_create_supplier(client: &reqwest::Client, base: &str, name: &str) -> serde_json::Value {
-    client
-        .post(format!("{base}/api/suppliers"))
-        .json(&serde_json::json!({ "name": name }))
-        .send()
-        .await
-        .expect("post supplier")
-        .error_for_status()
-        .expect("2xx")
-        .json()
-        .await
-        .expect("supplier json")
+async fn v2_create_supplier(client: &common::Client, name: &str) -> serde_json::Value {
+    let response = client
+        .post("/api/suppliers", serde_json::json!({ "name": name }))
+        .await;
+    assert!(
+        response.status().is_success(),
+        "posting a supplier must succeed, got {}: {}",
+        response.status(),
+        response.text
+    );
+    response.json().clone()
 }
 
-#[tokio::test]
-#[ignore]
-async fn v2_suppliers_list_and_create() {
-    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
-    let client = reqwest::Client::new();
+#[sqlx::test]
+async fn v2_suppliers_list_and_create(pool: sqlx::PgPool) {
+    let client = common::client(pool);
 
-    // A unique name, because the development database keeps what a previous run
-    // created and the unique constraint would answer 409 to a repeat.
-    let stamp = uuid::Uuid::new_v4();
-    let name = format!("v2-supplier-{stamp}");
-    let created = v2_create_supplier(&client, &base, &name).await;
+    // A name unique to this run, so a failure message names its own row. The
+    // database is this test's own now, so the uniqueness is for readability
+    // rather than to dodge the constraint.
+    let name = common::unique("v2-supplier");
+    let created = v2_create_supplier(&client, &name).await;
     assert_eq!(
         created["name"], name,
         "the server echoes the name it stored"
@@ -2471,16 +2468,9 @@ async fn v2_suppliers_list_and_create() {
     // It appears in the list, and the seeded one-off supplier is there too —
     // both are what a caller relies on: the picker needs the seed in the list,
     // and a created supplier must be visible without a second endpoint.
-    let list: serde_json::Value = client
-        .get(format!("{base}/api/suppliers"))
-        .send()
-        .await
-        .expect("get suppliers")
-        .error_for_status()
-        .expect("2xx")
-        .json()
-        .await
-        .expect("suppliers json");
+    let list_resp = client.get("/api/suppliers").await;
+    list_resp.expect_status(axum::http::StatusCode::OK);
+    let list = list_resp.json().clone();
     let names: Vec<&str> = list
         .as_array()
         .expect("array")
@@ -2511,11 +2501,8 @@ async fn v2_suppliers_list_and_create() {
 
     // Duplicate name -> 409, not 500 and not a silent second row.
     let duplicate = client
-        .post(format!("{base}/api/suppliers"))
-        .json(&serde_json::json!({ "name": name }))
-        .send()
-        .await
-        .expect("post duplicate");
+        .post("/api/suppliers", serde_json::json!({ "name": name }))
+        .await;
     assert_eq!(
         duplicate.status(),
         409,
@@ -2525,11 +2512,8 @@ async fn v2_suppliers_list_and_create() {
     // A blank name is a client error, not a row: whitespace only is empty.
     for blank in ["", "   ", "\t\n"] {
         let resp = client
-            .post(format!("{base}/api/suppliers"))
-            .json(&serde_json::json!({ "name": blank }))
-            .send()
-            .await
-            .expect("post blank supplier");
+            .post("/api/suppliers", serde_json::json!({ "name": blank }))
+            .await;
         assert_eq!(
             resp.status(),
             400,
@@ -2558,14 +2542,9 @@ async fn v2_stock(pool: &sqlx::PgPool, product_id: uuid::Uuid) -> i64 {
     .expect("derived stock")
 }
 
-#[tokio::test]
-#[ignore]
-async fn v2_a_purchase_raises_stock_and_returns_its_lines() {
-    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
-    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
-    let client = reqwest::Client::new();
+#[sqlx::test]
+async fn v2_a_purchase_raises_stock_and_returns_its_lines(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
 
     // Its own product: a shared one would make the before/after meaningless as
     // soon as another test ran concurrently in CI.
@@ -2585,18 +2564,18 @@ async fn v2_a_purchase_raises_stock_and_returns_its_lines() {
     // product's list price (S7); the second line overrides it, because a
     // purchase price that differs from the catalogue is the normal case.
     let resp = client
-        .post(format!("{base}/api/purchases"))
-        .json(&serde_json::json!({
-            "items": [
-                { "product_id": product.0, "quantity": 4 },
-                { "product_id": product.0, "quantity": 2, "unit_price": "10.00" }
-            ]
-        }))
-        .send()
-        .await
-        .expect("post purchase");
+        .post(
+            "/api/purchases",
+            serde_json::json!({
+                "items": [
+                    { "product_id": product.0, "quantity": 4 },
+                    { "product_id": product.0, "quantity": 2, "unit_price": "10.00" }
+                ]
+            }),
+        )
+        .await;
     assert_eq!(resp.status(), 201, "a valid purchase is created");
-    let body: serde_json::Value = resp.json().await.expect("purchase json");
+    let body = resp.json().clone();
 
     // The header carries the seeded supplier and the summed total: 4 * 12.50 +
     // 2 * 10.00 = 70.00.
@@ -2646,14 +2625,9 @@ async fn v2_a_purchase_raises_stock_and_returns_its_lines() {
     assert_eq!(movements.1, 6, "the movements sum to what arrived");
 }
 
-#[tokio::test]
-#[ignore]
-async fn v2_a_rejected_purchase_writes_nothing() {
-    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
-    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
-    let client = reqwest::Client::new();
+#[sqlx::test]
+async fn v2_a_rejected_purchase_writes_nothing(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
 
     let stamp = uuid::Uuid::new_v4();
     let product: (uuid::Uuid,) =
@@ -2733,12 +2707,7 @@ async fn v2_a_rejected_purchase_writes_nothing() {
     ];
 
     for (label, payload, expected) in cases {
-        let resp = client
-            .post(format!("{base}/api/purchases"))
-            .json(&payload)
-            .send()
-            .await
-            .expect("post purchase");
+        let resp = client.post("/api/purchases", payload).await;
         assert_eq!(resp.status(), expected, "{label} owes {expected}");
     }
 
@@ -2756,14 +2725,9 @@ async fn v2_a_rejected_purchase_writes_nothing() {
 // The contract is shared with sales on purpose — a day filter that means one
 // thing on one screen and another on the next is a bug that reads as a UI fault.
 
-#[tokio::test]
-#[ignore]
-async fn v2_purchases_list_carries_its_lines_and_is_scoped_by_day() {
-    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
-    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
-    let client = reqwest::Client::new();
+#[sqlx::test]
+async fn v2_purchases_list_carries_its_lines_and_is_scoped_by_day(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
 
     let stamp = uuid::Uuid::new_v4();
     let product: (uuid::Uuid,) =
@@ -2774,15 +2738,15 @@ async fn v2_purchases_list_carries_its_lines_and_is_scoped_by_day() {
             .expect("insert product");
 
     let resp = client
-        .post(format!("{base}/api/purchases"))
-        .json(&serde_json::json!({
-            "items": [{ "product_id": product.0, "quantity": 2, "unit_price": "3.00" }]
-        }))
-        .send()
-        .await
-        .expect("post purchase");
+        .post(
+            "/api/purchases",
+            serde_json::json!({
+                "items": [{ "product_id": product.0, "quantity": 2, "unit_price": "3.00" }]
+            }),
+        )
+        .await;
     assert_eq!(resp.status(), 201, "a valid purchase is created");
-    let created: serde_json::Value = resp.json().await.expect("json");
+    let created = resp.json().clone();
     let id = created["purchase"]["id"].as_str().expect("id").to_string();
 
     // Its own recorded instant is the boundary. Measuring the contract against
@@ -2794,18 +2758,16 @@ async fn v2_purchases_list_carries_its_lines_and_is_scoped_by_day() {
         .as_str()
         .expect("created_at");
 
-    async fn listed(client: &reqwest::Client, base: &str, from: &str, to: &str) -> Vec<String> {
-        client
-            .get(format!("{base}/api/purchases"))
-            .query(&[("from", from), ("to", to), ("limit", "200")])
-            .send()
-            .await
-            .expect("get purchases")
-            .error_for_status()
-            .expect("2xx")
-            .json::<serde_json::Value>()
-            .await
-            .expect("json")
+    async fn listed(client: &common::Client, from: &str, to: &str) -> Vec<String> {
+        let query = format!(
+            "from={}&to={}&limit=200",
+            common::encode_query(from),
+            common::encode_query(to)
+        );
+        let response = client.get(&format!("/api/purchases?{query}")).await;
+        response.expect_status(axum::http::StatusCode::OK);
+        response
+            .json()
             .as_array()
             .expect("array")
             .iter()
@@ -2818,9 +2780,7 @@ async fn v2_purchases_list_carries_its_lines_and_is_scoped_by_day() {
     // midnight from both neighbouring days.
     let after_boundary = "9999-01-01T00:00:00Z";
     assert!(
-        listed(&client, &base, at, after_boundary)
-            .await
-            .contains(&id),
+        listed(&client, at, after_boundary).await.contains(&id),
         "`from` is inclusive: a window starting at the document's instant contains it"
     );
 
@@ -2829,23 +2789,20 @@ async fn v2_purchases_list_carries_its_lines_and_is_scoped_by_day() {
     // partition the ledger instead of double-counting.
     let before_boundary = "1970-01-01T00:00:00Z";
     assert!(
-        !listed(&client, &base, before_boundary, at)
-            .await
-            .contains(&id),
+        !listed(&client, before_boundary, at).await.contains(&id),
         "`to` is exclusive: a window ending at the document's instant excludes it"
     );
 
     // And the document travels with its lines, so a ledger row can be expanded
     // without a second request per document.
-    let body = client
-        .get(format!("{base}/api/purchases"))
-        .query(&[("from", at), ("to", after_boundary), ("limit", "200")])
-        .send()
-        .await
-        .expect("get purchases")
-        .json::<serde_json::Value>()
-        .await
-        .expect("json");
+    let query = format!(
+        "from={}&to={}&limit=200",
+        common::encode_query(at),
+        common::encode_query(after_boundary)
+    );
+    let body_resp = client.get(&format!("/api/purchases?{query}")).await;
+    body_resp.expect_status(axum::http::StatusCode::OK);
+    let body = body_resp.json().clone();
     let mine = body
         .as_array()
         .expect("array")
@@ -2859,15 +2816,14 @@ async fn v2_purchases_list_carries_its_lines_and_is_scoped_by_day() {
     assert_eq!(items[0]["line_total"], "6.00");
 
     // Paging is a page size, not a filter: a limit of one returns one document.
-    let one = client
-        .get(format!("{base}/api/purchases"))
-        .query(&[("from", at), ("to", after_boundary), ("limit", "1")])
-        .send()
-        .await
-        .expect("get purchases limit 1")
-        .json::<serde_json::Value>()
-        .await
-        .expect("json");
+    let one_query = format!(
+        "from={}&to={}&limit=1",
+        common::encode_query(at),
+        common::encode_query(after_boundary)
+    );
+    let one_resp = client.get(&format!("/api/purchases?{one_query}")).await;
+    one_resp.expect_status(axum::http::StatusCode::OK);
+    let one = one_resp.json().clone();
     assert_eq!(
         one.as_array().expect("array").len(),
         1,
@@ -2877,12 +2833,7 @@ async fn v2_purchases_list_carries_its_lines_and_is_scoped_by_day() {
     // A negative offset is a client mistake, not a server error. Postgres refuses
     // a negative OFFSET, and turning that into a 500 blames the server for a bad
     // query — the same clamp the sales ledger applies.
-    let negative = client
-        .get(format!("{base}/api/purchases"))
-        .query(&[("offset", "-5")])
-        .send()
-        .await
-        .expect("get purchases negative offset");
+    let negative = client.get("/api/purchases?offset=-5").await;
     assert_eq!(
         negative.status(),
         200,
@@ -2900,14 +2851,9 @@ async fn v2_purchases_list_carries_its_lines_and_is_scoped_by_day() {
 // and a purchase must move it by exactly its own. Without it, a subtraction
 // added in the wrong direction would look green in the new test alone.
 
-#[tokio::test]
-#[ignore]
-async fn v2_cash_nets_purchases_and_still_counts_sales() {
-    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
-    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
-    let client = reqwest::Client::new();
+#[sqlx::test]
+async fn v2_cash_nets_purchases_and_still_counts_sales(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
 
     let stamp = uuid::Uuid::new_v4();
     let product: (uuid::Uuid,) =
@@ -2917,17 +2863,10 @@ async fn v2_cash_nets_purchases_and_still_counts_sales() {
             .await
             .expect("insert product");
 
-    async fn cash(client: &reqwest::Client, base: &str) -> String {
-        client
-            .get(format!("{base}/api/cash"))
-            .send()
-            .await
-            .expect("get cash")
-            .error_for_status()
-            .expect("2xx")
-            .json::<serde_json::Value>()
-            .await
-            .expect("json")["total"]
+    async fn cash(client: &common::Client) -> String {
+        let response = client.get("/api/cash").await;
+        response.expect_status(axum::http::StatusCode::OK);
+        response.json()["total"]
             .as_str()
             .expect("cash total is a decimal string")
             .to_string()
@@ -2943,20 +2882,20 @@ async fn v2_cash_nets_purchases_and_still_counts_sales() {
         sign * (whole.parse::<i64>().expect("whole") * 100 + frac.parse::<i64>().expect("fraction"))
     }
 
-    let before = cents(&cash(&client, &base).await);
+    let before = cents(&cash(&client).await);
 
     // A purchase of 4 * 100.00 = 400.00 must take exactly 400.00 out.
     let resp = client
-        .post(format!("{base}/api/purchases"))
-        .json(&serde_json::json!({
-            "items": [{ "product_id": product.0, "quantity": 4, "unit_price": "100.00" }]
-        }))
-        .send()
-        .await
-        .expect("post purchase");
+        .post(
+            "/api/purchases",
+            serde_json::json!({
+                "items": [{ "product_id": product.0, "quantity": 4, "unit_price": "100.00" }]
+            }),
+        )
+        .await;
     assert_eq!(resp.status(), 201);
 
-    let after_purchase = cents(&cash(&client, &base).await);
+    let after_purchase = cents(&cash(&client).await);
     assert_eq!(
         before - after_purchase,
         40_000,
@@ -2967,16 +2906,16 @@ async fn v2_cash_nets_purchases_and_still_counts_sales() {
     // This is the regression the changed query could have introduced: a sign
     // error would still produce a plausible number.
     let resp = client
-        .post(format!("{base}/api/sales"))
-        .json(&serde_json::json!({
-            "items": [{ "product_id": product.0, "quantity": 2, "unit_price": "25.00" }]
-        }))
-        .send()
-        .await
-        .expect("post sale");
+        .post(
+            "/api/sales",
+            serde_json::json!({
+                "items": [{ "product_id": product.0, "quantity": 2, "unit_price": "25.00" }]
+            }),
+        )
+        .await;
     assert_eq!(resp.status(), 201);
 
-    let after_sale = cents(&cash(&client, &base).await);
+    let after_sale = cents(&cash(&client).await);
     assert_eq!(
         after_sale - after_purchase,
         5_000,
@@ -2985,7 +2924,7 @@ async fn v2_cash_nets_purchases_and_still_counts_sales() {
 
     // The shape is unchanged: one decimal string with two places, which is what
     // every consumer already reads.
-    let raw = cash(&client, &base).await;
+    let raw = cash(&client).await;
     assert!(
         raw.split('.').nth(1).map(|f| f.len()) == Some(2),
         "cash is still a two-decimal string, got {raw:?}"
