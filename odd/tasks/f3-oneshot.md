@@ -466,3 +466,56 @@ to the spawn harness, the whole suite runs with **no external backend** — 47 p
 for: it reads the created row back through **its own pool**, and reads it gone after the
 delete. Before, "the binary wrote it" and "the test read it" agreed by configuration;
 now they agree because it is the same database by construction.
+
+## R3-001: the review found a real defect, and it was mine (2026-10-19)
+
+L37 (what the review said, CRITICAL, reliability lens, `Makefile:70-71`):
+
+> `make test-backend` no longer invokes the stack-starting script and it exports only
+> `TEST_DATABASE_URL`. The `#[sqlx::test]` tests need a reachable Postgres and the SQLx
+> test macro reads `DATABASE_URL`, so the target now fails on a clean checkout.
+
+The authority escalated it as `unknown_causality` because the reviewer ranked it
+CRITICAL but could not verify the location. It was right, and the severity was right.
+
+L38 (what I found, by reproducing rather than reasoning): `sqlx-postgres-0.9.0/src/testing/mod.rs:42`
+is `dotenvy::var("DATABASE_URL").expect("DATABASE_URL must be set")`. So `#[sqlx::test]`
+reads `DATABASE_URL` and falls back to `dotenvy`, which walks up from the cwd and finds
+the repository `.env` — where `DATABASE_URL` names the **development** database.
+
+That means F4's `make test-backend` passed on my machine for the wrong reason. It had
+never exported the variable the macro reads; it inherited one from `.env`, pointing at
+`tempox`. Reproduced on a clean tree (`git archive HEAD` into `/tmp`, no `.env`):
+
+```text
+test result: FAILED. 3 passed; 44 failed
+thread '...' panicked at sqlx-postgres-0.9.0/src/testing/mod.rs:93:44:
+DATABASE_URL must be set: EnvVar(NotPresent)
+```
+
+Forty-four failures whose message names none of this. On the author's machine, a green
+suite with a wrong database underneath.
+
+L39 (the fix, in three parts, each verified):
+
+1. `make test-backend` now sets **both** `TEST_DATABASE_URL` and `DATABASE_URL`, from the
+   same value. Naming the test database twice is deliberate: the second is what the macro
+   actually reads.
+2. When neither the environment nor `.env` provides it, the target **stops with an
+   actionable message** instead of exporting an empty string. That second failure mode was
+   worse than the first — an empty `DATABASE_URL` panics inside sqlx at
+   `PgConnectOptions::from_str(...).expect(...)`, which reads like a broken database rather
+   than a missing setting.
+3. `ci.yml` no longer hands the integration step the development `DATABASE_URL`. The job
+   keeps a development-shaped URL for `sqlx migrate run` and `sqlx prepare --check`, which
+   genuinely need a schema, and the test step overrides `DATABASE_URL` with
+   `TEST_DATABASE_URL` for itself only.
+
+Verified: `make test-backend` green with `.env` present (47); on a clean tree with no
+`.env` it now stops with the message rather than 44 failures; and with
+`TEST_DATABASE_URL` passed explicitly on that same clean tree, **47 passed**.
+
+L40 (what this says about the F4 claim): the "no external backend" result was true, but it
+was resting on an unexamined environment variable. The review caught the dependency, not
+the test suite — no test could have caught it, because every test passed in the environment
+that hid the defect. That is item 6 on the risk list in its exact form.

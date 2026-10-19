@@ -65,8 +65,22 @@ test-frontend:
 # This is what the `test-stack.sh` backend used to do, and why `test-stack.sh` is no
 # longer in this path: it exists for the levels that legitimately borrow a process —
 # the e2e suite, which drives the real screen against an external backend.
+#
+# `DATABASE_URL` is what `#[sqlx::test]` reads — `sqlx-postgres` calls
+# `dotenvy::var("DATABASE_URL")` — not `TEST_DATABASE_URL`. Exporting only the
+# latter meant the suite silently took `DATABASE_URL` from `.env`, which names the
+# DEVELOPMENT database, and on a clean checkout with no `.env` it failed outright
+# with "DATABASE_URL must be set". Both are mapped here, from `TEST_DATABASE_URL`,
+# so the database under test is the test one whether or not a `.env` exists.
 test-backend:
-	cd backend && TEST_DATABASE_URL="$${TEST_DATABASE_URL:-$$(grep -m1 '^TEST_DATABASE_URL=' ../.env | cut -d= -f2-)}" \
+	@url="$${TEST_DATABASE_URL:-$$(sed -n 's/^TEST_DATABASE_URL=//p' .env 2>/dev/null | tail -1)}"; \
+	if [ -z "$$url" ]; then \
+		echo "error: TEST_DATABASE_URL is not set and .env has no TEST_DATABASE_URL." >&2; \
+		echo "       Copy .env.example to .env, or pass it directly:" >&2; \
+		echo "       make test-backend TEST_DATABASE_URL=postgres://tempox:tempox@localhost:5432/tempox_test" >&2; \
+		exit 1; \
+	fi; \
+	cd backend && TEST_DATABASE_URL="$$url" DATABASE_URL="$$url" \
 		cargo test --all-features -- --include-ignored
 
 # Playwright builds and serves the frontend itself on :4173, and reaches the

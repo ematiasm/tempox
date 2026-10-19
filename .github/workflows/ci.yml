@@ -31,8 +31,14 @@ jobs:
           --health-timeout 5s
           --health-retries 20
     env:
+      # The job's own schema database: `sqlx migrate run` and `cargo sqlx prepare
+      # --check` need one, and the compiled query cache is checked against it.
       DATABASE_URL: postgres://tempox:tempox@localhost:5432/tempox
-      # Surfaced to the integration tests, which spawn nothing of their own.
+      # What the TESTS use. `#[sqlx::test]` creates and drops a database per test
+      # from this URL (`sqlx-postgres` reads `DATABASE_URL`, so the integration step
+      # overrides it below with this value). Keeping the two names distinct is what
+      # stops a test from ever writing to the development database.
+      TEST_DATABASE_URL: postgres://tempox:tempox@localhost:5432/tempox_test
       RUST_LOG: info
     steps:
       - uses: actions/checkout@v7
@@ -106,6 +112,11 @@ jobs:
       # `CARGO_BIN_EXE_tempox` themselves on an ephemeral port — the step above
       # already built it. Nothing is shared, so nothing has to be serialized.
       - name: Integration tests
+        # `DATABASE_URL` is set to the TEST database for this step only. It is what
+        # `#[sqlx::test]` reads, and inheriting the job's development URL would
+        # create the per-test databases through it.
+        env:
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
         run: cargo test --locked --all-features --test integration -- --include-ignored
 
   frontend:
