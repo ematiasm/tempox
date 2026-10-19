@@ -198,3 +198,28 @@ a naive "split on the first `:`" would have mangled `postgres://db.example:5432/
 This is the second time in this work that a credential leak came from a value being
 formatted for a human. The rule that generalises: **anything that holds a secret
 must not derive `Debug`, and the reduction must be tested in both directions.**
+
+L17 (review, lineage review-3429a5c42b418772, approved, authority burned): the
+`Debug` fix passed with two lenses (risk, readability), no refuter. Four advisory
+findings, all non-blocking:
+
+| id | where | disposition |
+| --- | --- | --- |
+| `R1-001` | `lib.rs` port fallback | deliberate, documented |
+| `R1-002` | `lib.rs` credential reduction | a URL with several `@` reduces at the first one; no such URL exists in practice |
+| `R2-001` | `lib.rs` `impl Debug` | wording |
+| `R2-002` | this document | wording |
+
+L18 (state, slice boundary): the branch carries **4 commits and 583 authored
+lines**, past the ~400-line guidance. The feature is one story — a seam plus the two
+decisions it made possible — so the delivery strategy is **two chained PRs, without
+rewriting history**:
+
+- **PR 1** — `e155538` only (the seam, its tests, and the `make test-unit` fix).
+  A refactor with no behaviour change, verifiable by the suite.
+- **PR 2** — `ef89e97..8f13cea` on top of PR 1 (B, the docs, and the `Debug` leak).
+  This is where behaviour changes and where the credential handling lives, which is
+  what deserves a reviewer's attention.
+
+No commit was squashed and no history was rewritten; the split is a delivery
+decision, not a change to the work.
