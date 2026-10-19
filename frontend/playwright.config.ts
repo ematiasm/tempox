@@ -50,7 +50,20 @@ export default defineConfig({
         BACKEND_PORT,
         RUST_LOG: 'warn'
       },
-      reuseExistingServer: !process.env.CI,
+      // NEVER reuse, in CI or outside it — the opposite of the entry below, on
+      // purpose.
+      //
+      // `reuseExistingServer: true` adopts whatever already answers on :3099: a
+      // backend from an earlier run, from a different branch, or bound to another
+      // database. The suite would then pass against code this candidate does not
+      // contain. `scripts/test-stack.sh`, which F5 replaced, refused to start on an
+      // occupied port for exactly this reason; dropping that guard would have been a
+      // regression wearing the word "simplification".
+      //
+      // An occupied :3099 therefore fails hard, with Playwright's own message naming
+      // the URL. The preview below may still be reused: it is a static build with no
+      // state, and a stale one can only fail loudly, never pass falsely.
+      reuseExistingServer: false,
       stdout: 'pipe',
       stderr: 'pipe'
     },

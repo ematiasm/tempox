@@ -196,9 +196,15 @@ suite as well.
   rules out discovering it.
 
   Playwright therefore starts the backend on the fixed `:3099` and owns its lifetime,
-  replacing the external `scripts/test-stack.sh` backend. `reuseExistingServer` is on
-  outside CI, so a stale backend on `:3099` can still be adopted — stop it if the
-  result looks wrong.
+  replacing the external `scripts/test-stack.sh` backend.
+
+  That backend entry sets `reuseExistingServer: false` in every environment, which is
+  the opposite of the preview entry and deliberate. Reusing a server on `:3099` would
+  adopt a backend from an earlier run, a different branch, or another database, and the
+  suite would pass against code the candidate does not contain. `test-stack.sh` refused
+  to start on an occupied port for that reason, and F5 keeps the refusal rather than
+  trading it for convenience. An occupied `:3099` therefore fails the run, naming the
+  URL.
 - **A leftover preview on `:4173`.** `reuseExistingServer` is on outside CI, so a
   stale preview is reused. Stop it before trusting an e2e result.
 - **Running a suite directly.** `npx playwright test` on its own reaches
