@@ -237,3 +237,19 @@ as here.
 
 L19 (verification): 46 integration (8 converted here, 3 day tests and 20 others still
 on the harness), 39 unit, 139 frontend; fmt and clippy clean.
+
+L20 (the day tests, and the second data point on parallelism): the three shop-day tests
+need no pool, but they go through the same harness, so they were converted with it.
+After them all **11** `v1_5` tests are in-process.
+
+Re-measuring parallelism is what makes L17 a finding rather than an anecdote:
+
+| state | fails without `--test-threads=1` |
+| --- | --- |
+| before `v1_5` | `v2_5_a_rejected_return_writes_nothing`, `v2_cash_nets_purchases_and_still_counts_sales` |
+| after `v1_5` | `v2_cash_nets_purchases_and_still_counts_sales`, `v2_a_rejected_purchase_writes_nothing` |
+
+Two failures both times, but different ones: converting `v1_5` removed the `v2_5`
+failure. The remaining pair is entirely `v2`. That is the ordinal dependency L17
+describes, measured twice instead of once — and it predicts that converting `v2`
+removes the flag's last justification, which is a claim the next slice can falsify.
