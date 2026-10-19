@@ -618,3 +618,32 @@ L47 (verified across the three states, not just the one that prompted the fix):
 The middle row is the finding. The third is the guard worth keeping: refusing a non-test
 database is the one failure that must stop the run, because the development ledger is
 append-only and tests must never reach it.
+
+## L48: sequencing error that cost a lineage (2026-10-19)
+
+After the refuter raised R3-001 (the guard blocked a fresh checkout), I fixed it and
+committed — **before** declaring the correction plan the provider was asking for.
+
+The protocol is plan, then correction, then validation. Doing the correction first meant
+the authority stayed frozen on the pre-fix target (`6d64b719`) while the tree moved to
+`490442bf`. Two attempts to declare the plan afterward, both with the byte-exact binding
+copied from a fresh STATUS, were rejected as `collectBinding is missing or stale`. The
+status even reported both identities at once — `target_identity` for the tree in front of
+it, `authority_target_identity` for what the authority had frozen — and I read that
+mismatch as a transport problem for two round trips before seeing it as the symptom it
+was.
+
+Reverting the working tree did not help, and the reason is worth keeping: the projection
+is `committed-only`, so what the authority compares against is the commit, not the
+working tree. There was no working-tree state that could have satisfied it.
+
+The cost was one review lineage (`review-d87e50f43a344cc4`) left in
+`correction_required` with an `expected_revision` that no longer exists, plus three
+lost capture attempts. The owner chose to start a fresh lineage over the corrected tree
+rather than rewrite the branch history.
+
+The rule, stated plainly because I will need it again: **when an authority hands you a
+plan request, declare the plan before editing anything.** The provider is not asking to
+be informed afterwards; it is asking to bound the correction so it can validate exactly
+that. A correction applied outside a declared plan is invisible to the validation it was
+supposed to receive, even when the correction itself is right — as this one was.
