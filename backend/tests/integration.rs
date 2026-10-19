@@ -69,7 +69,7 @@ async fn notes_crud_roundtrip() {
 }
 
 // v1 schema (work-unit 1): the migration creates the five tables and seeds the
-// walk-in customer. Ignored by default: needs a live database.
+// walk-in customer.
 #[sqlx::test]
 async fn v1_schema_seeds_walkin_customers(pool: sqlx::PgPool) {
     let (db,): (String,) = sqlx::query_as("SELECT current_database()")
@@ -118,7 +118,7 @@ async fn v1_schema_seeds_walkin_customers(pool: sqlx::PgPool) {
 // trigger because the unit no longer qualifies a price, so the assertions below
 // are inverted on purpose: a product WITH history may now change its unit, and
 // what remains guarded is the line/economics immutability.
-// Ignored by default: needs a live database.
+//
 #[sqlx::test]
 async fn v1_units_and_history_guards(pool: sqlx::PgPool) {
     let has_unit: (i64,) = sqlx::query_as(
@@ -292,7 +292,7 @@ async fn v1_units_and_history_guards(pool: sqlx::PgPool) {
 // v1 (P1) — the stock ledger is append-only and reason-coherent.
 // plan-v1.md: "Stock is never a mutable `quantity` field ... every change is an
 // append-only row", plus decision 15: the database enforces the history guards.
-// Ignored by default: needs a live database.
+//
 #[sqlx::test]
 async fn v1_ledger_is_append_only_and_reason_coherent(pool: sqlx::PgPool) {
     let mut tx = pool.begin().await.expect("begin");
@@ -391,7 +391,7 @@ async fn v1_ledger_is_append_only_and_reason_coherent(pool: sqlx::PgPool) {
 // The money arithmetic and the database constraints have to agree: if the
 // handler accepts a zero line but the schema still says `> 0`, the insert
 // fails and the caller gets a 500 instead of a created sale.
-// Ignored by default: needs the live stack.
+//
 #[sqlx::test]
 async fn v1_sale_of_bonus_lines_is_recorded(pool: sqlx::PgPool) {
     let client = common::client(pool.clone());
@@ -469,7 +469,7 @@ async fn v1_sale_of_bonus_lines_is_recorded(pool: sqlx::PgPool) {
 
 // v1 writes (work-unit 3): a multi-item sale lands in one transaction with its
 // stock movements. Unique product names keep repeated runs collision-free.
-// Ignored by default: needs the live stack (backend + db).
+//
 #[sqlx::test]
 async fn v1_create_sale_drops_stock_in_one_transaction(pool: sqlx::PgPool) {
     let client = common::client(pool.clone());
@@ -809,8 +809,9 @@ async fn v1_product_without_initial_stock_starts_at_zero(pool: sqlx::PgPool) {
 // v1a (work-unit 1, S2) — GET /api/sales is scoped by an explicit date range
 // and offset-paginated. `from` is inclusive and `to` is exclusive, so adjacent
 // days never double-count; absent bounds keep the recent-50 behaviour.
-// The window lives in 2001 so rows other tests created never interfere.
-// Ignored by default: needs the live stack (backend + db).
+// The instants sit in 2001 because a boundary rule reads better with concrete
+// dates than with "now", not because other tests could interfere: this test has
+// its own database.
 #[sqlx::test]
 async fn v1a_sales_list_is_scoped_by_date_and_offset(pool: sqlx::PgPool) {
     let client = common::client(pool.clone());
@@ -982,7 +983,6 @@ async fn v1a_sales_list_is_scoped_by_date_and_offset(pool: sqlx::PgPool) {
 
 // v1a (work-unit 2, S3) — GET /api/products is searchable by name and
 // offset-paginated, while stock stays derived and the name ordering holds.
-// Ignored by default: needs the live stack (backend + db).
 #[sqlx::test]
 async fn v1a_products_list_is_searchable_and_paginated(pool: sqlx::PgPool) {
     let client = common::client(pool.clone());

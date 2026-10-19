@@ -148,3 +148,35 @@ L12 (RED observed, both tests, and the first two probes were blocked by design):
 
 L13 (verification): 46 integration + 39 unit + 139 frontend; fmt and clippy clean. The
 four domains still on the harness (`v1_5` 11, `v2` 11, `v2_5` 12) continue to pass.
+
+L14 (review, lineage review-be90709ec288bdc4, approved, authority burned): tier
+medium, two lenses (readability, reliability), no refuter. Four advisory findings, all
+non-blocking — and two of them were more serious than their label, so they were fixed:
+
+`R2-stale-ignore-sales` and `R2-stale-ignore-products` pointed at `// Ignored by
+default: needs the live stack (backend + db)` still sitting above `#[sqlx::test]`
+tests. Both were introduced by my own conversion in this slice: the attribute changed
+and the sentence next to it did not. Checking the whole file found **five** such stale
+clauses, not two — the three from the earlier `v1` slice had the same problem and the
+previous review missed them.
+
+A comment that describes a mechanism which no longer exists is worse than no comment:
+it tells the next reader that a test needs a stack it does not need. The rule that
+generalises: **when a test's attribute changes, the sentence above it is part of the
+change.**
+
+The `R2-verification-domain-count` finding was also right: this document said the
+remaining domains were `v1_5` 11, `v2` 11, `v2_5` 12, summing to 34, when the measured
+HTTP total after `v1` and `v1a` is 23. The earlier per-domain counts came from the
+prefix heuristic that L4 already flagged as overcounting; they are restated here as
+measured:
+
+| domain | converted | still on the harness |
+| --- | --- | --- |
+| `v1` | 4 | — |
+| `v1a` | 2 | — |
+| `v1_5` | — | 11 |
+| `v2` | — | 11 |
+| `v2_5` | — | 12 |
+
+Which is 34 tests total, of which 28 speak HTTP and 6 are pool-only or day-only.
