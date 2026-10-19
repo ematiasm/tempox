@@ -196,10 +196,14 @@ things this exposed:
 - A helper that returns `reqwest::Response` returns `common::TestResponse`, so every
   `.json().await.expect(...)` at a call site became `.json().clone()`. A blanket
   regex for that **also rewrote six `reqwest` tests that are not converted in this
-  slice** and broke the build. Reverted line by line. The lesson is the one this
-  document already states in another form: a mechanical rewrite across a file that
-  holds two styles needs the style boundary named first, not a pattern broad enough to
-  cross it.
+  slice** and broke the build. They were reverted line by line — and the reversion was
+  **incomplete**: two `.expect` labels in unconverted tests (`"purchase json"` and
+  `"return json"`) stayed rewritten to a generic `"json"`, because a revert driven by a
+  failing build only reverts what the build notices. The review caught it. The lesson
+  this document already states in another form needed sharpening: a mechanical rewrite
+  across a file that holds two styles needs the style boundary named first, not a
+  pattern broad enough to cross it — **and the undo needs the same boundary, not the
+  compiler's error list.**
 - `v1_5_credit_note_history_guards_are_enforced` declared `DATABASE_URL` before
   `BACKEND_BASE`, so a fixed-prefix replacement missed it. One more reason the
   conversion was done against the compiler rather than assumed.
