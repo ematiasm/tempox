@@ -68,12 +68,20 @@ async fn notes_crud_roundtrip() {
 
 // v1 schema (work-unit 1): the migration creates the five tables and seeds the
 // walk-in customer. Ignored by default: needs a live database.
-#[tokio::test]
-#[ignore]
-async fn v1_schema_seeds_walkin_customers() {
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
-    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+#[sqlx::test]
+async fn v1_schema_seeds_walkin_customers(pool: sqlx::PgPool) {
+    let (db,): (String,) = sqlx::query_as("SELECT current_database()")
+        .fetch_one(&pool)
+        .await
+        .expect("current_database");
+    assert!(
+        db.starts_with("_sqlx_test_"),
+        "expected a throwaway database, got {db}"
+    );
+    assert_ne!(
+        db, "tempox_test",
+        "the shared test database must not be used"
+    );
 
     for table in [
         "customers",
@@ -109,13 +117,8 @@ async fn v1_schema_seeds_walkin_customers() {
 // are inverted on purpose: a product WITH history may now change its unit, and
 // what remains guarded is the line/economics immutability.
 // Ignored by default: needs a live database.
-#[tokio::test]
-#[ignore]
-async fn v1_units_and_history_guards() {
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
-    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
-
+#[sqlx::test]
+async fn v1_units_and_history_guards(pool: sqlx::PgPool) {
     let has_unit: (i64,) = sqlx::query_as(
         "SELECT count(*) FROM information_schema.columns
          WHERE table_name = 'products' AND column_name = 'unit'",
@@ -288,13 +291,8 @@ async fn v1_units_and_history_guards() {
 // plan-v1.md: "Stock is never a mutable `quantity` field ... every change is an
 // append-only row", plus decision 15: the database enforces the history guards.
 // Ignored by default: needs a live database.
-#[tokio::test]
-#[ignore]
-async fn v1_ledger_is_append_only_and_reason_coherent() {
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
-    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
-
+#[sqlx::test]
+async fn v1_ledger_is_append_only_and_reason_coherent(pool: sqlx::PgPool) {
     let mut tx = pool.begin().await.expect("begin");
 
     let pid: (uuid::Uuid,) = sqlx::query_as(
@@ -2326,13 +2324,8 @@ async fn v1_5_a_malformed_day_is_a_refusal_not_a_guess() {
 /// migration writes, the same way `walk_in_id_matches_the_migration_seed` does.
 const ONE_OFF_SUPPLIER_ID: &str = "00000000-0000-0000-0000-000000000002";
 
-#[tokio::test]
-#[ignore]
-async fn v2_schema_creates_purchases_tables_and_seeds_one_off_supplier() {
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
-    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
-
+#[sqlx::test]
+async fn v2_schema_creates_purchases_tables_and_seeds_one_off_supplier(pool: sqlx::PgPool) {
     for table in ["suppliers", "purchases", "purchase_items"] {
         let reg: Option<String> = sqlx::query_scalar("SELECT to_regclass($1)::text")
             .bind(format!("public.{table}"))
@@ -2360,13 +2353,8 @@ async fn v2_schema_creates_purchases_tables_and_seeds_one_off_supplier() {
     );
 }
 
-#[tokio::test]
-#[ignore]
-async fn v2_a_purchase_is_immutable_after_it_exists() {
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
-    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
-
+#[sqlx::test]
+async fn v2_a_purchase_is_immutable_after_it_exists(pool: sqlx::PgPool) {
     let mut tx = pool.begin().await.expect("begin");
 
     let pid: (uuid::Uuid,) = sqlx::query_as(
@@ -2460,13 +2448,8 @@ async fn v2_a_purchase_is_immutable_after_it_exists() {
     tx.rollback().await.expect("rollback");
 }
 
-#[tokio::test]
-#[ignore]
-async fn v2_the_ledger_refuses_a_purchase_movement_without_its_document() {
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
-    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
-
+#[sqlx::test]
+async fn v2_the_ledger_refuses_a_purchase_movement_without_its_document(pool: sqlx::PgPool) {
     let mut tx = pool.begin().await.expect("begin");
     let pid: (uuid::Uuid,) = sqlx::query_as(
         "INSERT INTO products (name, list_price) VALUES ('v2-coherence-p', 5.00) RETURNING id",
@@ -3154,12 +3137,8 @@ async fn v2_cash_nets_purchases_and_still_counts_sales() {
 /// dropping `purchases_no_truncate` and `purchase_items_no_truncate` together
 /// left `v2_a_purchase_is_immutable_after_it_exists` GREEN, because that test
 /// only probes UPDATE and DELETE. A guard no test would miss is not a guard.
-#[tokio::test]
-#[ignore]
-async fn v2_purchase_tables_refuse_truncate_and_keep_their_state() {
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
-    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+#[sqlx::test]
+async fn v2_purchase_tables_refuse_truncate_and_keep_their_state(pool: sqlx::PgPool) {
     let mut tx = pool.begin().await.expect("begin");
 
     let pid: (uuid::Uuid,) =
@@ -3322,13 +3301,8 @@ async fn v2_5_fixture(
     (pid.0, purchase_id.0, item_id.0)
 }
 
-#[tokio::test]
-#[ignore]
-async fn v2_5_schema_creates_supplier_returns_tables() {
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
-    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
-
+#[sqlx::test]
+async fn v2_5_schema_creates_supplier_returns_tables(pool: sqlx::PgPool) {
     for table in ["supplier_returns", "supplier_return_items"] {
         let reg: Option<String> = sqlx::query_scalar("SELECT to_regclass($1)::text")
             .bind(format!("public.{table}"))
@@ -3343,12 +3317,8 @@ async fn v2_5_schema_creates_supplier_returns_tables() {
     }
 }
 
-#[tokio::test]
-#[ignore]
-async fn v2_5_a_return_takes_stock_out_and_names_both_documents() {
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
-    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+#[sqlx::test]
+async fn v2_5_a_return_takes_stock_out_and_names_both_documents(pool: sqlx::PgPool) {
     let mut tx = pool.begin().await.expect("begin");
 
     let (pid, purchase_id, item_id) = v2_5_fixture(&mut tx, "happy").await;
@@ -3391,12 +3361,8 @@ async fn v2_5_a_return_takes_stock_out_and_names_both_documents() {
     tx.rollback().await.expect("rollback");
 }
 
-#[tokio::test]
-#[ignore]
-async fn v2_5_the_ledger_refuses_incoherent_supplier_return_movements() {
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
-    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+#[sqlx::test]
+async fn v2_5_the_ledger_refuses_incoherent_supplier_return_movements(pool: sqlx::PgPool) {
     let mut tx = pool.begin().await.expect("begin");
 
     let (pid, purchase_id, _item_id) = v2_5_fixture(&mut tx, "coherence").await;
@@ -3463,12 +3429,8 @@ async fn v2_5_the_ledger_refuses_incoherent_supplier_return_movements() {
     tx.rollback().await.expect("rollback");
 }
 
-#[tokio::test]
-#[ignore]
-async fn v2_5_the_return_tables_are_immutable() {
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
-    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+#[sqlx::test]
+async fn v2_5_the_return_tables_are_immutable(pool: sqlx::PgPool) {
     let mut tx = pool.begin().await.expect("begin");
 
     let (pid, purchase_id, item_id) = v2_5_fixture(&mut tx, "immutable").await;
@@ -4182,12 +4144,8 @@ async fn ledger_fixture(
     }
 }
 
-#[tokio::test]
-#[ignore]
-async fn ledger_refuses_a_movement_whose_product_is_not_in_its_document() {
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
-    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+#[sqlx::test]
+async fn ledger_refuses_a_movement_whose_product_is_not_in_its_document(pool: sqlx::PgPool) {
     let mut tx = pool.begin().await.expect("begin");
     let f = ledger_fixture(&mut tx, "belongs").await;
 
@@ -4298,12 +4256,8 @@ async fn ledger_refuses_a_movement_whose_product_is_not_in_its_document() {
 /// The replacement must refuse everything the six enumerated constraints refused.
 /// This is the test that makes replacing them safe: if the trigger misses a rule,
 /// one of these probes succeeds.
-#[tokio::test]
-#[ignore]
-async fn ledger_still_refuses_everything_the_old_constraints_refused() {
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
-    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+#[sqlx::test]
+async fn ledger_still_refuses_everything_the_old_constraints_refused(pool: sqlx::PgPool) {
     let mut tx = pool.begin().await.expect("begin");
     let f = ledger_fixture(&mut tx, "equivalence").await;
 
@@ -4434,12 +4388,8 @@ async fn ledger_still_refuses_everything_the_old_constraints_refused() {
 
 /// A credit note must correct the sale it is attached to; a return must correct
 /// the purchase. The FK proves the document exists, never that the pair agrees.
-#[tokio::test]
-#[ignore]
-async fn ledger_refuses_a_document_from_another_transaction() {
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
-    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+#[sqlx::test]
+async fn ledger_refuses_a_document_from_another_transaction(pool: sqlx::PgPool) {
     let mut tx = pool.begin().await.expect("begin");
     let a = ledger_fixture(&mut tx, "pairA").await;
     let b = ledger_fixture(&mut tx, "pairB").await;
