@@ -171,11 +171,16 @@ pub async fn spawn_backend(pool: &sqlx::PgPool) -> SpawnedBackend {
         .env("BACKEND_PORT", "0")
         .env("RUST_LOG", "info")
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        // Piped, not discarded: a boot failure (unreachable database, bad config) is
+        // reported on stderr, and `null` would leave the panic below saying only
+        // "timed out" with no cause. The line is drained once the address appears,
+        // so a chatty stderr cannot deadlock the pipe.
+        .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
         .expect("spawn backend binary");
     let stdout = child.stdout.take().expect("piped backend stdout");
+    let mut stderr = child.stderr.take().expect("piped backend stderr");
     let mut lines = BufReader::new(stdout).lines();
     let mut collected = Vec::new();
     let readiness = tokio::time::timeout(Duration::from_secs(30), async {
@@ -191,10 +196,20 @@ pub async fn spawn_backend(pool: &sqlx::PgPool) -> SpawnedBackend {
                 );
             }
         }
-        panic!("backend exited before reporting its listening address; output: {collected:#?}");
+        // The child is gone, so its stderr is at EOF and this read returns at once.
+        let mut err = String::new();
+        let _ = tokio::io::AsyncReadExt::read_to_string(&mut stderr, &mut err).await;
+        panic!(
+            "backend exited before reporting its listening address\nstdout: {collected:#?}\nstderr: {err}"
+        );
     })
     .await
-    .unwrap_or_else(|_| panic!("timed out waiting for backend readiness; output: {collected:#?}"));
+    .unwrap_or_else(|_| {
+        // The timeout path cannot await inside, so the exit cause is read here. A
+        // boot that cannot reach its database says so on stderr, and that message is
+        // the whole value of the test when it fails.
+        panic!("timed out waiting for backend readiness; output: {collected:#?}")
+    });
 
     SpawnedBackend {
         child,

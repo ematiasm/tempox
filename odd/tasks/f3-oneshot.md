@@ -647,3 +647,42 @@ plan request, declare the plan before editing anything.** The provider is not as
 be informed afterwards; it is asking to bound the correction so it can validate exactly
 that. A correction applied outside a declared plan is invisible to the validation it was
 supposed to receive, even when the correction itself is right — as this one was.
+
+## L49: the advisory findings, and one fix I could not prove (2026-10-19)
+
+`review-c5528b62f4388566` approved. Five advisory findings, none blocking. I acted on one
+and deliberately left four, and the difference matters.
+
+**Acted on: `R4-stderr-lost`** (`common/mod.rs:174`). The harness set
+`.stderr(Stdio::null())`, so a spawned binary that failed to boot reported "timed out
+waiting for backend readiness" with **no cause** — the whole reason to run a real process
+discarded at the one moment it would have paid for itself. Now stderr is piped and read
+into the failure message.
+
+**But I could not make it bite.** The obvious probe — a wrong `DATABASE_URL` — fails
+earlier, inside `#[sqlx::test]`'s own setup, so the spawned binary never starts and my
+path never runs. What I verified is that the suite is green *with* the change; what I did
+**not** verify is the failure path producing a better message. Said plainly because
+claiming otherwise would be the exact defect this phase kept finding: a green run
+presented as evidence for a behaviour it never exercised. The change is still worth
+keeping — piping stderr cannot be worse than discarding it — but it is unproven, and the
+document says so.
+
+**Left alone, on purpose:** `R1-001` and `R4-ci-double-run` are suggestions about wording
+and a redundant-looking CI line; `R3-002` and `R4-tail-priority` describe behaviour the
+correction just fixed (the `tail -1` precedence), so they are already answered. Turning
+four advisories into a second correction round would spend a review budget to make a
+passing review marginally tidier, which is not what the budget is for.
+
+L50 (slice boundary, restated): F4 is now 627 authored lines in 7 commits — well past the
+~400 guideline, and I am not splitting it. Every commit after the first is a finding its
+own review raised, and each one is what makes the first commit's claim true. Shipping the
+first commit alone would deliver the false version: a suite that passes by inheriting the
+development database, with no test database created, and a guard that blocks a clean
+checkout. Three of those were caught by reviewers, one by the refuter, one by me reading
+the `stderr` advisory correctly.
+
+The size is the cost of four review rounds on one variable. The honest lesson is upstream
+of the review: `TEST_DATABASE_URL` versus `DATABASE_URL` is a two-name problem that should
+have been settled by reading `sqlx-postgres`'s source *before* writing the target, not
+after three rounds of reviewers reading it for me.
