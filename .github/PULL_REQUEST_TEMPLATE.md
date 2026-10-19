@@ -22,11 +22,14 @@
 ## Checklist
 
 <!-- An unverified box is worse than an empty one: check a box only when you
-     actually ran that check. `make test` needs the stack up (`make dev`). -->
+     actually ran that check. `make test` runs all three levels and needs only
+     `docker compose up -d postgres`; it uses the test database, never your own.
+     See docs/en/testing.md. -->
 
 - [ ] My code follows the project's style
 - [ ] I have added tests for my changes
-- [ ] Existing tests pass locally (`make test`)
+- [ ] Existing tests pass locally (`make test`: unit + integration + e2e)
+- [ ] If I changed the backend, the image still boots: `docker compose build backend` before shipping
 - [ ] Linter passes locally (`make lint`)
 - [ ] I have updated documentation if needed
 - [ ] My commits follow [Conventional Commits](https://www.conventionalcommits.org/)

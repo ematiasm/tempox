@@ -36,7 +36,8 @@ docker compose up --build
 
 ## Development
 
-The backend and database run in Docker; the frontend runs locally for a fast reload loop:
+The backend and database run in Docker. `cargo run` serves the backend from the
+host, the same way the frontend already ran, and gives a much faster edit cycle.
 
 ```bash
 docker compose up -d --build postgres adminer backend
@@ -48,41 +49,52 @@ cd frontend && npm install && npm run dev
 - Backend: <http://localhost:3001/health>
 - Adminer (DB): <http://localhost:8080>
 
-After changing backend code, rebuild the container: `docker compose up -d --build backend`.
-
-Integration tests run against the same stack, so start it first:
-
-```bash
-make dev        # postgres + backend + frontend
-make test
-```
-
-`make test` runs the frontend unit tests and the backend unit + integration
-tests. The integration tests drive the real API on `localhost:3001` and connect
-to the `tempox` database on `localhost:5432`, so they need that stack up; without
-it `make test-backend` stops with a message saying so rather than failing eight
-tests with a connection error.
-
-The tests record real sales, products and stock movements, and they land in the
-database the screens read. Expect to see test rows (`w4-rice-<uuid>` and friends)
-in the app after a run, and clear them by recreating the volume:
+To run the backend from the host instead of the container (stop the container
+first — they cannot both hold `:3001`):
 
 ```bash
-docker compose down -v
+docker compose stop backend
+cd backend && cargo run
 ```
+
+`.env` names `localhost` for `DATABASE_URL`, which is the host's view of the
+published port, so `cargo run` needs no exported variables. The container does
+not read that value: `docker-compose.yml` composes its own from `POSTGRES_*`.
+
+Rebuilding the backend image is **not** part of the edit loop — it is a delivery
+check. Rebuild it once before shipping, when you want to verify that the image
+boots with its embedded migrations. CI never builds it, so a green CI says nothing
+about `tempox-backend:latest`.
+
+### Tests
+
+```bash
+make test        # unit + integration + e2e
+```
+
+`make test` runs all three levels. They never touch the development database:
+they use `tempox_test`, a separate database in the **same** postgres container,
+and the suite starts its own backend on `:3099` so the one you are using on
+`:3001` keeps serving. Nothing test-related needs `docker compose down -v`, and
+the rows a run creates are discarded with `make test-db`.
+
+The full rationale — which level covers what, how to reset the test database, and
+the direction for removing the last piece of plumbing — is
+[`docs/en/testing.md`](./docs/en/testing.md). That document is the authority; this
+section is a summary of it.
 
 Compiling needs no database at all: `backend/.sqlx/` carries the metadata the
 `sqlx::query!` macros verify against, so `make build` and `make lint` work with
 PostgreSQL stopped. After changing a query, run `make sqlx-prepare` to refresh
 that cache; CI fails if it is stale. See
 [`docs/en/getting-started.md`](./docs/en/getting-started.md).
-
 ## Structure
 
 ```
 backend/     Axum server + sqlx migrations + integration tests
 frontend/    SvelteKit app (Svelte 5 runes, Tailwind)
 docs/        Documentation (en)
+scripts/     Test harness: the test stack and the test database
 .github/     CI + dependabot + PR template
 ```
 
@@ -102,6 +114,7 @@ docs/        Documentation (en)
 
 - [`docs/en/getting-started.md`](./docs/en/getting-started.md)
 - [`docs/en/architecture.md`](./docs/en/architecture.md)
+- [`docs/en/testing.md`](./docs/en/testing.md) — the test layout and why it is this way
 
 ---
 

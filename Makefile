@@ -1,66 +1,93 @@
-.PHONY: dev test test-frontend test-backend lint build clean fmt sqlx-prepare sqlx-check help
+.PHONY: dev test test-unit test-frontend test-backend test-e2e test-db \
+        lint build clean fmt sqlx-prepare sqlx-check help
 
 help:
 	@echo "Targets:"
 	@echo "  dev             — start the whole stack (postgres + backend + frontend)"
-	@echo "  test            — run every suite (needs the dev stack up)"
-	@echo "  test-frontend   — frontend unit tests (needs nothing running)"
-	@echo "  test-backend    — backend unit + integration tests (needs the dev stack up)"
+	@echo ""
+	@echo "  test            — every level: unit + integration + e2e"
+	@echo "  test-unit       — backend + frontend unit tests (needs nothing running)"
+	@echo "  test-frontend   — frontend unit tests only (needs nothing running)"
+	@echo "  test-backend    — backend unit + integration, against the TEST database"
+	@echo "  test-e2e        — Playwright, against the TEST database"
+	@echo "  test-db         — drop and recreate the TEST database (disposable)"
+	@echo ""
 	@echo "  sqlx-prepare    — regenerate .sqlx after changing a query (needs postgres)"
 	@echo "  sqlx-check      — verify .sqlx matches the current queries (needs postgres)"
 	@echo "  lint            — clippy + eslint + svelte-check"
 	@echo "  build           — production build for both backend and frontend"
 	@echo "  fmt             — auto-format code"
 	@echo "  clean           — remove build artifacts"
+	@echo ""
+	@echo "Test layout, and why it is this way: docs/en/testing.md"
 
 dev:
 	docker compose up --build
 
-# `make build` and `make lint` need no database at all. `backend/.cargo/config.toml`
-# turns on `SQLX_OFFLINE`, and `backend/.sqlx/` carries the metadata the
-# `sqlx::query!` macros verify against. Before that cache existed, every `cargo`
-# command needed PostgreSQL reachable, and `.env` names the `postgres` service —
-# a hostname that only resolves inside the compose network, so all three targets
-# died on the host before doing any work.
+# ── Test plumbing ────────────────────────────────────────────────────
 #
-# The integration tests need a live database, and they write to it: real sales,
-# products and stock movements, the last of which is append-only by trigger. They
-# run against the same `tempox` database the screens read, on purpose: one stack,
-# one database, one backend. Rows a run creates are therefore visible in the app,
-# and `docker compose down -v` is how they are cleared. CI does the same thing —
-# a single postgres and a single backend it starts itself.
+# Three levels, and they are not a ladder from cheap to expensive: each covers
+# something the others cannot see. `docs/en/testing.md` is the authority.
 #
-# They reach that stack from the outside, over the ports compose publishes:
-# `localhost:3001` for the API and `localhost:5432` for the pool. So the stack has
-# to be up first. The guard below says so in one line instead of leaving eight
-# tests to fail with a connection error.
-test: test-frontend test-backend
+# The tests never write to the development database. `tempox` is the database the
+# screens read, and the ledger is append-only by trigger, so a row a test left
+# there could not be removed individually — only by discarding the whole volume
+# with `docker compose down -v`, which takes the owner's own data with it.
+#
+# So `tempox_test` lives in the SAME postgres container, on the same volume, next
+# to `tempox`. Same stack, same image, one container. `make test-db` recreates it;
+# it is disposable and needs nobody's permission.
+#
+# `scripts/test-stack.sh` starts the branch's binary on a dedicated port (`:3099`)
+# with DATABASE_URL pointing at the test database, then runs the suite against it.
+# The development backend on `:3001` is never stopped or disturbed, and there is no
+# way for the suite and the server to end up on different databases: the run owns
+# the process. That property — not a check — is what prevents the desync.
+test: test-unit test-backend test-e2e
+
+test-unit: test-frontend
+	cd backend && cargo test --all-features --bins
 
 test-frontend:
 	cd frontend && npm run test:unit -- --run
 
+# `--test-threads=1` because several tests read the cash total before and after
+# their own sale; a concurrent test would perturb it.
 test-backend:
-	@curl -sf http://localhost:3001/health >/dev/null || { \
-		echo "error: the backend is not answering on http://localhost:3001/health." >&2; \
-		echo "       start the stack first: make dev" >&2; \
+	./scripts/test-stack.sh sh -c 'cd backend && cargo test \
+		--all-features -- --include-ignored --test-threads=1'
+
+# Playwright builds and serves the frontend itself on :4173, and reaches the
+# backend through PUBLIC_API_BASE, which the harness sets. Chromium is a
+# machine-level artifact, not a repo one, so its absence is reported in one line
+# instead of as a wall of context launches that never happen.
+#
+# The check reads the browser binary rather than `playwright install --dry-run`:
+# the dry run prints where it WOULD install and exits 0 either way, so it cannot
+# tell an installed browser from a missing one. Measured, not assumed.
+test-e2e:
+	@ls ~/.cache/ms-playwright/chromium-*/chrome-linux*/chrome >/dev/null 2>&1 || { \
+		echo "error: Playwright's chromium is not installed." >&2; \
+		echo "       install it once: cd frontend && npx playwright install chromium" >&2; \
 		exit 1; \
 	}
-	cd backend && cargo test --all-features -- --include-ignored --test-threads=1
+	./scripts/test-stack.sh sh -c 'cd frontend && npx playwright test'
 
-# The offline cache is what every other cargo command trusts. When a query
-# changes and the cache is not regenerated, compilation fails on a stale type
-# instead of on the query — a confusing error to chase. These two targets are the
-# fix: one regenerates, the other proves the committed cache is current. CI runs
-# the check, so a stale cache cannot merge.
+# Recreating the test database. The SQL and the safety checks live in
+# `scripts/test-db.sh`: a heredoc cannot span Make's recipe lines, because Make
+# runs each line in its own shell. See docs/en/testing.md.
+test-db:
+	@./scripts/test-db.sh
+
+# `make build` and `make lint` need no database at all. `backend/.cargo/config.toml`
+# turns on `SQLX_OFFLINE`, and `backend/.sqlx/` carries the metadata the
+# `sqlx::query!` macros verify against.
 #
-# `SQLX_OFFLINE=false` opts these single commands back into the live database;
-# cargo's `[env]` never overrides a variable that is already set.
-#
-# These two are the only commands that need a connection, and they run on the
-# host — where the `postgres` service name in `.env` does not resolve. So the
-# host is rewritten to localhost. Override with `make sqlx-prepare
-# DATABASE_URL=postgres://...` for a different layout.
-HOST_DATABASE_URL ?= $(shell sed -n 's|^DATABASE_URL=||p' .env 2>/dev/null | sed 's|@postgres:|@localhost:|' | tail -1)
+# The two targets below are the exception: they answer the compiler's questions by
+# asking a live database. `DATABASE_URL` in `.env` already names `localhost`, which
+# is the host's view of the published port, so no rewriting is needed. Override
+# with `make sqlx-prepare DATABASE_URL=postgres://...` for a different layout.
+HOST_DATABASE_URL ?= $(shell sed -n 's|^DATABASE_URL=||p' .env 2>/dev/null | tail -1)
 
 sqlx-prepare:
 	@test -n "$(HOST_DATABASE_URL)" || { echo "error: no DATABASE_URL; copy .env.example to .env, or pass DATABASE_URL=..." >&2; exit 1; }

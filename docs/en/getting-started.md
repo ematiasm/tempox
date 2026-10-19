@@ -24,57 +24,48 @@ Once up:
 
 ## Making changes
 
-- **Backend** (`backend/`): edit sources under `backend/src/`. In dev, restart the container (`docker compose restart backend`) or rebuild.
+- **Backend** (`backend/`): edit sources under `backend/src/`. Run it from the host
+  with `cargo run` for a fast edit cycle, or keep it in the container and rebuild
+  (`docker compose up -d --build backend`). They cannot both hold `:3001`.
 - **Frontend** (`frontend/`): Vite HMR is enabled; changes hot-reload automatically.
 - **DB schema**: add a new migration file `backend/migrations/000X_*.sql`. `sqlx::migrate!` runs it on boot.
 
 ## Running tests
 
-The integration tests need the stack running, so start it first:
-
 ```bash
-make dev      # postgres + backend + frontend
-make test
+make test        # unit + integration + e2e
 ```
 
-`make test` runs the frontend unit tests and the backend unit + integration
-tests. The integration tests talk to the API at `localhost:3001` and to the
-database at `localhost:5432` — the ports compose publishes — so they need that
-stack up. If the backend is not answering, `make test-backend` says so and stops
-instead of letting eight tests fail with a connection error.
-
-### Where the tests write
-
-The tests record real sales, products and stock movements, and `stock_movements`
-is append-only by trigger. Every row a run creates is permanent: there is no
-"delete the test data" afterwards.
-
-They run against the same `tempox` database the screens read — one stack, one
-database, one backend. Two consequences worth knowing:
-
-- The rows show up in the app. After a run you will see products named
-  `w4-rice-<uuid>` and their sales in the catalogue and the sales list. They also
-  cannot be deleted individually: the ledger guards reject that.
-- `docker compose down -v` is how they go away. That drops the `pgdata` volume,
-  so your own data goes with it.
-
-CI does the same thing: a single postgres and a single backend, started by the
-job itself.
-
-### One suite at a time
+The three levels cover different things, and the integration and e2e suites do
+**not** touch your development database:
 
 ```bash
-make test-frontend   # frontend unit tests, needs nothing running
-make test-backend    # backend unit + integration, needs the dev stack up
+make test-unit       # backend + frontend unit tests, needs nothing running
+make test-backend    # integration, against tempox_test on :3099
+make test-e2e        # Playwright, against tempox_test on :3099
+make test-db         # drop and recreate the test database (disposable)
 ```
+
+`tempox_test` lives in the **same** postgres container as `tempox`, on the same
+volume. There is no second stack and no second image. The suite starts its own
+backend on `:3099` so the one you are using on `:3001` keeps serving, and it
+refuses to start if `TEST_DATABASE_URL` names the development database.
+
+Why the tests do not use `tempox`: its ledger is append-only by trigger, so a row
+a test left there cannot be deleted individually — only by discarding the whole
+volume with `docker compose down -v`, which takes your own data with it. A test
+run therefore never needs that decision.
+
+The full rationale is [`testing.md`](./testing.md), which is the authority on the
+test layout. What follows here is only the part that affects compiling.
 
 ### Why compiling needs no database
 
 The `sqlx::query!` macros check their SQL while the crate compiles. `backend/.sqlx/`
 carries the metadata they need, and `backend/.cargo/config.toml` turns on
 `SQLX_OFFLINE`, so `make build` and `make lint` work with PostgreSQL stopped —
-which matters, because `.env` names the `postgres` service, a hostname that only
-resolves inside the compose network.
+which matters, because `.env` names the host's view of the database and the
+container's own value only resolves inside the compose network.
 
 After changing a query, refresh that cache:
 
@@ -88,10 +79,27 @@ so a stale cache cannot merge.
 
 ## Deploying
 
-Tempox is designed for self-hosted deployment via [Coolify](https://coolify.io/). Point Coolify at the repo, and its Docker Compose recipe will build both services.
+Tempox is designed for self-hosted deployment: `docker-compose.yml` already builds
+both services, and its `${VAR:-default}` values let the same file serve a laptop
+and a server. Nothing here is a separate production compose file.
 
-For production, at minimum change:
+**No deployment has been exercised yet.** The checklist below is what the
+configuration requires, measured from the file rather than from a run, and it is
+stated that way on purpose: an untested deploy guide that reads like a tested one
+is worse than no guide.
 
-- `POSTGRES_PASSWORD` to a strong secret
-- `PUBLIC_API_BASE` to your public backend URL
-- Restrict CORS in `backend/src/main.rs`
+For a production deployment, these have to come from the environment the container
+runs in, not from `.env` (which is development-only and never leaves the laptop):
+
+- `POSTGRES_PASSWORD` — the compose default is `tempox`, deliberately, so a clean
+  clone starts. A server that inherits that default runs with a published password
+  and no warning.
+- `PUBLIC_API_BASE` — the frontend's default points at `localhost:3001`.
+- **CORS**: `backend/src/main.rs` allows any origin. That is right for development
+  and wrong for a public server.
+
+Each of those three fails **silently** when left unset: the stack starts and works.
+Nothing in the repository currently turns that into an error at boot, because the
+binary has no notion of "which environment am I in" — there is no `ENVIRONMENT`
+variable and no deploy to derive one from. Adding that guard is tracked as a
+follow-up, not built here.

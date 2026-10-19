@@ -447,3 +447,31 @@ supplier-return slice that followed it shipped as **PR #47/#48/#49**. The v1.5
 credit-note review that this section used to call the owner's accepted risk was
 later run, found a real defect, and was fixed in PR #51 — see
 [v1.5-credit-note.md](./v1.5-credit-note.md) `L26`.
+
+### Resolution: the rule this slice broke was withdrawn (2026-10-18)
+
+Two entries above record breaking the owner's standing rule — the host binary on
+`:3099`, and the mutation run against the shared database that left an immutable
+purchase with zero movements and its `70.00` in the cash figure forever. The owner
+has since **withdrawn that rule** and replaced it with one that is documented in a
+file instead of in memory: [`docs/en/testing.md`](../../docs/en/testing.md), with
+the agent-facing summary in [`AGENTS.md`](../../AGENTS.md).
+
+What changes for the two entries above:
+
+- **The host binary is no longer a violation.** `cargo run` on the host is the
+  documented development loop for the backend, mirroring `npm run dev`. What
+  remains prohibitive is not the binary — it is running it against something that
+  is not the test database.
+- **Rebuilding the image is no longer forbidden.** It is a delivery check. The
+  reason the rule existed (a stable `tempox-backend:latest` silently re-pointed at
+  an in-progress branch) is preserved by timing, not by a blanket ban: rebuild when
+  the branch is what you intend to deliver.
+- **The mutation-run lesson is kept, and now enforced.** The residue at `R2` is the
+  exact case `scripts/test-stack.sh` prevents: the suite starts its own backend on
+  `:3099` against `tempox_test`, and refuses to start if `TEST_DATABASE_URL` names
+  the development database. A mutation run can no longer reach the shared ledger.
+
+`R2` itself is not repaired, and this note does not repair it: the row is immutable
+by design and deleting it would require disabling the guard this slice installed.
+It stays recorded as the cost of that mistake.
