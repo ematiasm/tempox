@@ -1,25 +1,13 @@
-use std::net::SocketAddr;
+//! The Tempox backend binary.
+//!
+//! Boot only: read the configuration, open the pool, apply migrations, build the
+//! app and serve it. Everything that decides *what* the app is lives in the
+//! library, so it can be constructed and driven by a test without binding a
+//! socket.
 
-use axum::Router;
 use sqlx::postgres::PgPoolOptions;
-use tower_http::cors::{Any, CorsLayer};
-use tower_http::trace::TraceLayer;
+use tempox::{AppState, Config, build_app};
 use tracing_subscriber::EnvFilter;
-
-mod day;
-mod db;
-mod models;
-mod money;
-mod routes;
-
-#[derive(Clone)]
-pub struct AppState {
-    pub db: sqlx::PgPool,
-    /// The shop's timezone. A shop day is a local calendar fact, and the
-    /// machine's own timezone is not a reliable statement about where the shop
-    /// is — a rebuilt PC defaults to UTC. Configured once, read by `/api/day`.
-    pub shop_timezone: chrono_tz::Tz,
-}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -30,46 +18,31 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
-    let port: u16 = std::env::var("BACKEND_PORT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(3001);
+    let config = Config::from_env()?;
 
     let db = PgPoolOptions::new()
         .max_connections(10)
-        .connect(&database_url)
+        .connect(&config.database_url)
         .await?;
 
     sqlx::migrate!("./migrations").run(&db).await?;
 
-    // Where the shop is, for the calendar. A named zone rather than a fixed
-    // offset, so a future DST rule travels with the tz database instead of with
-    // this code. An unparseable zone fails the boot: silently falling back to
-    // UTC would file every late-evening sale under the wrong day, which is the
-    // defect `/api/day` exists to prevent.
-    let shop_timezone: chrono_tz::Tz = std::env::var("SHOP_TIMEZONE")
-        .unwrap_or_else(|_| "America/Argentina/Buenos_Aires".into())
-        .parse()
-        .map_err(|e| anyhow::anyhow!("SHOP_TIMEZONE is not an IANA timezone name: {e}"))?;
+    let state = AppState {
+        db,
+        shop_timezone: config.shop_timezone,
+    };
 
-    let state = AppState { db, shop_timezone };
+    let app = build_app(state);
 
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
-
-    let app = Router::new()
-        .merge(routes::router())
-        .with_state(state)
-        .layer(TraceLayer::new_for_http())
-        .layer(cors);
-
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    tracing::info!("backend listening on http://{addr}");
+    let addr = config.bind_addr();
     let listener = tokio::net::TcpListener::bind(addr).await?;
+
+    // The address the OS actually assigned, not the one that was requested. With
+    // `BACKEND_PORT=0` the requested port is zero and says nothing about where the
+    // server is listening; a caller that cannot read the real one cannot connect.
+    let bound = listener.local_addr()?;
+    tracing::info!("backend listening on http://{bound}");
+
     axum::serve(listener, app).await?;
     Ok(())
 }
