@@ -180,3 +180,80 @@ measured:
 | `v2_5` | — | 12 |
 
 Which is 34 tests total, of which 28 speak HTTP and 6 are pool-only or day-only.
+
+## Slice 3: `v1_5` (2026-10-19)
+
+L15 (scope, measured): `v1_5` has 11 tests — 8 that speak HTTP and read the database, 3
+that only exercise the shop-day endpoint. This slice converts the 8; the 3 day tests
+follow the same pattern and are cheap, but they need no pool, so they are their own
+commit.
+
+L16 (shared helpers, and they were the real work): `reversal_fixture`, `cash`,
+`post_refund` and `find_sale` all took a `&str` base URL and built a `reqwest::Client`.
+They now take the harness `Client`, which is what makes the 8 conversions small. Two
+things this exposed:
+
+- A helper that returns `reqwest::Response` returns `common::TestResponse`, so every
+  `.json().await.expect(...)` at a call site became `.json().clone()`. A blanket
+  regex for that **also rewrote six `reqwest` tests that are not converted in this
+  slice** and broke the build. They were reverted line by line — and the reversion was
+  **incomplete**: two `.expect` labels in unconverted tests (`"purchase json"` and
+  `"return json"`) stayed rewritten to a generic `"json"`, because a revert driven by a
+  failing build only reverts what the build notices. The review caught it. The lesson
+  this document already states in another form needed sharpening: a mechanical rewrite
+  across a file that holds two styles needs the style boundary named first, not a
+  pattern broad enough to cross it — **and the undo needs the same boundary, not the
+  compiler's error list.**
+- `v1_5_credit_note_history_guards_are_enforced` declared `DATABASE_URL` before
+  `BACKEND_BASE`, so a fixed-prefix replacement missed it. One more reason the
+  conversion was done against the compiler rather than assumed.
+
+L17 (the question this slice existed to answer): **`--test-threads=1` cannot be
+relaxed yet, and the reason is not the cash test.** Measured, by running the suite
+without the flag:
+
+```text
+$ cargo test --test integration -- --include-ignored
+test v2_5_a_rejected_return_writes_nothing ... FAILED
+test v2_cash_nets_purchases_and_still_counts_sales ... FAILED
+      "a rejected return wrote something: document, line or movement survived"
+      left: (48, 49, 49)
+```
+
+Both failures are `v2` and `v2_5` tests — the two domains **still on the shared
+`tempox_test` database**. `v1_5_cash_still_counts...` passed in parallel, because it
+now reads the cash of its own database.
+
+So the dependency is ordinal, not architectural: the flag stays until the last domain
+that reads global state is converted. That is a much better sentence than "it is
+because of cash", and it names which branch removes it.
+
+L18 (RED observed, third attempt and the first two were my own error): the probe
+changed `if *already > line.quantity` to `>=` in the credit-note handler. Two tests
+failed — `v1_5_cumulative_refunds_stop_at_the_quantity_sold` and
+`v1_5_repeated_line_is_decided_on_the_exact_boundary` — which is what those tests are
+for. Restored, 46 pass.
+
+The first two attempts used `sed -n '355s/...'` on a line that had moved to 354, and
+silently changed nothing: a probe that reports `ok` because it never applied is a
+false GREEN. **Verify the probe landed before trusting its result** — print the line,
+as here.
+
+L19 (verification): 46 integration (8 converted here, 3 day tests and 20 others still
+on the harness), 39 unit, 139 frontend; fmt and clippy clean.
+
+L20 (the day tests, and the second data point on parallelism): the three shop-day tests
+need no pool, but they go through the same harness, so they were converted with it.
+After them all **11** `v1_5` tests are in-process.
+
+Re-measuring parallelism is what makes L17 a finding rather than an anecdote:
+
+| state | fails without `--test-threads=1` |
+| --- | --- |
+| before `v1_5` | `v2_5_a_rejected_return_writes_nothing`, `v2_cash_nets_purchases_and_still_counts_sales` |
+| after `v1_5` | `v2_cash_nets_purchases_and_still_counts_sales`, `v2_a_rejected_purchase_writes_nothing` |
+
+Two failures both times, but different ones: converting `v1_5` removed the `v2_5`
+failure. The remaining pair is entirely `v2`. That is the ordinal dependency L17
+describes, measured twice instead of once — and it predicts that converting `v2`
+removes the flag's last justification, which is a claim the next slice can falsify.

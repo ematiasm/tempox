@@ -1132,15 +1132,10 @@ struct Reversal {
 }
 
 /// Reads the cash figure the screen shows, straight from its endpoint.
-async fn cash(base: &str) -> rust_decimal::Decimal {
-    let client = reqwest::Client::new();
-    let resp = client
-        .get(format!("{base}/api/cash"))
-        .send()
-        .await
-        .expect("get cash");
-    assert_eq!(resp.status(), 200, "cash endpoint is up");
-    let body: serde_json::Value = resp.json().await.expect("cash json");
+async fn cash(client: &common::Client) -> rust_decimal::Decimal {
+    let response = client.get("/api/cash").await;
+    response.expect_status(axum::http::StatusCode::OK);
+    let body = response.json();
     rust_decimal::Decimal::from_str_exact(body["total"].as_str().expect("cash total string"))
         .expect("cash total is a decimal")
 }
@@ -1148,20 +1143,20 @@ async fn cash(base: &str) -> rust_decimal::Decimal {
 /// Refunds part of a sale through the API and returns the response, whatever
 /// its status — the error probes want to see the refusal, not an unwind.
 async fn post_refund(
-    base: &str,
+    client: &common::Client,
     sale_id: uuid::Uuid,
     items: serde_json::Value,
-) -> reqwest::Response {
-    reqwest::Client::new()
-        .post(format!("{base}/api/sales/{sale_id}/credit-notes"))
-        .json(&serde_json::json!({ "items": items }))
-        .send()
+) -> common::TestResponse {
+    client
+        .post(
+            &format!("/api/sales/{sale_id}/credit-notes"),
+            serde_json::json!({ "items": items }),
+        )
         .await
-        .expect("post credit note")
 }
 
 /// Records one two-line sale and returns it ready to be corrected.
-async fn reversal_fixture(base: &str, pool: &sqlx::PgPool, prefix: &str) -> Reversal {
+async fn reversal_fixture(client: &common::Client, pool: &sqlx::PgPool, prefix: &str) -> Reversal {
     let suffix = uuid::Uuid::new_v4().simple();
     let marker = format!("{prefix}-{suffix}");
 
@@ -1196,19 +1191,19 @@ async fn reversal_fixture(base: &str, pool: &sqlx::PgPool, prefix: &str) -> Reve
     .await
     .expect("promo initial");
 
-    let resp = reqwest::Client::new()
-        .post(format!("{base}/api/sales"))
-        .json(&serde_json::json!({
-            "items": [
-                { "product_id": rice.0, "quantity": 400 },
-                { "product_id": promo.0, "quantity": 2 }
-            ]
-        }))
-        .send()
-        .await
-        .expect("post sale");
+    let resp = client
+        .post(
+            "/api/sales",
+            serde_json::json!({
+                "items": [
+                    { "product_id": rice.0, "quantity": 400 },
+                    { "product_id": promo.0, "quantity": 2 }
+                ]
+            }),
+        )
+        .await;
     assert_eq!(resp.status(), 201, "fixture sale was not created");
-    let sale: serde_json::Value = resp.json().await.expect("sale json");
+    let sale = resp.json().clone();
 
     let lines: Vec<(uuid::Uuid, uuid::Uuid, i64, String)> = sale["items"]
         .as_array()
@@ -1249,14 +1244,10 @@ async fn reversal_fixture(base: &str, pool: &sqlx::PgPool, prefix: &str) -> Reve
 
 // S1, S5, S6, S7: a partial refund is a new document that returns stock and
 // money, and the sale it corrects is not written.
-#[tokio::test]
-#[ignore]
-async fn v1_5_credit_note_returns_stock_and_money_without_touching_the_sale() {
-    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
-    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
-    let f = reversal_fixture(&base, &pool, "w5").await;
+#[sqlx::test]
+async fn v1_5_credit_note_returns_stock_and_money_without_touching_the_sale(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+    let f = reversal_fixture(&client, &pool, "w5").await;
     let (rice_item, rice_product, rice_qty, rice_price) = f.lines[0].clone();
 
     let sale_before: (String, String, Option<chrono::DateTime<chrono::Utc>>) =
@@ -1276,17 +1267,17 @@ async fn v1_5_credit_note_returns_stock_and_money_without_touching_the_sale() {
     .expect("stock before");
     assert_eq!(stock_before.0, 600);
 
-    let cash_before = cash(&base).await;
+    let cash_before = cash(&client).await;
 
     // Refund 150 of the 400 grams: 150 x $2.50 = $375.00.
     let resp = post_refund(
-        &base,
+        &client,
         f.sale_id,
         serde_json::json!([{ "sale_item_id": rice_item, "quantity": 150 }]),
     )
     .await;
     assert_eq!(resp.status(), 201, "a partial refund must be accepted");
-    let note: serde_json::Value = resp.json().await.expect("note json");
+    let note: serde_json::Value = resp.json().clone();
 
     // The document: a total of what was charged for the returned units, at the
     // price the sale line snapshotted, and its line pointing back at that line.
@@ -1342,7 +1333,7 @@ async fn v1_5_credit_note_returns_stock_and_money_without_touching_the_sale() {
 
     // Cash is net of the refund.
     assert_eq!(
-        cash_before - cash(&base).await,
+        cash_before - cash(&client).await,
         rust_decimal::Decimal::new(37500, 2),
         "cash must drop by the refunded amount"
     );
@@ -1364,19 +1355,15 @@ async fn v1_5_credit_note_returns_stock_and_money_without_touching_the_sale() {
 }
 
 // S8: the list carries the correction, so the screen can render it.
-#[tokio::test]
-#[ignore]
-async fn v1_5_sales_list_carries_credit_notes_with_their_lines() {
-    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
-    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
-    let f = reversal_fixture(&base, &pool, "w5-list").await;
+#[sqlx::test]
+async fn v1_5_sales_list_carries_credit_notes_with_their_lines(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+    let f = reversal_fixture(&client, &pool, "w5-list").await;
     let (rice_item, _, _, _) = f.lines[0].clone();
 
     // Before any refund the field is present and empty, never absent: the
     // client must not have to tell "no notes" from "the server forgot".
-    let sale = find_sale(&base, f.sale_id).await;
+    let sale = find_sale(&client, f.sale_id).await;
     assert_eq!(
         sale["credit_notes"].as_array().expect("array").len(),
         0,
@@ -1384,14 +1371,14 @@ async fn v1_5_sales_list_carries_credit_notes_with_their_lines() {
     );
 
     let resp = post_refund(
-        &base,
+        &client,
         f.sale_id,
         serde_json::json!([{ "sale_item_id": rice_item, "quantity": 100 }]),
     )
     .await;
     assert_eq!(resp.status(), 201);
 
-    let sale = find_sale(&base, f.sale_id).await;
+    let sale = find_sale(&client, f.sale_id).await;
     let notes = sale["credit_notes"].as_array().expect("credit_notes array");
     assert_eq!(notes.len(), 1, "the correction is listed under its sale");
     assert_eq!(notes[0]["total"], "250.00");
@@ -1406,19 +1393,15 @@ async fn v1_5_sales_list_carries_credit_notes_with_their_lines() {
 }
 
 // S7: the refusals, and that a refused refund writes nothing at all.
-#[tokio::test]
-#[ignore]
-async fn v1_5_refusals_are_distinct_and_write_nothing() {
-    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
-    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
-    let f = reversal_fixture(&base, &pool, "w5-refuse").await;
+#[sqlx::test]
+async fn v1_5_refusals_are_distinct_and_write_nothing(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+    let f = reversal_fixture(&client, &pool, "w5-refuse").await;
     let (rice_item, _, _, _) = f.lines[0].clone();
 
     // A sale that does not exist is a 404, not a 400 and not a 500.
     let nowhere = post_refund(
-        &base,
+        &client,
         uuid::Uuid::new_v4(),
         serde_json::json!([{ "sale_item_id": rice_item, "quantity": 1 }]),
     )
@@ -1427,9 +1410,9 @@ async fn v1_5_refusals_are_distinct_and_write_nothing() {
 
     // A line that belongs to another sale is also a 404: it is the wrong
     // document, not a conflict.
-    let other = reversal_fixture(&base, &pool, "w5-other").await;
+    let other = reversal_fixture(&client, &pool, "w5-other").await;
     let foreign = post_refund(
-        &base,
+        &client,
         f.sale_id,
         serde_json::json!([{ "sale_item_id": other.lines[0].0, "quantity": 1 }]),
     )
@@ -1452,7 +1435,7 @@ async fn v1_5_refusals_are_distinct_and_write_nothing() {
             serde_json::json!([{ "sale_item_id": rice_item, "quantity": -5 }]),
         ),
     ] {
-        let resp = post_refund(&base, f.sale_id, items).await;
+        let resp = post_refund(&client, f.sale_id, items).await;
         assert_eq!(resp.status(), 400, "{label} refund must be a 400");
     }
 
@@ -1475,11 +1458,11 @@ async fn v1_5_refusals_are_distinct_and_write_nothing() {
             .fetch_one(&pool)
             .await
             .expect("movements before");
-    let cash_before = cash(&base).await;
+    let cash_before = cash(&client).await;
 
     // S3: more than was sold is a 409.
     let too_much = post_refund(
-        &base,
+        &client,
         f.sale_id,
         serde_json::json!([{ "sale_item_id": rice_item, "quantity": sold + 1 }]),
     )
@@ -1515,18 +1498,14 @@ async fn v1_5_refusals_are_distinct_and_write_nothing() {
         movements_after.0, movements_before.0,
         "and no stock movement: rejected input leaves stored data unchanged"
     );
-    assert_eq!(cash_before, cash(&base).await, "and cash is unmoved");
+    assert_eq!(cash_before, cash(&client).await, "and cash is unmoved");
 }
 
 // S3: refunds accumulate per line, and the whole sale may come back in pieces.
-#[tokio::test]
-#[ignore]
-async fn v1_5_cumulative_refunds_stop_at_the_quantity_sold() {
-    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
-    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
-    let f = reversal_fixture(&base, &pool, "w5-cum").await;
+#[sqlx::test]
+async fn v1_5_cumulative_refunds_stop_at_the_quantity_sold(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+    let f = reversal_fixture(&client, &pool, "w5-cum").await;
     let (rice_item, rice_product, rice_qty, _) = f.lines[0].clone();
     let (promo_item, promo_product, promo_qty, promo_price) = f.lines[1].clone();
 
@@ -1545,14 +1524,14 @@ async fn v1_5_cumulative_refunds_stop_at_the_quantity_sold() {
     };
     let rice_before = stock_of(rice_product).await;
     let promo_before = stock_of(promo_product).await;
-    let cash_start = cash(&base).await;
+    let cash_start = cash(&client).await;
 
     // Two notes, each a fourth of the sale. The second is allowed because the
     // guard is cumulative, not per-note.
     let quarter = rice_qty / 4;
     for _ in 0..2 {
         let resp = post_refund(
-            &base,
+            &client,
             f.sale_id,
             serde_json::json!([{ "sale_item_id": rice_item, "quantity": quarter }]),
         )
@@ -1568,7 +1547,7 @@ async fn v1_5_cumulative_refunds_stop_at_the_quantity_sold() {
     // cumulative nature that makes it legal; two notes of a quarter were not
     // refused either.
     let third = post_refund(
-        &base,
+        &client,
         f.sale_id,
         serde_json::json!([{ "sale_item_id": rice_item, "quantity": quarter }]),
     )
@@ -1583,7 +1562,7 @@ async fn v1_5_cumulative_refunds_stop_at_the_quantity_sold() {
     // already back), and it is refused on the sum, not on the note: 101 units
     // is a perfectly valid quantity on its own.
     let over = post_refund(
-        &base,
+        &client,
         f.sale_id,
         serde_json::json!([{ "sale_item_id": rice_item, "quantity": quarter + 1 }]),
     )
@@ -1599,7 +1578,7 @@ async fn v1_5_cumulative_refunds_stop_at_the_quantity_sold() {
     // the stock still does, which is the point of a bonus line.
     let remaining = rice_qty - 3 * quarter;
     let resp = post_refund(
-        &base,
+        &client,
         f.sale_id,
         serde_json::json!([
             { "sale_item_id": rice_item, "quantity": remaining },
@@ -1612,7 +1591,7 @@ async fn v1_5_cumulative_refunds_stop_at_the_quantity_sold() {
         201,
         "a fully corrected sale is still refundable"
     );
-    let final_note: serde_json::Value = resp.json().await.expect("note json");
+    let final_note: serde_json::Value = resp.json().clone();
     let expected_rice = rust_decimal::Decimal::from(remaining) * rust_decimal::Decimal::new(250, 2);
     assert_eq!(
         final_note["total"],
@@ -1647,19 +1626,19 @@ async fn v1_5_cumulative_refunds_stop_at_the_quantity_sold() {
     // sale is net zero. `cash_start` was read after the fixture's sale, so the
     // reference point is that figure minus the sale's own total.
     let sale_total = rust_decimal::Decimal::from_str_exact(
-        find_sale(&base, f.sale_id).await["total"]
+        find_sale(&client, f.sale_id).await["total"]
             .as_str()
             .expect("sale total is a decimal string"),
     )
     .expect("decimal");
     assert_eq!(
-        cash(&base).await,
+        cash(&client).await,
         cash_start - sale_total,
         "a fully reversed sale is net zero on cash"
     );
 
     // The sale itself never moved.
-    let sale = find_sale(&base, f.sale_id).await;
+    let sale = find_sale(&client, f.sale_id).await;
     assert_eq!(
         sale["status"], "confirmed",
         "the sale is still a confirmed record"
@@ -1673,38 +1652,33 @@ async fn v1_5_cumulative_refunds_stop_at_the_quantity_sold() {
 }
 
 /// Finds one sale in the list endpoint by id.
-async fn find_sale(base: &str, sale_id: uuid::Uuid) -> serde_json::Value {
-    reqwest::Client::new()
-        .get(format!("{base}/api/sales?limit=200"))
-        .send()
-        .await
-        .expect("list sales")
-        .json::<Vec<serde_json::Value>>()
-        .await
-        .expect("sales json")
-        .into_iter()
+async fn find_sale(client: &common::Client, sale_id: uuid::Uuid) -> serde_json::Value {
+    let response = client.get("/api/sales?limit=200").await;
+    response.expect_status(axum::http::StatusCode::OK);
+    response
+        .json()
+        .as_array()
+        .expect("sales array")
+        .iter()
         .find(|sale| sale["id"] == sale_id.to_string())
         .expect("the sale is in the list")
+        .clone()
 }
 
 // S2, S6, S15: the guards the new tables carry, probed the way 0003's are.
-#[tokio::test]
-#[ignore]
-async fn v1_5_credit_note_history_guards_are_enforced() {
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
-    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
-    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
-    let f = reversal_fixture(&base, &pool, "w5-guard").await;
+#[sqlx::test]
+async fn v1_5_credit_note_history_guards_are_enforced(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+    let f = reversal_fixture(&client, &pool, "w5-guard").await;
     let (rice_item, _, _, _) = f.lines[0].clone();
     let resp = post_refund(
-        &base,
+        &client,
         f.sale_id,
         serde_json::json!([{ "sale_item_id": rice_item, "quantity": 10 }]),
     )
     .await;
     assert_eq!(resp.status(), 201);
-    let note: serde_json::Value = resp.json().await.expect("note json");
+    let note: serde_json::Value = resp.json().clone();
     let note_id: uuid::Uuid = note["id"].as_str().expect("id").parse().expect("uuid");
     let note_item_id: uuid::Uuid = note["items"][0]["id"]
         .as_str()
@@ -1805,25 +1779,21 @@ async fn v1_5_credit_note_history_guards_are_enforced() {
 // a credit note exists`, on a database where no note had ever been written). A
 // test that needs the artifact it is measuring has to make that artifact, or it
 // is asserting on the state of someone else's machine.
-#[tokio::test]
-#[ignore]
-async fn v1_5_cash_still_counts_every_confirmed_sale_and_nothing_else() {
-    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
-    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
+#[sqlx::test]
+async fn v1_5_cash_still_counts_every_confirmed_sale_and_nothing_else(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
 
     // A sale of our own, then a partial refund of it: the note this test measures
     // against exists because the test made it, on a clean database or a dirty one.
-    let f = reversal_fixture(&base, &pool, "w5-preserve").await;
+    let f = reversal_fixture(&client, &pool, "w5-preserve").await;
     let partial = post_refund(
-        &base,
+        &client,
         f.sale_id,
         serde_json::json!([{ "sale_item_id": f.lines[0].0, "quantity": 50 }]),
     )
     .await;
     assert_eq!(partial.status(), 201, "the fixture's own refund must land");
-    let note: serde_json::Value = partial.json().await.expect("note json");
+    let note: serde_json::Value = partial.json().clone();
     let note_total = rust_decimal::Decimal::from_str_exact(
         note["total"]
             .as_str()
@@ -1873,16 +1843,16 @@ async fn v1_5_cash_still_counts_every_confirmed_sale_and_nothing_else() {
             .await
             .expect("supplier returns sum");
     assert_eq!(
-        cash(&base).await,
+        cash(&client).await,
         confirmed - refunded - spent + returned,
         "cash on hand is confirmed sales, net of every credit note and purchase, plus every supplier return"
     );
 
     // And the sale path itself still only moves cash up: a second sale raises it
     // by exactly its own total.
-    let cash_before = cash(&base).await;
-    let g = reversal_fixture(&base, &pool, "w5-preserve-2").await;
-    let sale = find_sale(&base, g.sale_id).await;
+    let cash_before = cash(&client).await;
+    let g = reversal_fixture(&client, &pool, "w5-preserve-2").await;
+    let sale = find_sale(&client, g.sale_id).await;
     let total = rust_decimal::Decimal::from_str_exact(
         sale["total"]
             .as_str()
@@ -1890,7 +1860,7 @@ async fn v1_5_cash_still_counts_every_confirmed_sale_and_nothing_else() {
     )
     .expect("decimal");
     assert_eq!(
-        cash(&base).await,
+        cash(&client).await,
         cash_before + total,
         "a recorded sale still raises cash by its total"
     );
@@ -1901,14 +1871,10 @@ async fn v1_5_cash_still_counts_every_confirmed_sale_and_nothing_else() {
 // The handler used to read the refunded sum from the database per entry, so two
 // entries of one `sale_item_id` each passed against the same pre-existing sum
 // and together over-refunded the line: 2 x 6 against a line of 10 was accepted.
-#[tokio::test]
-#[ignore]
-async fn v1_5_one_request_cannot_over_refund_a_line_by_repeating_it() {
-    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
-    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
-    let f = reversal_fixture(&base, &pool, "w5-dup").await;
+#[sqlx::test]
+async fn v1_5_one_request_cannot_over_refund_a_line_by_repeating_it(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+    let f = reversal_fixture(&client, &pool, "w5-dup").await;
     let (rice_item, rice_product, rice_qty, _) = f.lines[0].clone();
 
     // Two halves of a line that is odd: each half alone is legal, together they
@@ -1920,10 +1886,10 @@ async fn v1_5_one_request_cannot_over_refund_a_line_by_repeating_it() {
             .fetch_one(&pool)
             .await
             .expect("notes before");
-    let cash_before = cash(&base).await;
+    let cash_before = cash(&client).await;
 
     let resp = post_refund(
-        &base,
+        &client,
         f.sale_id,
         serde_json::json!([
             { "sale_item_id": rice_item, "quantity": half },
@@ -1961,7 +1927,7 @@ async fn v1_5_one_request_cannot_over_refund_a_line_by_repeating_it() {
     .await
     .expect("stock");
     assert_eq!(stock.0, 600, "no stock came back from a refused refund");
-    assert_eq!(cash_before, cash(&base).await, "and cash is unmoved");
+    assert_eq!(cash_before, cash(&client).await, "and cash is unmoved");
 }
 
 // S3 regression (boundary, from the verifier's recheck): the cumulative guard is
@@ -1969,14 +1935,10 @@ async fn v1_5_one_request_cannot_over_refund_a_line_by_repeating_it() {
 // whose entries sum exactly to what the line has left must be accepted; one unit
 // more must be refused. The first fix for the repeated-line bypass could have
 // been written off-by-one in either direction, so the boundary is pinned here.
-#[tokio::test]
-#[ignore]
-async fn v1_5_repeated_line_is_decided_on_the_exact_boundary() {
-    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
-    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
-    let f = reversal_fixture(&base, &pool, "b2-boundary").await;
+#[sqlx::test]
+async fn v1_5_repeated_line_is_decided_on_the_exact_boundary(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+    let f = reversal_fixture(&client, &pool, "b2-boundary").await;
     let (line, _, sold, _) = f.lines[0].clone();
     let refunded = |line: uuid::Uuid, pool: sqlx::PgPool| async move {
         let sum: i64 = sqlx::query_scalar(
@@ -1994,7 +1956,7 @@ async fn v1_5_repeated_line_is_decided_on_the_exact_boundary() {
     let half = sold / 2;
     let rest = sold - half;
     let exact = post_refund(
-        &base,
+        &client,
         f.sale_id,
         serde_json::json!([
             { "sale_item_id": line, "quantity": half },
@@ -2021,7 +1983,7 @@ async fn v1_5_repeated_line_is_decided_on_the_exact_boundary() {
             .fetch_one(&pool)
             .await
             .expect("notes before");
-    let cash_before = cash(&base).await;
+    let cash_before = cash(&client).await;
     for (label, items) in [
         (
             "one entry past the boundary",
@@ -2043,7 +2005,7 @@ async fn v1_5_repeated_line_is_decided_on_the_exact_boundary() {
             ]),
         ),
     ] {
-        let resp = post_refund(&base, f.sale_id, items).await;
+        let resp = post_refund(&client, f.sale_id, items).await;
         assert_eq!(resp.status(), 409, "{label} must be refused");
     }
     let notes_after: (i64,) =
@@ -2061,7 +2023,7 @@ async fn v1_5_repeated_line_is_decided_on_the_exact_boundary() {
         sold,
         "and no note line was written"
     );
-    assert_eq!(cash_before, cash(&base).await, "and cash is unmoved");
+    assert_eq!(cash_before, cash(&client).await, "and cash is unmoved");
 }
 
 // ── v1.5 es-AR locale: the shop's day (S7, S9) ──────────────────────────────
@@ -2072,23 +2034,18 @@ async fn v1_5_repeated_line_is_decided_on_the_exact_boundary() {
 // half-open window, and a refusal rather than a guess for a malformed instant.
 
 /// Reads `GET /api/day` for one instant and returns the parsed body.
-async fn shop_day(base: &str, at: &str) -> serde_json::Value {
-    let resp = reqwest::Client::new()
-        .get(format!("{base}/api/day"))
-        .query(&[("at", at)])
-        .send()
-        .await
-        .expect("get day");
+async fn shop_day(client: &common::Client, at: &str) -> serde_json::Value {
+    let query = common::encode_query(at);
+    let resp = client.get(&format!("/api/day?at={query}")).await;
     assert_eq!(resp.status(), 200, "the day endpoint answers for {at}");
-    resp.json().await.expect("day json")
+    resp.json().clone()
 }
 
-#[tokio::test]
-#[ignore]
-async fn v1_5_the_shop_day_is_half_open_and_adjacent_days_meet_at_midnight() {
-    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
+#[sqlx::test]
+async fn v1_5_the_shop_day_is_half_open_and_adjacent_days_meet_at_midnight(pool: sqlx::PgPool) {
+    let client = common::client(pool);
 
-    let body = shop_day(&base, "2026-10-16T04:00:00Z").await;
+    let body = shop_day(&client, "2026-10-16T04:00:00Z").await;
 
     // Five keys, and nothing invented: the shape is the contract.
     let keys: Vec<&str> = body
@@ -2109,7 +2066,7 @@ async fn v1_5_the_shop_day_is_half_open_and_adjacent_days_meet_at_midnight() {
         "the answering zone is named, not implied"
     );
     assert_eq!(
-        shop_day(&base, "2026-10-16T04:00:00Z").await["zone"],
+        shop_day(&client, "2026-10-16T04:00:00Z").await["zone"],
         body["zone"],
         "the same shop answers with the same zone for any instant"
     );
@@ -2146,25 +2103,24 @@ async fn v1_5_the_shop_day_is_half_open_and_adjacent_days_meet_at_midnight() {
 
     // ...and the next day's window starts exactly where this one ends, so a sale
     // at midnight is counted once and not twice.
-    let next = shop_day(&base, body["to"].as_str().unwrap()).await;
+    let next = shop_day(&client, body["to"].as_str().unwrap()).await;
     assert_eq!(
         next["from"], body["to"],
         "adjacent days partition the ledger"
     );
 
     // Paging one day back lands on this day's start: the ledger walks local days.
-    let prev = shop_day(&base, body["prev"].as_str().unwrap()).await;
+    let prev = shop_day(&client, body["prev"].as_str().unwrap()).await;
     assert_eq!(prev["to"], body["from"], "prev's end is this day's start");
 }
 
-#[tokio::test]
-#[ignore]
-async fn v1_5_the_shop_day_puts_a_late_evening_sale_inside_its_own_day() {
-    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
+#[sqlx::test]
+async fn v1_5_the_shop_day_puts_a_late_evening_sale_inside_its_own_day(pool: sqlx::PgPool) {
+    let client = common::client(pool);
 
     // 22:30 on 16 Oct in Buenos Aires is already 01:30 on 17 Oct in UTC. A UTC
     // day would file it under the wrong date, which is the defect this closes.
-    let body = shop_day(&base, "2026-10-17T01:30:00Z").await;
+    let body = shop_day(&client, "2026-10-17T01:30:00Z").await;
     let from: chrono::DateTime<chrono::Utc> = body["from"].as_str().unwrap().parse().unwrap();
     let to: chrono::DateTime<chrono::Utc> = body["to"].as_str().unwrap().parse().unwrap();
     let asked: chrono::DateTime<chrono::Utc> = "2026-10-17T01:30:00Z".parse().unwrap();
@@ -2189,19 +2145,13 @@ async fn v1_5_the_shop_day_puts_a_late_evening_sale_inside_its_own_day() {
     assert_eq!((to - from).num_hours(), 24, "an Argentine day is 24 hours");
 }
 
-#[tokio::test]
-#[ignore]
-async fn v1_5_a_malformed_day_is_a_refusal_not_a_guess() {
-    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
-    let client = reqwest::Client::new();
+#[sqlx::test]
+async fn v1_5_a_malformed_day_is_a_refusal_not_a_guess(pool: sqlx::PgPool) {
+    let client = common::client(pool);
 
     for raw in ["not-a-date", "2026-13-01T00:00:00Z", "16/10/2026", " "] {
-        let resp = client
-            .get(format!("{base}/api/day"))
-            .query(&[("at", raw)])
-            .send()
-            .await
-            .expect("get day");
+        let query = common::encode_query(raw);
+        let resp = client.get(&format!("/api/day?at={query}")).await;
         assert_eq!(
             resp.status(),
             400,
@@ -2210,13 +2160,9 @@ async fn v1_5_a_malformed_day_is_a_refusal_not_a_guess() {
     }
 
     // No `at` at all is not an error: the server answers for its own now.
-    let resp = client
-        .get(format!("{base}/api/day"))
-        .send()
-        .await
-        .expect("get day without at");
+    let resp = client.get("/api/day").await;
     assert_eq!(resp.status(), 200, "an absent at means now");
-    let body: serde_json::Value = resp.json().await.expect("day json");
+    let body = resp.json().clone();
     let from: chrono::DateTime<chrono::Utc> = body["from"].as_str().unwrap().parse().unwrap();
     let to: chrono::DateTime<chrono::Utc> = body["to"].as_str().unwrap().parse().unwrap();
     let now = chrono::Utc::now();
