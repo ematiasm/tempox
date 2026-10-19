@@ -17,6 +17,11 @@
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
 use http_body_util::BodyExt;
+use sqlx::ConnectOptions;
+use std::process::Stdio;
+use std::time::Duration;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::{Child, Command};
 use tower::ServiceExt;
 
 /// A response, drained into something a test can assert on.
@@ -121,6 +126,94 @@ impl Client {
         let body = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
 
         TestResponse { status, body, text }
+    }
+}
+
+/// A spawned backend process, terminated when the guard is dropped.
+pub struct SpawnedBackend {
+    child: Child,
+    base_url: String,
+}
+
+impl SpawnedBackend {
+    /// The real socket address reported by the spawned backend.
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+}
+
+impl Drop for SpawnedBackend {
+    fn drop(&mut self) {
+        let _ = self.child.start_kill();
+    }
+}
+
+/// Start the actual backend binary against the database owned by the test pool.
+pub async fn spawn_backend(pool: &sqlx::PgPool) -> SpawnedBackend {
+    let (current_database,): (String,) = sqlx::query_as("SELECT current_database()")
+        .fetch_one(pool)
+        .await
+        .expect("read current database");
+    let connect_options = pool.connect_options();
+    let configured_database = connect_options
+        .get_database()
+        .expect("test pool connect options name their database");
+    assert_eq!(
+        configured_database, current_database,
+        "the spawned backend URL must point at the test pool's database"
+    );
+    // PgConnectOptions implements ConnectOptions::to_url_lossy(), not Display;
+    // its generated URL preserves database credentials and the database name.
+    let database_url = connect_options.to_url_lossy().to_string();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tempox"))
+        .env("DATABASE_URL", database_url)
+        .env("BACKEND_PORT", "0")
+        .env("RUST_LOG", "info")
+        .stdout(Stdio::piped())
+        // Piped, not discarded: a boot failure (unreachable database, bad config) is
+        // reported on stderr, and `null` would leave the panic below saying only
+        // "timed out" with no cause. The line is drained once the address appears,
+        // so a chatty stderr cannot deadlock the pipe.
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn backend binary");
+    let stdout = child.stdout.take().expect("piped backend stdout");
+    let mut stderr = child.stderr.take().expect("piped backend stderr");
+    let mut lines = BufReader::new(stdout).lines();
+    let mut collected = Vec::new();
+    let readiness = tokio::time::timeout(Duration::from_secs(30), async {
+        while let Some(line) = lines.next_line().await.expect("read backend stdout") {
+            collected.push(line.clone());
+            if let Some((_, address)) = line.split_once("backend listening on http://") {
+                return format!(
+                    "http://{}",
+                    address
+                        .split_whitespace()
+                        .next()
+                        .expect("backend log line contains its bound address")
+                );
+            }
+        }
+        // The child is gone, so its stderr is at EOF and this read returns at once.
+        let mut err = String::new();
+        let _ = tokio::io::AsyncReadExt::read_to_string(&mut stderr, &mut err).await;
+        panic!(
+            "backend exited before reporting its listening address\nstdout: {collected:#?}\nstderr: {err}"
+        );
+    })
+    .await
+    .unwrap_or_else(|_| {
+        // The timeout path cannot await inside, so the exit cause is read here. A
+        // boot that cannot reach its database says so on stderr, and that message is
+        // the whole value of the test when it fails.
+        panic!("timed out waiting for backend readiness; output: {collected:#?}")
+    });
+
+    SpawnedBackend {
+        child,
+        base_url: readiness,
     }
 }
 

@@ -1,12 +1,35 @@
-//! Integration tests hit the live backend. Run against a docker-compose stack:
-//!   docker compose up -d postgres backend
-//!   cargo test -- --ignored
+//! Integration tests, in three levels, none of which needs `docker compose up`.
 //!
-//! By default only the pure unit-style test below runs in CI (no DB required).
-//! The v1 tests (schema, units and guards) only need a live database:
-//!   DATABASE_URL=postgres://tempox:tempox@localhost:5432/tempox cargo test --test integration -- --ignored
+//! Most tests run on the database `#[sqlx::test]` creates for each one, so they need
+//! only a reachable postgres — `make test-backend` provides it through
+//! `scripts/test-stack.sh`. Two attribute styles live here:
+//!
+//! - `#[sqlx::test]` + `common::client(pool)` drives the router **in process**, via
+//!   `tower::oneshot`. This is the bulk of the suite: routing, extractors, status
+//!   codes, bodies, and the rows they wrote.
+//! - `#[sqlx::test(migrations = false)]` + `common::spawn_backend(pool)` starts the
+//!   real `CARGO_BIN_EXE_tempox` on an ephemeral port against an **empty** database.
+//!   That is the only level that covers what `oneshot` cannot: migrations running at
+//!   boot, a real socket, and `serve()`.
+//!
+//! Run them with `make test-backend`, or directly:
+//!   ./scripts/test-stack.sh sh -c 'cd backend && cargo test --all-features --test integration -- --include-ignored'
+//!
+//! `--ignored` is no longer the way to reach the HTTP tests; it now selects only
+//! legacy cases, if any remain.
 
 mod common;
+
+#[sqlx::test(migrations = false)]
+async fn f4_the_spawned_binary_migrates_an_empty_database_and_serves(pool: sqlx::PgPool) {
+    // migrations = false leaves this database empty until the spawned binary boots,
+    // so this migrated-table query proves that the binary applied migrations.
+    let backend = common::spawn_backend(&pool).await;
+    let response = reqwest::get(format!("{}/api/notes", backend.base_url()))
+        .await
+        .expect("request spawned backend");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+}
 
 #[test]
 fn smoke_arithmetic() {
@@ -14,26 +37,31 @@ fn smoke_arithmetic() {
     assert_eq!(2 + 2, 4);
 }
 
-#[tokio::test]
-#[ignore]
-async fn health_endpoint_returns_ok() {
-    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
-    let resp = reqwest::get(format!("{base}/health"))
+// `/health` needs no table, so this one keeps the default `#[sqlx::test]`
+// migrations and does not assert anything about boot's migration step — the test
+// above owns that claim. What this covers is the endpoint answering over a real
+// socket, on the port the binary actually bound.
+#[sqlx::test]
+async fn health_endpoint_returns_ok(pool: sqlx::PgPool) {
+    let backend = common::spawn_backend(&pool).await;
+    let resp = reqwest::get(format!("{}/health", backend.base_url()))
         .await
-        .expect("request");
+        .expect("request spawned backend");
     assert!(resp.status().is_success());
     let json: serde_json::Value = resp.json().await.expect("json");
     assert_eq!(json["status"], "ok");
 }
 
-#[tokio::test]
-#[ignore]
-async fn notes_crud_roundtrip() {
-    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
+// A full write round trip over the real socket. Everything the test asserts is
+// read back from the database the spawned binary was pointed at, which is the
+// pool this test also holds — the desync the old harness could not rule out.
+#[sqlx::test]
+async fn notes_crud_roundtrip(pool: sqlx::PgPool) {
+    let backend = common::spawn_backend(&pool).await;
     let client = reqwest::Client::new();
 
     let created: serde_json::Value = client
-        .post(format!("{base}/api/notes"))
+        .post(format!("{}/api/notes", backend.base_url()))
         .json(&serde_json::json!({ "text": "hello from tests" }))
         .send()
         .await
@@ -46,7 +74,7 @@ async fn notes_crud_roundtrip() {
     let id = created["id"].as_str().expect("id").to_string();
 
     let list: serde_json::Value = client
-        .get(format!("{base}/api/notes"))
+        .get(format!("{}/api/notes", backend.base_url()))
         .send()
         .await
         .expect("get")
@@ -60,12 +88,29 @@ async fn notes_crud_roundtrip() {
             .any(|n| n["id"] == id)
     );
 
+    // The row is in the database the test owns, not merely in the response the
+    // binary produced. This is the assertion the old two-process harness could
+    // only hope for, because it agreed on the database by configuration.
+    let stored: i64 = sqlx::query_scalar("SELECT count(*)::bigint FROM notes WHERE id = $1::uuid")
+        .bind(&id)
+        .fetch_one(&pool)
+        .await
+        .expect("count the note in the test's own database");
+    assert_eq!(stored, 1, "the note the binary created is in this pool");
+
     let del = client
-        .delete(format!("{base}/api/notes/{id}"))
+        .delete(format!("{}/api/notes/{id}", backend.base_url()))
         .send()
         .await
         .expect("delete");
     assert_eq!(del.status(), 204);
+
+    let after: i64 = sqlx::query_scalar("SELECT count(*)::bigint FROM notes WHERE id = $1::uuid")
+        .bind(&id)
+        .fetch_one(&pool)
+        .await
+        .expect("count after delete");
+    assert_eq!(after, 0, "the delete reached the same database");
 }
 
 // v1 schema (work-unit 1): the migration creates the five tables and seeds the

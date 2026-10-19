@@ -409,3 +409,280 @@ after acknowledgement, so the authority is burned and the tree has moved. The ap
 receipt therefore describes a candidate that is not the one being delivered. A fresh
 review is required, and the previous receipt is recorded here as history rather than
 reused as cover.
+
+## F4: T3, the spawned binary (2026-10-19)
+
+L33 (what F4 had to prove that F3 could not): `oneshot` never binds a socket, never
+runs `serve()`'s middleware, and never runs migrations at boot. Worse, the obvious way
+to write a boot test proves nothing: `#[sqlx::test]` applies migrations to the
+throwaway database by default, so a spawned binary would find the schema already there
+and a passing test would say nothing about boot.
+
+The seam that fixes it is `#[sqlx::test(migrations = false)]`, verified present in
+sqlx 0.9 (`sqlx-macros-core-0.9.0/src/test_attr.rs`). The test's database is **empty**;
+the binary boots, migrates, binds, serves. A `GET /api/notes` returning 200 then
+depends on the migration having run, because `0001_notes.sql` is what creates the table.
+
+L34 (the harness): `common::spawn_backend(&pool) -> SpawnedBackend`.
+
+- `DATABASE_URL` is derived from the test's own pool via `connect_options()`, and then
+  **asserted** against `SELECT current_database()`. Deriving it was not enough to trust:
+  the property F4 buys is "the process and the test are on the same database by
+  construction", and an assertion is what makes that a property rather than a hope.
+- `BACKEND_PORT=0`, so the OS picks the port and the binary logs the one it actually
+  bound. No fixed test port, so no leftover-server collision.
+- Readiness is the log line, not `/health`. Polling health would have made the harness
+  depend on an endpoint to learn that the socket exists, when the binary already says so
+  after `TcpListener::bind` succeeds.
+- `Drop` calls `start_kill()`, plus `kill_on_drop(true)`. A panicking test must not leak
+  a server into the next one.
+
+L35 (RED, verified by the parent rather than taken from the writer's report): commenting
+out `sqlx::migrate!("./migrations").run(&db).await?;` in `main.rs` turns the proof test
+red at exactly the assertion that matters:
+
+```text
+test f4_the_spawned_binary_migrates_an_empty_database_and_serves ... FAILED
+  left: 500
+ right: 200
+```
+
+Restored, `git diff backend/src/` empty. This is the probe that `SQLX_OFFLINE` would not
+have allowed through a `sqlx::query!` string, and it is the one that proves the test
+measures boot rather than the schema a fixture happened to leave behind.
+
+L36 (what F4 retired, each verified rather than assumed): with both remaining tests moved
+to the spawn harness, the whole suite runs with **no external backend** — 47 passed in
+3.18s, invoked directly rather than through `scripts/test-stack.sh`. Measured
+**10 consecutive runs without `--test-threads=1`, all 47 green**. So:
+
+- `make test-backend` no longer starts a backend and no longer passes the flag.
+- `ci.yml` no longer starts a server, no longer runs `--ignored --test-threads=1`, and
+  runs the integration level once.
+- `scripts/test-stack.sh` stays, because the e2e level still legitimately borrows a
+  long-lived backend. It is no longer in the backend test path.
+
+`notes_crud_roundtrip` gained the assertion the old two-process harness could only hope
+for: it reads the created row back through **its own pool**, and reads it gone after the
+delete. Before, "the binary wrote it" and "the test read it" agreed by configuration;
+now they agree because it is the same database by construction.
+
+## R3-001: the review found a real defect, and it was mine (2026-10-19)
+
+L37 (what the review said, CRITICAL, reliability lens, `Makefile:70-71`):
+
+> `make test-backend` no longer invokes the stack-starting script and it exports only
+> `TEST_DATABASE_URL`. The `#[sqlx::test]` tests need a reachable Postgres and the SQLx
+> test macro reads `DATABASE_URL`, so the target now fails on a clean checkout.
+
+The authority escalated it as `unknown_causality` because the reviewer ranked it
+CRITICAL but could not verify the location. It was right, and the severity was right.
+
+L38 (what I found, by reproducing rather than reasoning): `sqlx-postgres-0.9.0/src/testing/mod.rs:42`
+is `dotenvy::var("DATABASE_URL").expect("DATABASE_URL must be set")`. So `#[sqlx::test]`
+reads `DATABASE_URL` and falls back to `dotenvy`, which walks up from the cwd and finds
+the repository `.env` — where `DATABASE_URL` names the **development** database.
+
+That means F4's `make test-backend` passed on my machine for the wrong reason. It had
+never exported the variable the macro reads; it inherited one from `.env`, pointing at
+`tempox`. Reproduced on a clean tree (`git archive HEAD` into `/tmp`, no `.env`):
+
+```text
+test result: FAILED. 3 passed; 44 failed
+thread '...' panicked at sqlx-postgres-0.9.0/src/testing/mod.rs:93:44:
+DATABASE_URL must be set: EnvVar(NotPresent)
+```
+
+Forty-four failures whose message names none of this. On the author's machine, a green
+suite with a wrong database underneath.
+
+L39 (the fix, in three parts, each verified):
+
+1. `make test-backend` now sets **both** `TEST_DATABASE_URL` and `DATABASE_URL`, from the
+   same value. Naming the test database twice is deliberate: the second is what the macro
+   actually reads.
+2. When neither the environment nor `.env` provides it, the target **stops with an
+   actionable message** instead of exporting an empty string. That second failure mode was
+   worse than the first — an empty `DATABASE_URL` panics inside sqlx at
+   `PgConnectOptions::from_str(...).expect(...)`, which reads like a broken database rather
+   than a missing setting.
+3. `ci.yml` no longer hands the integration step the development `DATABASE_URL`. The job
+   keeps a development-shaped URL for `sqlx migrate run` and `sqlx prepare --check`, which
+   genuinely need a schema, and the test step overrides `DATABASE_URL` with
+   `TEST_DATABASE_URL` for itself only.
+
+Verified: `make test-backend` green with `.env` present (47); on a clean tree with no
+`.env` it now stops with the message rather than 44 failures; and with
+`TEST_DATABASE_URL` passed explicitly on that same clean tree, **47 passed**.
+
+L40 (what this says about the F4 claim): the "no external backend" result was true, but it
+was resting on an unexamined environment variable. The review caught the dependency, not
+the test suite — no test could have caught it, because every test passed in the environment
+that hid the defect. That is item 6 on the risk list in its exact form.
+
+## R3-001 and R3-002: the refuter was right twice (2026-10-19)
+
+L41 (second review, second escalation, both findings CRITICAL). After fixing the
+`DATABASE_URL` inheritance, a fresh review ran on the corrected tree. The three lenses
+finished and the provider demanded a refuter; the refuter corroborated R3-001 and raised
+R3-002. Both are the same defect seen from two files:
+
+> **R3-001** (`ci.yml:119`): the integration step points `DATABASE_URL` at the test
+> database, but the candidate adds no step that creates it. On a fresh CI service, the
+> step fails to connect before any test runs.
+>
+> **R3-002** (`Makefile:77-85`): the target no longer starts the stack or creates the
+> test database. On a clean checkout with no pre-existing Postgres/test database,
+> `make test-backend` fails, whereas the baseline started the stack and worked.
+
+Both correct. The baseline created `tempox_test` as a **side effect** of
+`scripts/test-stack.sh` calling `scripts/test-db.sh` — which also swept the
+`_sqlx_test_*` leftovers a killed run leaves behind. Removing the external backend
+removed that side effect, and nothing replaced it. I had verified "no external backend
+needed" against a machine where the database already existed, which is the same class of
+error as the previous finding: **a green run against prepared state.**
+
+L42 (the fix, verified by destroying the precondition rather than reasoning about it):
+
+- `test-backend` now depends on `test-db`. That is the piece the baseline supplied
+  implicitly: it recreates the master test database and sweeps stale per-test databases.
+- `ci.yml` creates `tempox_test` explicitly before the test step. The service container
+  starts with only the development database, so a `TEST_DATABASE_URL` naming a database
+  nobody created is a connect failure, not a test failure.
+
+Verified the only way that counts — by removing what the fix is supposed to create:
+
+```text
+$ psql -c "DROP DATABASE IF EXISTS tempox_test WITH (FORCE)"
+$ psql -tAc "SELECT count(*) FROM pg_database WHERE datname='tempox_test'"
+0
+$ make test-backend
+==> recreating the test database: tempox_test
+test result: ok. 47 passed; 0 failed
+```
+
+L43 (what the two rounds establish): neither round was about the tests. The first found
+that the suite silently took its database from `.env`; the second, that the fix assumed a
+database the run had not created. **Both were invisible to the test suite, because both
+were properties of the environment the suite ran in** — which is exactly why the review
+earned its cost here rather than duplicating what verify already knew.
+
+L44 (slice boundary): F4 is 478 authored lines in three commits, past the ~400
+guideline. The three commits are the work plus the two corrections its reviews earned,
+and they are not separable: the corrections are what make the first commit's claim
+("the suite owns its process and its database") true. Splitting them into separate PRs
+would ship the false version first and the truth second, which is precisely the delivery
+shape that let a green suite sit on the wrong database twice.
+
+## R3-001, third round: the refuter was right about the fallback (2026-10-19)
+
+L45 (what the refuter found, and it is the most precise of the three): my guard exited
+`1` when `TEST_DATABASE_URL` was absent from both the environment and `.env`. **A fresh
+checkout has no `.env`**, so `make test-backend` alone stopped before reaching cargo,
+while the baseline started the external stack and reached the tests. A regression on a
+valid baseline state, marked `deterministic` and `introduced`.
+
+This is the third finding in this phase about the same variable, and each was a different
+mistake: first the suite silently took `DATABASE_URL` from `.env` (wrong database), then
+nothing created the test database (no database), now refusing to run without one (no
+run at all). The first two taught me to demand the value; the refuter caught that
+demanding it was itself the regression.
+
+L46 (the fix, and the wrong fix I caught before shipping it): I first defaulted to
+`postgres://tempox:tempox@localhost:5432/tempox_test`, reasoning from the compose
+`${POSTGRES_PASSWORD:-tempox}` default. **It failed immediately**, and informatively:
+
+```text
+severity: Fatal, code: "28P01", message: "password authentication failed for user \"tempox\""
+```
+
+Those compose defaults apply to a **new** volume. This repository's volume was created
+with the password `.env.example` names, so a hardcoded credential was wrong for the one
+machine that could test it. A fallback invented here would have been wrong for every
+checkout whose `.env` differs — which is the same class of error as the `.env`
+inheritance, in the opposite direction.
+
+The fallback therefore comes from `.env.example`, the file a new checkout copies, so it
+names the URL that checkout's own database will have. Resolution order: caller, `.env`,
+`.env.example`, resolved once as a make variable **before** the `test-db` prerequisite,
+which needs it too.
+
+L47 (verified across the three states, not just the one that prompted the fix):
+
+| state | result |
+| --- | --- |
+| with `.env` | 47 passed |
+| **no `.env`, falls back to `.env.example`** | **47 passed** |
+| `TEST_DATABASE_URL` naming the development database | refused by `test-db.sh`, which already guarded it |
+
+The middle row is the finding. The third is the guard worth keeping: refusing a non-test
+database is the one failure that must stop the run, because the development ledger is
+append-only and tests must never reach it.
+
+## L48: sequencing error that cost a lineage (2026-10-19)
+
+After the refuter raised R3-001 (the guard blocked a fresh checkout), I fixed it and
+committed — **before** declaring the correction plan the provider was asking for.
+
+The protocol is plan, then correction, then validation. Doing the correction first meant
+the authority stayed frozen on the pre-fix target (`6d64b719`) while the tree moved to
+`490442bf`. Two attempts to declare the plan afterward, both with the byte-exact binding
+copied from a fresh STATUS, were rejected as `collectBinding is missing or stale`. The
+status even reported both identities at once — `target_identity` for the tree in front of
+it, `authority_target_identity` for what the authority had frozen — and I read that
+mismatch as a transport problem for two round trips before seeing it as the symptom it
+was.
+
+Reverting the working tree did not help, and the reason is worth keeping: the projection
+is `committed-only`, so what the authority compares against is the commit, not the
+working tree. There was no working-tree state that could have satisfied it.
+
+The cost was one review lineage (`review-d87e50f43a344cc4`) left in
+`correction_required` with an `expected_revision` that no longer exists, plus three
+lost capture attempts. The owner chose to start a fresh lineage over the corrected tree
+rather than rewrite the branch history.
+
+The rule, stated plainly because I will need it again: **when an authority hands you a
+plan request, declare the plan before editing anything.** The provider is not asking to
+be informed afterwards; it is asking to bound the correction so it can validate exactly
+that. A correction applied outside a declared plan is invisible to the validation it was
+supposed to receive, even when the correction itself is right — as this one was.
+
+## L49: the advisory findings, and one fix I could not prove (2026-10-19)
+
+`review-c5528b62f4388566` approved. Five advisory findings, none blocking. I acted on one
+and deliberately left four, and the difference matters.
+
+**Acted on: `R4-stderr-lost`** (`common/mod.rs:174`). The harness set
+`.stderr(Stdio::null())`, so a spawned binary that failed to boot reported "timed out
+waiting for backend readiness" with **no cause** — the whole reason to run a real process
+discarded at the one moment it would have paid for itself. Now stderr is piped and read
+into the failure message.
+
+**But I could not make it bite.** The obvious probe — a wrong `DATABASE_URL` — fails
+earlier, inside `#[sqlx::test]`'s own setup, so the spawned binary never starts and my
+path never runs. What I verified is that the suite is green *with* the change; what I did
+**not** verify is the failure path producing a better message. Said plainly because
+claiming otherwise would be the exact defect this phase kept finding: a green run
+presented as evidence for a behaviour it never exercised. The change is still worth
+keeping — piping stderr cannot be worse than discarding it — but it is unproven, and the
+document says so.
+
+**Left alone, on purpose:** `R1-001` and `R4-ci-double-run` are suggestions about wording
+and a redundant-looking CI line; `R3-002` and `R4-tail-priority` describe behaviour the
+correction just fixed (the `tail -1` precedence), so they are already answered. Turning
+four advisories into a second correction round would spend a review budget to make a
+passing review marginally tidier, which is not what the budget is for.
+
+L50 (slice boundary, restated): F4 is now 627 authored lines in 7 commits — well past the
+~400 guideline, and I am not splitting it. Every commit after the first is a finding its
+own review raised, and each one is what makes the first commit's claim true. Shipping the
+first commit alone would deliver the false version: a suite that passes by inheriting the
+development database, with no test database created, and a guard that blocks a clean
+checkout. Three of those were caught by reviewers, one by the refuter, one by me reading
+the `stderr` advisory correctly.
+
+The size is the cost of four review rounds on one variable. The honest lesson is upstream
+of the review: `TEST_DATABASE_URL` versus `DATABASE_URL` is a two-name problem that should
+have been settled by reading `sqlx-postgres`'s source *before* writing the target, not
+after three rounds of reviewers reading it for me.

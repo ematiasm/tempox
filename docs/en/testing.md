@@ -173,25 +173,22 @@ suite as well.
 
 ## What makes a test flaky here
 
-- **Parallel writes to one database.** Two kinds of test live in this suite and only
-  one of them is exposed to this.
+- **Parallel writes to one database.** No longer possible in the backend suite, and
+  the reason is structural rather than a flag.
 
-  The converted domains are not: each runs on the database `#[sqlx::test]` creates
-  for it, so a test that reads the cash total before and after its own sale reads
-  its own writes. This is what F3 bought, and it was measured over ten consecutive
-  runs without `--test-threads=1`.
-
-  The two tests that still drive a live server — `health_endpoint_returns_ok` and
-  `notes_crud_roundtrip` — are. Neither uses `#[sqlx::test]`; both talk to whatever
-  database `scripts/test-stack.sh` started, so `make test-backend` keeps
-  `--test-threads=1` for them. The flag is there for the notes roundtrip racing a
-  concurrent reader, not for the cash total it used to be documented for.
+  Every test runs on the database `#[sqlx::test]` creates for it. The ones that need
+  a real socket — `health_endpoint_returns_ok`, `notes_crud_roundtrip`, and the F4
+  migration proof — start their own binary on an ephemeral port against that same
+  database, so two of them cannot meet. `make test-backend` therefore passes neither
+  `--test-threads=1` nor an external backend.
 
   If you add a test that reads global state through something other than its own
-  pool, you have extended the second category. Convert it, or serialize it.
-- **A leftover backend on the test port.** If something already answers on
-  `:3099`, the suite would talk to it. `scripts/test-stack.sh` refuses to start and
-  says so, instead of testing someone else's build.
+  pool, you have reintroduced the problem. Convert it, do not serialize it.
+- **A leftover backend on a fixed port.** The backend suite no longer has this
+  failure mode: it binds port `0` and reads the real address from the binary's own
+  log, so there is no port to collide over. `scripts/test-stack.sh` still guards
+  `:3099` for the e2e suite, which does borrow a long-lived backend — that is the
+  level where a leftover process is still possible.
 - **A leftover preview on `:4173`.** `reuseExistingServer` is on outside CI, so a
   stale preview is reused. Stop it before trusting an e2e result.
 - **Running a suite directly.** `npx playwright test` on its own reaches
@@ -221,15 +218,15 @@ decision: it is `docker compose down -v`, and it takes the volume.
 
 CI has no development stack, so it builds its own:
 
-- **Backend job**: a `postgres:18-alpine` service, migrations applied through
-  `sqlx`, then two separate runs. `cargo test --locked --all-features` runs the
-  converted domains with no thread limit, since each creates and drops its own
-  database. The live-server step then starts `./target/debug/tempox` and runs
-  `--ignored --test-threads=1`, because those two tests share the one database the
-  job started.
+- **Backend job**: a `postgres:18-alpine` service, then one run of
+  `cargo test --locked --all-features`. No thread limit and no separately started
+  server: every test creates its own database, and the tests that need a socket start
+  `CARGO_BIN_EXE_tempox` themselves on an ephemeral port. The job applies migrations
+  once only so `cargo sqlx prepare --check` has a schema; the tests do not depend on
+  that database.
 
-  That job still starts the binary from the workspace build, and CI never builds the
-  backend image — see the note above about a green CI saying nothing about it.
+  CI never builds the backend image — see the note above about a green CI saying
+  nothing about it.
 - **Frontend job**: lint, `svelte-check`, Vitest, build.
 - **Image job**: builds the frontend image and asserts it serves `/sales`.
 - **E2E job**: the same ephemeral shape, with the backend started by the job, then
@@ -270,7 +267,7 @@ authorized.**
 | **F1** | The seam: `src/lib.rs` with `build_app(state) -> Router` and `Config::from_env()`; `main.rs` keeps boot only. `BACKEND_PORT=0` reports the real port. **Touches product code.** | ~150 lines |
 | **F2** | `tests/common/mod.rs` harness on `#[sqlx::test]`; converts the 14 pool-only tests. `--test-threads=1` stops being needed for those. | per domain |
 | **F3** | `tower::oneshot` for the 29 HTTP tests, including the 23 that use both. Removes the desync. | per domain |
-| **F4** | T3: the test spawns `CARGO_BIN_EXE_tempox` on `BACKEND_PORT=0` against its own database. `docker-compose` stops needing a backend for tests. | small |
+| **F4** | **Done.** T3: the test spawns `CARGO_BIN_EXE_tempox` on `BACKEND_PORT=0` against its own database, with `migrations = false` so boot's migration step is what gets proven. `docker-compose` no longer needs a backend for tests. | small |
 | **F5** | E2E: Playwright's `webServer` starts the backend on its own database; the harness guard becomes the preview guard. | small |
 | **F6** | Retire the old plumbing: the 38 hardcoded URLs, the `Makefile` health guard, the `sqlx-prepare` rewrite, and **make a direct suite invocation unable to reach the development backend** (`api.ts` currently defaults to `:3001`, so a bare `npx playwright test` writes to it). **Last, not first.** | cleanup |
 
@@ -305,5 +302,5 @@ boot, in `main.rs`, before it can serve anything. That is why no `/health` chang
 needed, and why the guard is a property of how the harness starts the process
 rather than an endpoint that reports on it.
 
-It becomes unnecessary only when F4 lands, and only for the levels the test owns.
-The e2e need for an external backend stays for good.
+It became unnecessary in F4, and only for the levels the test owns — which is now
+every backend level. The e2e need for an external backend stays for good.

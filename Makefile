@@ -55,18 +55,66 @@ test-unit: test-frontend
 test-frontend:
 	cd frontend && npm run test:unit -- --run
 
-# `--include-ignored` mixes two kinds of test, and only one of them needs a thread
-# limit. The converted domains run on the database `#[sqlx::test]` creates for each
-# test, so they are safe in parallel — that is what F3 bought, measured over ten
-# consecutive runs. The two tests that still drive the live server
-# (`health_endpoint_returns_ok`, `notes_crud_roundtrip`) share the one database
-# `scripts/test-stack.sh` started, so they stay serialized.
+# No external backend, and no `--test-threads=1`.
 #
-# The flag is here for those two, not for the cash total. If they are ever
-# converted, this goes with them.
-test-backend:
-	./scripts/test-stack.sh sh -c 'cd backend && cargo test \
-		--all-features -- --include-ignored --test-threads=1'
+# Both went in F4. Every test now owns what it needs: `#[sqlx::test]` creates a
+# database per test, and the ones that need a real socket start `CARGO_BIN_EXE_tempox`
+# themselves on an ephemeral port (see `common::spawn_backend`). Nothing is shared, so
+# nothing has to be serialized, and no separate process has to be started first.
+#
+# This is what the `test-stack.sh` backend used to do, and why `test-stack.sh` is no
+# longer in this path: it exists for the levels that legitimately borrow a process —
+# the e2e suite, which drives the real screen against an external backend.
+#
+# `DATABASE_URL` is what `#[sqlx::test]` reads — `sqlx-postgres` calls
+# `dotenvy::var("DATABASE_URL")` — not `TEST_DATABASE_URL`. Exporting only the
+# latter meant the suite silently took `DATABASE_URL` from `.env`, which names the
+# DEVELOPMENT database, and on a clean checkout with no `.env` it failed outright
+# with "DATABASE_URL must be set". Both are mapped here, from `TEST_DATABASE_URL`,
+# so the database under test is the test one whether or not a `.env` exists.
+#
+# It depends on `test-db`, which is what the baseline got as a side effect of
+# starting the stack: `make test-db` recreates the test database AND sweeps the
+# `_sqlx_test_*` leftovers a killed run leaves behind. Dropping the external
+# backend without carrying this over would have made the target require a database
+# a fresh checkout does not have — R3-001 and R3-002, both CRITICAL, both right.
+#
+# `TEST_DATABASE_URL` is resolved ONCE, as a make variable, before any prerequisite
+# runs — `test-db` needs it too, and a default set inside this recipe arrives too
+# late.
+#
+# Three sources, most specific first: the caller's value, then `.env`, then
+# `.env.example`. The last one is what makes a fresh checkout work: it is the file a
+# new checkout copies, so it names the URL that checkout's database will actually
+# have. Hardcoding credentials here instead was wrong within a minute of trying it —
+# this repository's volume was created with a password the compose defaults do not
+# produce, and the run failed with "password authentication failed for user tempox".
+# Exiting when the value was absent was worse still: the baseline reached the tests
+# (R3-001, third round).
+#
+# The recipe still refuses a URL that is not a test database. That is the one failure
+# worth stopping for: the development ledger is append-only and tests must never
+# reach it.
+# Each file is resolved SEPARATELY, then combined. Passing both to one `sed` and
+# keeping `tail -1` looked equivalent and was not: the last match comes from the
+# last FILE, so `.env.example` silently overrode a customized `.env` — the reverse
+# of the precedence this comment claims. Measured with two files holding different
+# values: the wrong one won. Resolving each separately is what makes "caller, then
+# .env, then .env.example" true rather than aspirational.
+TEST_DATABASE_URL_ENV := $(shell sed -n 's/^TEST_DATABASE_URL=//p' .env 2>/dev/null | tail -1)
+TEST_DATABASE_URL_EXAMPLE := $(shell sed -n 's/^TEST_DATABASE_URL=//p' .env.example 2>/dev/null | tail -1)
+TEST_DATABASE_URL ?= $(or $(TEST_DATABASE_URL_ENV),$(TEST_DATABASE_URL_EXAMPLE))
+test-backend: export TEST_DATABASE_URL := $(TEST_DATABASE_URL)
+test-backend: test-db
+	@url="$$TEST_DATABASE_URL"; \
+	case "$$url" in \
+		*_test|*_test\?*) : ;; \
+		*) echo "error: refusing to run the suite against '$$url': it must end in '_test'." >&2; \
+		   echo "       The development database is append-only; tests never touch it." >&2; \
+		   exit 1 ;; \
+	esac; \
+	cd backend && TEST_DATABASE_URL="$$url" DATABASE_URL="$$url" \
+		cargo test --all-features -- --include-ignored
 
 # Playwright builds and serves the frontend itself on :4173, and reaches the
 # backend through PUBLIC_API_BASE, which the harness sets. Chromium is a
