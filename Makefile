@@ -95,7 +95,15 @@ test-frontend:
 # The recipe still refuses a URL that is not a test database. That is the one failure
 # worth stopping for: the development ledger is append-only and tests must never
 # reach it.
-TEST_DATABASE_URL ?= $(shell sed -n 's/^TEST_DATABASE_URL=//p' .env .env.example 2>/dev/null | tail -1)
+# Each file is resolved SEPARATELY, then combined. Passing both to one `sed` and
+# keeping `tail -1` looked equivalent and was not: the last match comes from the
+# last FILE, so `.env.example` silently overrode a customized `.env` — the reverse
+# of the precedence this comment claims. Measured with two files holding different
+# values: the wrong one won. Resolving each separately is what makes "caller, then
+# .env, then .env.example" true rather than aspirational.
+TEST_DATABASE_URL_ENV := $(shell sed -n 's/^TEST_DATABASE_URL=//p' .env 2>/dev/null | tail -1)
+TEST_DATABASE_URL_EXAMPLE := $(shell sed -n 's/^TEST_DATABASE_URL=//p' .env.example 2>/dev/null | tail -1)
+TEST_DATABASE_URL ?= $(or $(TEST_DATABASE_URL_ENV),$(TEST_DATABASE_URL_EXAMPLE))
 test-backend: export TEST_DATABASE_URL := $(TEST_DATABASE_URL)
 test-backend: test-db
 	@url="$$TEST_DATABASE_URL"; \
