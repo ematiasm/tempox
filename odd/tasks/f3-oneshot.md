@@ -257,3 +257,45 @@ Two failures both times, but different ones: converting `v1_5` removed the `v2_5
 failure. The remaining pair is entirely `v2`. That is the ordinal dependency L17
 describes, measured twice instead of once — and it predicts that converting `v2`
 removes the flag's last justification, which is a claim the next slice can falsify.
+
+## Slice 4: `v2` (2026-10-19)
+
+L21 (scope): `v2` has 11 tests — 5 speak HTTP and 6 are pool-only (converted in F2).
+This slice converts the 5. Two helpers were involved, and one of them belongs to
+`v2_5`, which is the trap this slice fell into (L22).
+
+L22 (mistake, caught by the compiler and by reading): converting
+`v2_5_create_purchase` looked like part of the same job, because `v2`'s tests create
+purchases too. It is not: all seven of its call sites are `v2_5` tests, still on the
+harness. Changing it broke seven tests that are not in this slice. Reverted. The same
+happened with a local `cash` helper inside `v2_5_cash_...` — two helpers with the same
+name, one per slice, and a global rename does not know that.
+
+**A shared helper name is not a shared helper.** Before changing one, look at who calls
+it; a name that appears in the file twice may be two functions.
+
+L23 (the prediction, and it did not hold): the previous slice predicted that converting
+`v2` would remove the flag's last justification. First measurement agreed — one run
+without `--test-threads=1` passed, in 2.9s instead of 13.8s. Then three runs disagreed:
+**one green, two red.** The failing test is always the same:
+
+```text
+thread 'v2_5_cash_adds_returns_back_and_still_counts_sales_and_purchases' panicked:
+assertion `left == right` failed: a return raises the till by what the supplier gave back
+  left: 0
+ right: 1000
+```
+
+That test is **not converted**: it calls `/api/cash` over the harness and reads a
+**global** total, while the converted tests beside it write to their own databases. It
+sees 0 where it expects 1000 because the refund it just created is not in the total it
+read — the two are different databases.
+
+So the ordinal dependency was real but I mis-stated its terminus: it is not "the last
+domain converted", it is **the last test that reads global state**, and one of those is
+in `v2_5`. The prediction was falsified by a flaky run rather than confirmed by a single
+green one, which is the reason three runs were worth more than one.
+
+With the flag: three consecutive runs, 46 passed each time.
+
+L24 (verification): 46 integration + 39 unit + 139 frontend; fmt and clippy clean.
