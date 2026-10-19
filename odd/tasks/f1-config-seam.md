@@ -72,3 +72,59 @@ both using `use super::*`.
 L6 (evidence, measured): edition is `2024`, where `std::env::set_var` is `unsafe`.
 That is why S4 exists: a `Config` built from a lookup closure is testable without
 `unsafe` and without cross-test races.
+
+L7 (evidence, RED observed first): with `BACKEND_PORT=0` and the old line
+`tracing::info!("backend listening on http://{addr}")`, the log read
+`http://0.0.0.0:0` — the requested port, not the assigned one, which tells a caller
+nothing about where to connect. Restoring `listener.local_addr()` printed
+`http://0.0.0.0:37959`. That is S7, and it is why F4 can spawn servers in parallel.
+
+L8 (defect found while verifying, mine, and it was a silent green): `make test-unit`
+ran `cargo test --bins`. Before F1 the crate had no `[lib]`, so all 29 unit tests
+were in the binary target and the filter happened to be right. After F1 every unit
+test lives in the library, so `--bins` reported **"0 passed" and exited 0** — a
+green that proved nothing, in the very target this slice adds tests to. Fixed to
+`--lib --bins` in the same commit, with the reason in a comment.
+
+L9 (evidence, verification of the whole flow after the change):
+- `cargo test --lib --bins` — 36 passed (29 pre-existing + 7 new `Config` tests).
+- `make test-backend` — 46 passed against `tempox_test` on `:3099`.
+- `make test-e2e` — 16 passed.
+- `make test-frontend` — 139 passed.
+- `cargo fmt --check` clean; `clippy --all-targets -D warnings` clean.
+- The harness itself still works against the rebuilt binary: `scripts/test-stack.sh`
+  started the new binary on `:3099` and `/health` answered `{"status":"ok"}`.
+- `cargo build --release` clean, which is the artifact the container runs.
+
+L10 (state): F1 committed as `e155538` on `feat/f1-config-seam`. B — turning a
+missing `DATABASE_URL` into an error — is **not** implemented and **not** committed.
+It was not authorized, it changes behaviour, and it is written below as a diff for
+an explicit decision.
+
+## B, ready to apply but deliberately not applied
+
+The change, as it would land if approved:
+
+```diff
+--- a/backend/src/lib.rs
++++ b/backend/src/lib.rs
+-use anyhow::Context;            // would be added to the imports
+-
+-        let database_url = lookup("DATABASE_URL").unwrap_or_else(|| DEFAULT_DATABASE_URL.to_owned());
++        let database_url = lookup("DATABASE_URL").context(
++            "DATABASE_URL is not set. Copy .env.example to .env, or export it. \
++             This used to fall back to the local development database silently.",
++        )?;
+```
+
+Why it is worth doing: a silent fallback to a concrete URL is the same class of
+defect as the `skilluv` default this branch's predecessor removed — an invented
+credential in executable code. Missing configuration should name itself.
+
+Why it is not in F1: it changes behaviour. Every environment relying on the
+fallback stops booting. CI sets `DATABASE_URL` in both Rust jobs, so CI is safe,
+but that is evidence, not authorization.
+
+What it would cost: `DEFAULT_DATABASE_URL` becomes dead and its test changes from
+"falls back" to "is an error that names the variable". `Config::from_source` is
+already the seam, so the test exists and flips.
