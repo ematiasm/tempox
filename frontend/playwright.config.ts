@@ -17,6 +17,25 @@ const BACKEND_PORT = process.env.TEST_BACKEND_PORT ?? '3099';
 const BACKEND_URL = `http://localhost:${BACKEND_PORT}`;
 
 /**
+ * The development backend's port. Nothing in a test run may point here.
+ *
+ * It is refused by name rather than by convention: `TEST_BACKEND_PORT=3001` would
+ * otherwise make every guard above agree with each other and with the wrong
+ * database, since the e2e would start its own backend ON the development port and
+ * the build would be told that is where the API lives.
+ */
+const DEVELOPMENT_PORT = '3001';
+
+if (BACKEND_PORT === DEVELOPMENT_PORT) {
+  throw new Error(
+    `TEST_BACKEND_PORT is ${DEVELOPMENT_PORT}, which is the development backend's port. ` +
+      'The e2e suite must never write to the development database: its ledger is ' +
+      'append-only by trigger, so a row a test wrote there cannot be deleted on its own. ' +
+      'Pick another port, or unset TEST_BACKEND_PORT to use the default 3099.'
+  );
+}
+
+/**
  * Playwright starts these in array order and waits for each one, so the backend is
  * serving before the frontend build runs.
  *
@@ -70,7 +89,21 @@ export default defineConfig({
     {
       // `PUBLIC_API_BASE` is inherited from this process's environment, which
       // `make test-e2e` sets. It is consumed by the build in this command.
+      // Guard 2: this entry OWNS the frontend build's API origin.
+      //
+      // `env` is merged as `{ ...process.env, ...webServer.env }`, so the value set
+      // here wins over whatever the shell or a `.env` happens to carry. That matters:
+      // `.env.example` and a developer's `.env` both name `:3001`, and inheriting that
+      // would serve the suite a build pointed at the development backend — the exact
+      // defect F6 closes, reintroduced through the environment instead of the source.
+      //
+      // `REQUIRE_PUBLIC_API_BASE=1` makes `vite.config.ts` fail the build instead of
+      // emitting a client that throws when a page runs.
       command: 'npm run build && npm run preview',
+      env: {
+        PUBLIC_API_BASE: BACKEND_URL,
+        REQUIRE_PUBLIC_API_BASE: '1'
+      },
       // `port`, not `url`: the preview answers `/` with a 307 (the app redirects to
       // its first screen), and a `url` check treats a redirect as "not ready" —
       // measured: `curl -o /dev/null -w '%{http_code}' http://localhost:4173/`

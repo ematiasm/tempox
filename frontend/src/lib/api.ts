@@ -8,7 +8,40 @@
  * display label with no arithmetic consequence.
  */
 
-const BASE = (import.meta.env.PUBLIC_API_BASE as string | undefined) ?? 'http://localhost:3001';
+/**
+ * The API origin.
+ *
+ * There is deliberately **no fallback here**. This line used to read
+ * `?? 'http://localhost:3001'`, which pointed every unconfigured build at the
+ * development backend. That is the one URL a test must never reach: the
+ * development ledger is append-only by trigger, so a row a test wrote there
+ * cannot be deleted on its own — only `docker compose down -v`, which takes the
+ * owner's data with it.
+ *
+ * Measured, not assumed: building with `PUBLIC_API_BASE` unset put the literal
+ * `localhost:3001` into `_app/immutable/chunks/*.js`, so a bare
+ * `npx playwright test` really did run against development.
+ *
+ * The value comes from whoever builds:
+ *
+ * - `docker-compose.yml` and `.env.example` set it for the dev stack;
+ * - `make test-e2e` sets it for the e2e build;
+ * - `vite.config.ts` supplies a development default for `vite dev` and vitest.
+ *
+ * A build that sets none of those now fails loudly here, at module load, instead
+ * of silently talking to the wrong database.
+ */
+const configured = import.meta.env.PUBLIC_API_BASE as string | undefined;
+
+if (!configured) {
+  throw new Error(
+    'PUBLIC_API_BASE is not set. Point it at the backend this build talks to. ' +
+      'It is deliberately required: an unset value used to default to the development ' +
+      'backend on :3001, which tests must never reach.'
+  );
+}
+
+const BASE = configured;
 
 /** A failed request, carrying the status the caller may need to branch on. */
 export class ApiError extends Error {

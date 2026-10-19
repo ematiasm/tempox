@@ -63,9 +63,8 @@ test-frontend:
 # themselves on an ephemeral port (see `common::spawn_backend`). Nothing is shared, so
 # nothing has to be serialized, and no separate process has to be started first.
 #
-# This is what the `test-stack.sh` backend used to do, and why `test-stack.sh` is no
-# longer in this path: it exists for the levels that legitimately borrow a process —
-# the e2e suite, which drives the real screen against an external backend.
+# `scripts/test-stack.sh` used to own that process for both levels. Both now own their
+# own, so the script had no caller left and was removed in F6.
 #
 # `DATABASE_URL` is what `#[sqlx::test]` reads — `sqlx-postgres` calls
 # `dotenvy::var("DATABASE_URL")` — not `TEST_DATABASE_URL`. Exporting only the
@@ -134,8 +133,7 @@ test-backend-binary:
 # tell an installed browser from a missing one. Measured, not assumed.
 # Playwright now owns the backend (see `frontend/playwright.config.ts`): it starts
 # the branch's binary against the test database, waits for `/health`, runs the
-# frontend build, serves the preview, and tears all of it down. So this target no
-# longer needs a backend from `scripts/test-stack.sh`.
+# frontend build, serves the preview, and tears all of it down.
 #
 # It still prepares the database (`test-db`, which recreates it and sweeps the
 # `_sqlx_test_*` leftovers) and still exports `PUBLIC_API_BASE`, because `vite`

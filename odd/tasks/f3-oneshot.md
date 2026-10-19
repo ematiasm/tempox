@@ -741,3 +741,90 @@ what a borrowed process would have produced.
 Not proven: that a stale backend on `:3099` is still adopted outside CI
 (`reuseExistingServer` stays on, same as before). That hazard predates F5 and is
 documented rather than fixed.
+
+## F6: close the last path to the development database (2026-10-19)
+
+L55 (the plan was wrong about its own scope, and measuring it was the first hour of
+work): this phase was described as retiring "the 38 hardcoded URLs, the Makefile health
+guard, the sqlx-prepare rewrite". Measured on the tree:
+
+- **One** hardcoded `:3001` existed, at `api.ts:11`. The rest of the matches were
+  comments.
+- The `Makefile` health guard was **already gone** — F5 removed the step that used it.
+  Only a comment still mentioned `/health`.
+- `sqlx-prepare` needed no rewrite.
+- `scripts/test-stack.sh` had **no caller left** once `make test-backend` (F4) and
+  `make test-e2e` (F5) each owned their own process.
+
+So the real remaining work was one line, one deleted script, and one question F6 had to
+answer honestly: what should `api.ts` do when it is told nothing?
+
+L56 (the decision, and why the obvious answer breaks things): making the missing variable
+an unconditional error sounds right and is wrong twice over. Measured before choosing:
+
+- `.env.example` **and** `docker-compose.yml` already set `PUBLIC_API_BASE`, so the
+  fallback was redundant for the real dev stack;
+- a bare `npm run dev` sets it nowhere, and that is the one case the fallback served;
+- **four vitest files call real client functions** and passed *through* the fallback,
+  because vitest runs with no environment at all;
+- and the decisive probe: building with the variable unset put the literal
+  `localhost:3001` into `_app/immutable/chunks/D2NA-4dX.js`, which is why a bare
+  `npx playwright test` really did reach the development backend.
+
+The owner chose: no fallback in `api.ts`, and the development default declared in
+`vite.config.ts`, where it is visible and scoped.
+
+L57 (three guards, because one was not enough and the owner said so):
+
+1. **`api.ts` throws at module load** when `PUBLIC_API_BASE` is absent or empty, with a
+   message that names the append-only ledger as the reason.
+2. **`vite.config.ts` scopes the dev default to `command === 'serve'`.** Not `build`.
+   My first attempt gave both the `:3001` default, which would have preserved the exact
+   hole F6 exists to close — caught before it shipped. `serve` covers `npm run dev`, the
+   vitest suite, and the Docker image (which runs `npx vite dev`); `build` gets `''`, so
+   the client throws.
+3. **`REQUIRE_PUBLIC_API_BASE=1` makes the build fail instead of emitting a client that
+   throws later.** Deliberately opt-in: `make build` and CI's frontend job are the only
+   two `npm run build` callers and both exist to prove the app compiles, never to serve
+   it. An unconditional throw would have broken the owner's build and CI for no reason.
+4. **`playwright.config.ts` sets `PUBLIC_API_BASE` on its own build entry.** This is the
+   owner's second point and it is the subtle one: `webServer.env` merges over
+   `process.env`, and `.env.example`/`.env` both name `:3001`. Inheriting that would
+   reintroduce the defect through the environment rather than the source.
+5. **`TEST_BACKEND_PORT=3001` is refused by name.** Starting the e2e backend *on* the
+   development port would make every other check agree with the wrong database.
+
+L58 (what was verified, and one verification that first failed for the wrong reason):
+the bare `npx playwright test` probe initially failed with `relative URL without a base`
+— the same message F5 saw, and it was **not** my change: `TEST_DATABASE_URL` was unset,
+so the backend could not start. Only after supplying the database did the real message
+appear: `PUBLIC_API_BASE is not set. Point it at the backend this build talks to.` That
+distinction mattered; reporting the first failure would have credited a guard that never
+ran.
+
+Verified:
+
+| check | result |
+| --- | --- |
+| build with no `PUBLIC_API_BASE` | emits **no** `:3001` anywhere in `_app/immutable` |
+| bare `npx playwright test` | fails, naming the variable |
+| e2e build's emitted chunk | contains `:3099`, contains **no** `:3001` |
+| `TEST_BACKEND_PORT=3001` | refused by name |
+| `REQUIRE_PUBLIC_API_BASE=1` with no value | build fails with the reason |
+| vitest, no environment | 139 passed |
+| `make build`, no `REQUIRE` | passes |
+| `npx vite dev`, no environment (the image) | answers 307 |
+| **`make test` with no `PUBLIC_API_BASE`, `TEST_DATABASE_URL` or `DATABASE_URL`** | **exit 0 — 47 + 39 + 139 + 16** |
+
+L59 (what this closes, stated precisely): the hole was never "the ledger is append-only,
+so tests are hard". It was one line pointing at `:3001`. Append-only is what made the
+consequence unacceptable — a row written there cannot be deleted on its own — and that
+raised the cost of being wrong enough to warrant a phase. The fix is three guards around
+a value, not a change to the domain.
+
+L60 (slice boundary): 429 authored lines, just over the ~400 guideline, and it stays one
+commit. Most of it is not new code: `scripts/test-stack.sh` is a 153-line deletion that
+only makes sense together with the comments that described it as live. Splitting the
+deletion from the guards would leave a tree where the script is referenced but gone, or
+guards exist for a level that still borrows a process. The guards and the removal are one
+fact: nothing outside a test owns what a test needs.

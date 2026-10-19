@@ -13,8 +13,9 @@
 # message for the wrong one, and the database the suite actually uses would stay
 # stale or absent.
 #
-# The schema is not applied here. `sqlx::migrate!` runs when the backend boots, and
-# `scripts/test-stack.sh` always starts one, so the next test run migrates it.
+# The schema is not applied here. `sqlx::migrate!` runs when a backend boots, and
+# every level that needs a schema starts one: `#[sqlx::test]` migrates the database
+# it creates, and the e2e level's `webServer` boots the binary against this one.
 #
 # `DROP DATABASE` cannot run while other sessions use the database, so they are
 # terminated first. Without this, an aborted run's leftover connections fail the
@@ -29,7 +30,7 @@ cd "$ROOT"
 
 # An explicitly exported value must win: bash's `. file` OVERWRITES the
 # environment, unlike `dotenvy`, so the caller's choice is restored afterwards.
-# Same rule as scripts/test-stack.sh, for the same reason.
+# Same rule the removed test-stack.sh used, for the same reason.
 _CALLER_TEST_DATABASE_URL="${TEST_DATABASE_URL:-}"
 if [ -f .env ]; then
   set -a
