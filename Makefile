@@ -55,8 +55,15 @@ test-unit: test-frontend
 test-frontend:
 	cd frontend && npm run test:unit -- --run
 
-# `--test-threads=1` because several tests read the cash total before and after
-# their own sale; a concurrent test would perturb it.
+# `--include-ignored` mixes two kinds of test, and only one of them needs a thread
+# limit. The converted domains run on the database `#[sqlx::test]` creates for each
+# test, so they are safe in parallel — that is what F3 bought, measured over ten
+# consecutive runs. The two tests that still drive the live server
+# (`health_endpoint_returns_ok`, `notes_crud_roundtrip`) share the one database
+# `scripts/test-stack.sh` started, so they stay serialized.
+#
+# The flag is here for those two, not for the cash total. If they are ever
+# converted, this goes with them.
 test-backend:
 	./scripts/test-stack.sh sh -c 'cd backend && cargo test \
 		--all-features -- --include-ignored --test-threads=1'

@@ -3339,25 +3339,26 @@ fn v2_5_the_pre_check_runs_before_the_constraints_it_protects() {
 // state is not a guard, and v1.5 measured exactly that hole in its own mirror.
 
 async fn v2_5_create_purchase(
-    client: &reqwest::Client,
-    base: &str,
+    client: &common::Client,
     product_id: uuid::Uuid,
     quantity: i32,
     unit_price: &str,
 ) -> serde_json::Value {
-    client
-        .post(format!("{base}/api/purchases"))
-        .json(&serde_json::json!({
-            "items": [{ "product_id": product_id, "quantity": quantity, "unit_price": unit_price }]
-        }))
-        .send()
-        .await
-        .expect("post purchase")
-        .error_for_status()
-        .expect("2xx")
-        .json()
-        .await
-        .expect("purchase json")
+    let response = client
+        .post(
+            "/api/purchases",
+            serde_json::json!({
+                "items": [{ "product_id": product_id, "quantity": quantity, "unit_price": unit_price }]
+            }),
+        )
+        .await;
+    assert!(
+        response.status.is_success(),
+        "posting a purchase must succeed, got {}: {}",
+        response.status,
+        response.text
+    );
+    response.body.clone()
 }
 
 async fn v2_5_product(pool: &sqlx::PgPool, tag: &str) -> uuid::Uuid {
@@ -3370,33 +3371,26 @@ async fn v2_5_product(pool: &sqlx::PgPool, tag: &str) -> uuid::Uuid {
     row.0
 }
 
-#[tokio::test]
-#[ignore]
-async fn v2_5_a_return_takes_stock_out_and_returns_the_money_paid() {
-    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
-    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
-    let client = reqwest::Client::new();
+#[sqlx::test]
+async fn v2_5_a_return_takes_stock_out_and_returns_the_money_paid(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
 
     let product = v2_5_product(&pool, "return").await;
     // Buy 5 at 10.00 = 50.00, then return 2 of them.
-    let purchase = v2_5_create_purchase(&client, &base, product, 5, "10.00").await;
+    let purchase = v2_5_create_purchase(&client, product, 5, "10.00").await;
     let purchase_id = purchase["purchase"]["id"].as_str().expect("purchase id");
     let item_id = purchase["items"][0]["id"].as_str().expect("item id");
 
     let stock_before = v2_stock(&pool, product).await;
 
     let resp = client
-        .post(format!(
-            "{base}/api/purchases/{purchase_id}/supplier-returns"
-        ))
-        .json(&serde_json::json!({ "items": [{ "purchase_item_id": item_id, "quantity": 2 }] }))
-        .send()
-        .await
-        .expect("post return");
+        .post(
+            &format!("/api/purchases/{purchase_id}/supplier-returns"),
+            serde_json::json!({ "items": [{ "purchase_item_id": item_id, "quantity": 2 }] }),
+        )
+        .await;
     assert_eq!(resp.status(), 201, "a valid return is created");
-    let body: serde_json::Value = resp.json().await.expect("return json");
+    let body = resp.json().clone();
 
     // The document values what was PAID, read server-side (S3): the client sent
     // no price, and 2 × 10.00 is 20.00 whatever today's catalogue says.
@@ -3445,63 +3439,69 @@ async fn v2_5_a_return_takes_stock_out_and_returns_the_money_paid() {
     );
 }
 
-#[tokio::test]
-#[ignore]
-async fn v2_5_the_cumulative_guard_bounds_every_line_in_both_directions() {
-    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
-    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
-    let client = reqwest::Client::new();
+#[sqlx::test]
+async fn v2_5_the_cumulative_guard_bounds_every_line_in_both_directions(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
 
     let product = v2_5_product(&pool, "boundary").await;
-    let purchase = v2_5_create_purchase(&client, &base, product, 10, "1.00").await;
+    let purchase = v2_5_create_purchase(&client, product, 10, "1.00").await;
     let purchase_id = purchase["purchase"]["id"].as_str().expect("purchase id");
     let item_id = purchase["items"][0]["id"].as_str().expect("item id");
 
-    let post = |qty: i32| {
-        let client = client.clone();
-        let base = base.clone();
-        let url = format!("{base}/api/purchases/{purchase_id}/supplier-returns");
-        let item_id = item_id.to_string();
-        async move {
-            client
-                .post(url)
-                .json(&serde_json::json!({ "items": [{ "purchase_item_id": item_id, "quantity": qty }] }))
-                .send()
-                .await
-                .expect("post return")
-                .status()
-                .as_u16()
-        }
-    };
+    async fn post_return(
+        client: &common::Client,
+        purchase_id: &str,
+        item_id: &str,
+        qty: i32,
+    ) -> u16 {
+        client
+            .post(
+                &format!("/api/purchases/{purchase_id}/supplier-returns"),
+                serde_json::json!({ "items": [{ "purchase_item_id": item_id, "quantity": qty }] }),
+            )
+            .await
+            .status()
+            .as_u16()
+    }
 
     // Partial returns accumulate: 4 then 6 is exactly the 10 bought.
-    assert_eq!(post(4).await, 201, "a partial return is accepted");
+    assert_eq!(
+        post_return(&client, purchase_id, item_id, 4).await,
+        201,
+        "a partial return is accepted"
+    );
     // The boundary itself: 6 more sums to exactly what was sold, so it is allowed.
-    assert_eq!(post(6).await, 201, "the boundary is inclusive: 4 + 6 == 10");
+    assert_eq!(
+        post_return(&client, purchase_id, item_id, 6).await,
+        201,
+        "the boundary is inclusive: 4 + 6 == 10"
+    );
     // One unit more would exceed it.
-    assert_eq!(post(1).await, 409, "one unit past the boundary is refused");
+    assert_eq!(
+        post_return(&client, purchase_id, item_id, 1).await,
+        409,
+        "one unit past the boundary is refused"
+    );
 
     // The repeated-line case, which is the second level of the guard. Each entry
     // on its own is within what was bought; together they are not. A per-entry
     // check against uncommitted state passes both and over-returns the line —
     // v1.5 measured exactly this against its own mirror.
     let product2 = v2_5_product(&pool, "repeated").await;
-    let p2 = v2_5_create_purchase(&client, &base, product2, 10, "1.00").await;
+    let p2 = v2_5_create_purchase(&client, product2, 10, "1.00").await;
     let p2_id = p2["purchase"]["id"].as_str().expect("purchase id");
     let p2_item = p2["items"][0]["id"].as_str().expect("item id").to_string();
     let resp = client
-        .post(format!("{base}/api/purchases/{p2_id}/supplier-returns"))
-        .json(&serde_json::json!({
-            "items": [
-                { "purchase_item_id": p2_item, "quantity": 6 },
-                { "purchase_item_id": p2_item, "quantity": 6 }
-            ]
-        }))
-        .send()
-        .await
-        .expect("post repeated return");
+        .post(
+            &format!("/api/purchases/{p2_id}/supplier-returns"),
+            serde_json::json!({
+                "items": [
+                    { "purchase_item_id": p2_item, "quantity": 6 },
+                    { "purchase_item_id": p2_item, "quantity": 6 }
+                ]
+            }),
+        )
+        .await;
     assert_eq!(
         resp.status(),
         409,
@@ -3522,23 +3522,18 @@ async fn v2_5_the_cumulative_guard_bounds_every_line_in_both_directions() {
     assert_eq!(returned, 0, "the refused request left no line behind");
 }
 
-#[tokio::test]
-#[ignore]
-async fn v2_5_a_rejected_return_writes_nothing() {
-    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
-    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
-    let client = reqwest::Client::new();
+#[sqlx::test]
+async fn v2_5_a_rejected_return_writes_nothing(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
 
     let product = v2_5_product(&pool, "reject").await;
-    let purchase = v2_5_create_purchase(&client, &base, product, 3, "5.00").await;
+    let purchase = v2_5_create_purchase(&client, product, 3, "5.00").await;
     let purchase_id = purchase["purchase"]["id"].as_str().expect("purchase id");
     let item_id = purchase["items"][0]["id"].as_str().expect("item id");
 
     // Another purchase's line, to prove a line of the wrong document is a 404.
     let other_product = v2_5_product(&pool, "other").await;
-    let other = v2_5_create_purchase(&client, &base, other_product, 1, "5.00").await;
+    let other = v2_5_create_purchase(&client, other_product, 1, "5.00").await;
     let other_item = other["items"][0]["id"]
         .as_str()
         .expect("other item")
@@ -3601,24 +3596,22 @@ async fn v2_5_a_rejected_return_writes_nothing() {
 
     for (label, payload, expected) in cases {
         let resp = client
-            .post(format!(
-                "{base}/api/purchases/{purchase_id}/supplier-returns"
-            ))
-            .json(&payload)
-            .send()
-            .await
-            .expect("post return");
+            .post(
+                &format!("/api/purchases/{purchase_id}/supplier-returns"),
+                payload,
+            )
+            .await;
         assert_eq!(resp.status(), expected, "{label} owes {expected}");
     }
 
     // An unknown purchase is a 404, not a 500 and not an empty document.
     let unknown = uuid::Uuid::new_v4();
     let resp = client
-        .post(format!("{base}/api/purchases/{unknown}/supplier-returns"))
-        .json(&serde_json::json!({ "items": [{ "purchase_item_id": item_id, "quantity": 1 }] }))
-        .send()
-        .await
-        .expect("post to unknown purchase");
+        .post(
+            &format!("/api/purchases/{unknown}/supplier-returns"),
+            serde_json::json!({ "items": [{ "purchase_item_id": item_id, "quantity": 1 }] }),
+        )
+        .await;
     assert_eq!(resp.status(), 404, "an unknown purchase is not found");
 
     assert_eq!(
@@ -3634,17 +3627,12 @@ async fn v2_5_a_rejected_return_writes_nothing() {
 // ledger carries its credit notes: the corrected document is never rewritten, so
 // the only place a correction is visible is alongside the thing it corrects.
 
-#[tokio::test]
-#[ignore]
-async fn v2_5_the_purchase_list_carries_its_returns() {
-    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
-    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
-    let client = reqwest::Client::new();
+#[sqlx::test]
+async fn v2_5_the_purchase_list_carries_its_returns(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
 
     let product = v2_5_product(&pool, "nested").await;
-    let purchase = v2_5_create_purchase(&client, &base, product, 4, "2.50").await;
+    let purchase = v2_5_create_purchase(&client, product, 4, "2.50").await;
     let purchase_id = purchase["purchase"]["id"].as_str().expect("purchase id");
     let item_id = purchase["items"][0]["id"].as_str().expect("item id");
 
@@ -3652,16 +3640,10 @@ async fn v2_5_the_purchase_list_carries_its_returns() {
     // a client that has to tell "no returns" from "field missing" is a client with
     // two code paths for one state, which is what the credit-note shape already
     // avoids.
-    let before: serde_json::Value = client
-        .get(format!("{base}/api/purchases"))
-        .query(&[("limit", "200")])
-        .send()
-        .await
-        .expect("get purchases")
-        .json()
-        .await
-        .expect("json");
+    let before = client.get("/api/purchases?limit=200").await;
+    before.expect_status(axum::http::StatusCode::OK);
     let mine = before
+        .body
         .as_array()
         .expect("array")
         .iter()
@@ -3676,28 +3658,18 @@ async fn v2_5_the_purchase_list_carries_its_returns() {
     // Record two partial returns, so ordering is observable.
     for qty in [1, 2] {
         let resp = client
-            .post(format!(
-                "{base}/api/purchases/{purchase_id}/supplier-returns"
-            ))
-            .json(
-                &serde_json::json!({ "items": [{ "purchase_item_id": item_id, "quantity": qty }] }),
+            .post(
+                &format!("/api/purchases/{purchase_id}/supplier-returns"),
+                serde_json::json!({ "items": [{ "purchase_item_id": item_id, "quantity": qty }] }),
             )
-            .send()
-            .await
-            .expect("post return");
+            .await;
         assert_eq!(resp.status(), 201);
     }
 
-    let after: serde_json::Value = client
-        .get(format!("{base}/api/purchases"))
-        .query(&[("limit", "200")])
-        .send()
-        .await
-        .expect("get purchases")
-        .json()
-        .await
-        .expect("json");
+    let after = client.get("/api/purchases?limit=200").await;
+    after.expect_status(axum::http::StatusCode::OK);
     let mine = after
+        .body
         .as_array()
         .expect("array")
         .iter()
@@ -3751,28 +3723,16 @@ async fn v2_5_the_purchase_list_carries_its_returns() {
 // error in any of the four terms produces a plausible number, so each direction
 // has to move the figure by exactly its own amount for the test to pass.
 
-#[tokio::test]
-#[ignore]
-async fn v2_5_cash_adds_returns_back_and_still_counts_sales_and_purchases() {
-    let base = std::env::var("BACKEND_BASE").unwrap_or_else(|_| "http://localhost:3001".into());
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://tempox:tempox@localhost:5432/tempox".into());
-    let pool = sqlx::PgPool::connect(&url).await.expect("db connect");
-    let client = reqwest::Client::new();
+#[sqlx::test]
+async fn v2_5_cash_adds_returns_back_and_still_counts_sales_and_purchases(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
 
     let product = v2_5_product(&pool, "cash").await;
 
-    async fn cash(client: &reqwest::Client, base: &str) -> String {
-        client
-            .get(format!("{base}/api/cash"))
-            .send()
-            .await
-            .expect("get cash")
-            .error_for_status()
-            .expect("2xx")
-            .json::<serde_json::Value>()
-            .await
-            .expect("json")["total"]
+    async fn cash(client: &common::Client) -> String {
+        let response = client.get("/api/cash").await;
+        response.expect_status(axum::http::StatusCode::OK);
+        response.json()["total"]
             .as_str()
             .expect("cash total is a decimal string")
             .to_string()
@@ -3787,13 +3747,13 @@ async fn v2_5_cash_adds_returns_back_and_still_counts_sales_and_purchases() {
         sign * (whole.parse::<i64>().expect("whole") * 100 + frac.parse::<i64>().expect("fraction"))
     }
 
-    let before = cents(&cash(&client, &base).await);
+    let before = cents(&cash(&client).await);
 
     // A purchase of 4 × 10.00 = 40.00 takes money out.
-    let purchase = v2_5_create_purchase(&client, &base, product, 4, "10.00").await;
+    let purchase = v2_5_create_purchase(&client, product, 4, "10.00").await;
     let purchase_id = purchase["purchase"]["id"].as_str().expect("purchase id");
     let item_id = purchase["items"][0]["id"].as_str().expect("item id");
-    let after_purchase = cents(&cash(&client, &base).await);
+    let after_purchase = cents(&cash(&client).await);
     assert_eq!(
         before - after_purchase,
         4000,
@@ -3804,15 +3764,13 @@ async fn v2_5_cash_adds_returns_back_and_still_counts_sales_and_purchases() {
     // exists for, and the one that fails if the term is subtracted instead of
     // added.
     let resp = client
-        .post(format!(
-            "{base}/api/purchases/{purchase_id}/supplier-returns"
-        ))
-        .json(&serde_json::json!({ "items": [{ "purchase_item_id": item_id, "quantity": 1 }] }))
-        .send()
-        .await
-        .expect("post return");
+        .post(
+            &format!("/api/purchases/{purchase_id}/supplier-returns"),
+            serde_json::json!({ "items": [{ "purchase_item_id": item_id, "quantity": 1 }] }),
+        )
+        .await;
     assert_eq!(resp.status(), 201);
-    let after_return = cents(&cash(&client, &base).await);
+    let after_return = cents(&cash(&client).await);
     assert_eq!(
         after_return - after_purchase,
         1000,
@@ -3822,15 +3780,15 @@ async fn v2_5_cash_adds_returns_back_and_still_counts_sales_and_purchases() {
     // And the sale side still moves the other way, by its own total: the
     // existing-behaviour test this slice owes, because the query changed.
     let resp = client
-        .post(format!("{base}/api/sales"))
-        .json(&serde_json::json!({
-            "items": [{ "product_id": product, "quantity": 2, "unit_price": "25.00" }]
-        }))
-        .send()
-        .await
-        .expect("post sale");
+        .post(
+            "/api/sales",
+            serde_json::json!({
+                "items": [{ "product_id": product, "quantity": 2, "unit_price": "25.00" }]
+            }),
+        )
+        .await;
     assert_eq!(resp.status(), 201);
-    let after_sale = cents(&cash(&client, &base).await);
+    let after_sale = cents(&cash(&client).await);
     assert_eq!(
         after_sale - after_return,
         5000,
@@ -3838,7 +3796,7 @@ async fn v2_5_cash_adds_returns_back_and_still_counts_sales_and_purchases() {
     );
 
     // The shape is unchanged: one two-decimal string.
-    let raw = cash(&client, &base).await;
+    let raw = cash(&client).await;
     assert!(
         raw.split('.').nth(1).map(|f| f.len()) == Some(2),
         "cash is still a two-decimal string, got {raw:?}"
