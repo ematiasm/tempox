@@ -118,3 +118,46 @@ leaves **zero** `_sqlx_test_*` databases behind.
 
 L10 (state): `--test-threads=1` is deliberately unchanged (S7): it exists because
 HTTP tests read shared cash totals, and F3 has not removed those yet.
+
+L11 (review, lineage review-6afc107c3193c532, approved, authority burned): tier
+**high** (the script drops databases), three lenses, no refuter. Five advisory
+findings; three of them (`R1-dbname-quoting`, `R3-001`, `R3-002`) pointed at the
+same place — the sweep interpolating a database name into SQL — and that one was
+**not** advisory in substance, so it is fixed here.
+
+L12 (defect found by review, measured, and it was exploitable): the sweep built
+`DROP DATABASE IF EXISTS "$d"` and `WHERE datname = '$d'` by interpolating the name.
+A database name is an arbitrary string that anything with CREATE privilege chooses.
+Measured before the fix:
+
+```text
+CREATE DATABASE "_sqlx_test_evil'; DROP DATABASE tempox_test; --";
+make test-db     ->  stopped with "DROP DATABASE cannot run inside a transaction block"
+$ pg_database    ->  tempox_test survived
+```
+
+`tempox_test` survived **by luck**: the injected second statement landed inside the
+same `psql -c`, and psql refuses a multi-statement `-c` in a transaction. That is the
+same accident that had already forced the two-call split. Luck is not a control.
+
+The fix, and why it is two mechanisms rather than one:
+
+- `pg_terminate_backend` takes the name as a **bind parameter** (`:'dbname'`), so the
+  name is data there;
+- `DROP DATABASE` **cannot** take one, because an identifier is not a value, so the
+  name is escaped **inside the server** with `format('%I')` and read back with `-tA`.
+  Nothing is assembled on this side.
+
+One more thing measured while fixing it: psql expands `:'var'` in a script read from
+**stdin**, not in a `-c` argument, so the parameterised statements go through stdin.
+
+Verified with both vectors at once: a name carrying `'; DROP DATABASE tempox_test; --`
+and a name carrying a double quote. Both dropped, `tempox_test` untouched:
+
+```text
+dropped leftover _sqlx_test_a1'; DROP DATABASE tempox_test; --
+dropped leftover _sqlx_test_b2"x
+```
+
+The earlier guards still bite: an off-stack host and a non-identifier name are still
+refused.

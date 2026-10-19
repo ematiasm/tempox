@@ -190,13 +190,38 @@ stale="$(psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d postgres -tA -c \
 if [ -n "$stale" ]; then
   while IFS= read -r d; do
     [ -n "$d" ] || continue
-    # Two statements, two calls: DROP DATABASE cannot run inside a transaction
-    # block, and psql wraps a multi-statement -c in one.
+
+    # A database name is DATA here, never SQL. Two reasons, and the first is not
+    # theoretical: a name is an arbitrary string that anything with CREATE
+    # privilege can choose, and interpolating it into a statement is how a name
+    # like `x'; DROP DATABASE tempox_test; --` becomes two statements. Measured
+    # before this was fixed: such a database could be created, and the sweep
+    # stopped only because psql refused to run a multi-statement -c inside a
+    # transaction — luck, not design.
+    #
+    #   * `pg_terminate_backend` takes the name as a bind parameter.
+    #   * `DROP DATABASE` cannot take one, because an identifier is not a value.
+    #     So the name is escaped with `format('%I')` INSIDE the server, which is
+    #     the one place that knows the quoting rules, and read back with
+    #     `-tA`. Nothing is assembled on this side.
+    #
+    # Two calls stay two calls: DROP DATABASE cannot run in a transaction block,
+    # and psql wraps a multi-statement -c in one.
+    # psql expands `:'var'` in a script read from stdin, not in a `-c` argument,
+    # so the parameterised statements go through stdin.
+    psql -v ON_ERROR_STOP=1 -v dbname="$d" -U "$POSTGRES_USER" -d postgres -q >/dev/null <<'SQL'
+SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+ WHERE datname = :'dbname' AND pid <> pg_backend_pid();
+SQL
+
+    quoted="$(psql -v ON_ERROR_STOP=1 -v dbname="$d" -U "$POSTGRES_USER" -d postgres -tA <<'SQL'
+SELECT format('%I', :'dbname');
+SQL
+)"
+
     psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d postgres -q -c \
-      "SELECT pg_terminate_backend(pid) FROM pg_stat_activity
-        WHERE datname = '$d' AND pid <> pg_backend_pid();" >/dev/null
-    psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d postgres -q -c \
-      "DROP DATABASE IF EXISTS \"$d\";" >/dev/null
+      "DROP DATABASE IF EXISTS $quoted;" >/dev/null
+
     echo "dropped leftover $d"
   done <<EOF
 $stale
