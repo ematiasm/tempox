@@ -235,6 +235,28 @@ export async function getCash(): Promise<Cash> {
   return request<Cash>(new URL('/api/cash', BASE));
 }
 
+/**
+ * The period's totals, computed by the database over every document it holds.
+ *
+ * Not the page's totals. The ledger loads 50 documents at a time, so anything
+ * the screen derives from its own rows silently omits the rest of the period —
+ * which is exactly what the native review found: a "period sum" that stopped at
+ * the page boundary, and a running balance that started at zero in the middle.
+ */
+export type PeriodSummary = {
+  gross: string;
+  refunded: string;
+  net: string;
+  documents: number;
+};
+
+export async function getSalesSummary(from: string, to: string): Promise<PeriodSummary> {
+  const url = new URL('/api/sales/summary', BASE);
+  url.searchParams.set('from', from);
+  url.searchParams.set('to', to);
+  return request<PeriodSummary>(url);
+}
+
 /** One line of a refund: which sale line, and how many units come back. */
 export type NewCreditNoteLine = {
   sale_item_id: string;

@@ -2234,6 +2234,130 @@ async fn scoped(pool: sqlx::PgPool, at: &str, scope: &str) -> serde_json::Value 
     resp.json().clone()
 }
 
+// ── The redesign fix: the period's totals, not the page's ───────────────────
+//
+// The ledger showed a period total built from the rows it had loaded — a page of
+// at most 50 — and a running balance that therefore started at zero in the
+// middle of the period. These pin the summary the screen now reads instead,
+// including the case the native review found: a partly refunded sale counts its
+// net, never its gross.
+
+async fn summary(client: &common::Client, from: &str, to: &str) -> serde_json::Value {
+    let f = common::encode_query(from);
+    let t = common::encode_query(to);
+    let resp = client
+        .get(&format!("/api/sales/summary?from={f}&to={t}"))
+        .await;
+    assert_eq!(resp.status(), 200, "the summary answers for {from}..{to}");
+    resp.json().clone()
+}
+
+/// Creates a product and records one sale of `quantity` at `price`.
+async fn sell(client: &common::Client, price: &str, quantity: i64) -> serde_json::Value {
+    let name = common::unique("summary-product");
+    let created = client
+        .post(
+            "/api/products",
+            serde_json::json!({
+                "name": name, "list_price": price, "unit": "unit", "initial_stock": 500
+            }),
+        )
+        .await;
+    created.expect_status(axum::http::StatusCode::CREATED);
+    let product = created.json().clone();
+
+    let sale = client
+        .post(
+            "/api/sales",
+            serde_json::json!({
+                "items": [{ "product_id": product["id"], "quantity": quantity }]
+            }),
+        )
+        .await;
+    sale.expect_status(axum::http::StatusCode::CREATED);
+    sale.json().clone()
+}
+
+#[sqlx::test]
+async fn v2_the_period_summary_is_empty_for_a_period_with_no_sales(pool: sqlx::PgPool) {
+    let client = common::client(pool);
+    let body = summary(&client, "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z").await;
+
+    assert_eq!(body["gross"], "0.00");
+    assert_eq!(body["refunded"], "0.00");
+    assert_eq!(body["net"], "0.00");
+    assert_eq!(body["documents"], 0);
+}
+
+#[sqlx::test]
+async fn v2_a_partly_refunded_sale_counts_its_net_not_its_gross(pool: sqlx::PgPool) {
+    // The defect the native review found. A 100.00 sale with a 30.00 credit note
+    // put 70.00 in the till; a total built from gross figures says 100.00 and
+    // overstates the shop's money by exactly what it gave back.
+    // Four units at 25.00 = a 100.00 sale; one unit comes back for 25.00. The
+    // refund's price is read from the sale line, never sent by the client — that
+    // rule is `plan-v2.5`'s and it is what makes "a 30.00 credit note" a
+    // quantity story, not an amount one.
+    let client = common::client(pool);
+    let sale = sell(&client, "25.00", 4).await;
+    assert_eq!(sale["total"], "100.00");
+    let sale_id = sale["id"].as_str().unwrap();
+    let item_id = sale["items"][0]["id"].as_str().unwrap();
+
+    client
+        .post(
+            &format!("/api/sales/{sale_id}/credit-notes"),
+            serde_json::json!({
+                "items": [{ "sale_item_id": item_id, "quantity": 1 }]
+            }),
+        )
+        .await
+        .expect_status(axum::http::StatusCode::CREATED);
+
+    let body = summary(&client, "2000-01-01T00:00:00Z", "2100-01-01T00:00:00Z").await;
+    assert_eq!(body["gross"], "100.00", "the document's own figure is unchanged");
+    assert_eq!(body["refunded"], "25.00");
+    assert_eq!(body["net"], "75.00", "what the till actually kept");
+    assert_eq!(body["documents"], 1);
+}
+
+#[sqlx::test]
+async fn v2_a_fully_refunded_sale_contributes_nothing_to_the_net(pool: sqlx::PgPool) {
+    let client = common::client(pool);
+    let sale = sell(&client, "100.00", 1).await;
+    let sale_id = sale["id"].as_str().unwrap();
+    let item_id = sale["items"][0]["id"].as_str().unwrap();
+
+    client
+        .post(
+            &format!("/api/sales/{sale_id}/credit-notes"),
+            serde_json::json!({
+                "items": [{ "sale_item_id": item_id, "quantity": 1 }]
+            }),
+        )
+        .await
+        .expect_status(axum::http::StatusCode::CREATED);
+
+    let body = summary(&client, "2000-01-01T00:00:00Z", "2100-01-01T00:00:00Z").await;
+    assert_eq!(body["net"], "0.00", "money that came straight back is not money kept");
+    // It still counts as a document: the shop worked it, and the ledger shows it.
+    assert_eq!(body["documents"], 1);
+}
+
+#[sqlx::test]
+async fn v2_the_summary_covers_the_whole_period_not_a_page_of_it(pool: sqlx::PgPool) {
+    // More documents than one page holds. The page-based total this endpoint
+    // replaced stopped at the limit and quietly undercounted.
+    let client = common::client(pool);
+    for _ in 0..60 {
+        sell(&client, "10.00", 1).await;
+    }
+
+    let body = summary(&client, "2000-01-01T00:00:00Z", "2100-01-01T00:00:00Z").await;
+    assert_eq!(body["documents"], 60);
+    assert_eq!(body["net"], "600.00", "sixty tens, not the fifty a page shows");
+}
+
 #[sqlx::test]
 async fn v2_the_default_scope_is_still_exactly_one_day(pool: sqlx::PgPool) {
     // The selector is new and every existing caller sends no `scope`. If the

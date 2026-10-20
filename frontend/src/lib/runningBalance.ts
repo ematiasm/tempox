@@ -31,10 +31,38 @@ import type { Amount } from './locale.js';
 
 /** The one fact about a row this module needs. */
 export type BalanceRow = {
+  /** The document's gross total, as the server recorded it. */
   readonly total: Amount;
-  /** Whether the document counts toward the day. A cancelled sale does not. */
+  /**
+   * What has already been given back on this document, summed across its credit
+   * notes. Zero for a document nobody refunded.
+   *
+   * This is not optional and it is not a convenience: a sale of 100 with a 30
+   * credit note moved 70 through the till, and a balance built from the gross
+   * total overstates the shop's money by exactly the amount it refunded. The
+   * first version of this module took only `total` and `counts`, and the review
+   * found it by asking what a *partial* refund contributes.
+   */
+  readonly refunded: Amount;
+  /** Whether the document counts toward the period at all. A cancelled sale
+   * (or one given back in full) does not. */
   readonly counts: boolean;
 };
+
+/**
+ * What a row actually contributes to the balance: gross less what came back.
+ *
+ * Clamped at zero rather than allowed to go negative: the server prevents
+ * over-refunding, so a negative contribution would mean the record and the
+ * screen disagree, and a negative "net" would silently *reduce* a running total
+ * that is meant to be a sum of money the shop kept.
+ */
+export function netOf(row: BalanceRow): number {
+  if (!row.counts) return 0;
+  const gross = toNumber(row.total);
+  const returned = toNumber(row.refunded);
+  return Math.max(0, gross - returned);
+}
 
 /**
  * The balance after each row, in the same order the rows were given.
@@ -46,7 +74,7 @@ export function runningBalances(rows: readonly BalanceRow[]): Amount[] {
   const balances: Amount[] = [];
   let sum = 0;
   for (const row of rows) {
-    if (row.counts) sum += toNumber(row.total);
+    sum += netOf(row);
     balances.push(fromCents(sum));
   }
   return balances;
@@ -62,7 +90,7 @@ export function runningBalances(rows: readonly BalanceRow[]): Amount[] {
 export function dayTotal(rows: readonly BalanceRow[]): Amount {
   let sum = 0;
   for (const row of rows) {
-    if (row.counts) sum += toNumber(row.total);
+    sum += netOf(row);
   }
   return fromCents(sum);
 }

@@ -60,6 +60,7 @@ export interface Dict {
   sales_scope_month: string;
   sales_today: string;
   sales_yesterday: string;
+  sales_scope_now: string;
   sales_older: string;
   sales_newer: string;
   sales_legend_confirmed: string;
@@ -88,6 +89,7 @@ export interface Dict {
   sales_cash_note: string;
   sales_shown_sales: string;
   sales_shown_note: string;
+  sales_shown_note_partial: (shown: number, total: number) => string;
   sales_bonus_lines: string;
   /** Receives the already-formatted amount, so the locale owns the figure (S12). */
   sales_bonus_lines_note: (amount: string) => string;

@@ -12,13 +12,15 @@
     ApiError,
     createCreditNote,
     getCash,
+    getSalesSummary,
     listSales,
+    type PeriodSummary,
     fetchDay,
     type DayRange,
     type Scope,
     type SaleListItem
   } from '#lib/api.js';
-  import { formatDay, formatMoney, formatQuantity, formatTime, sumAmounts } from '#lib/money.js';
+  import { formatDay, formatMoney, formatQuantity, formatTime } from '#lib/money.js';
   import {
     isFullyRefunded as saleIsFullyRefunded,
     parseRefundQuantity,
@@ -28,7 +30,7 @@
   } from '#lib/salesRefund.js';
   import { lang } from '#lib/i18n/index.svelte.js';
   import { createStaleNotice } from '#lib/screenTrust.js';
-  import { runningBalances, dayTotal } from '#lib/runningBalance.js';
+  import { runningBalances } from '#lib/runningBalance.js';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import Stamp from './Stamp.svelte';
 
@@ -53,6 +55,9 @@
   let shopZone = $state<string | undefined>(undefined);
 
   let rows = $state<SaleListItem[]>([]);
+  // The period's totals, from the database. Null until the first read lands, so
+  // the footer shows an em dash rather than a zero it has not earned.
+  let summary = $state<PeriodSummary | null>(null);
   let cash = $state<string | null>(null);
   let loading = $state(true);
   let error = $state<string | null>(null);
@@ -109,33 +114,25 @@
     return formatDay(start, shopZone);
   });
 
-  /** The rows the page actually holds — pagination shows no total count (S10). */
   /**
-   * What the visible page is worth, computed with the same rule the balance
-   * column uses.
+   * What the visible period is worth, as the database counts it.
    *
-   * It used to be `sumAmounts(rows.map(r => r.total))`, which adds every row
-   * including the cancelled and fully-refunded ones. That is a defensible
-   * definition on its own — "the documents shown above" — but sitting directly
-   * beneath a balance column that excludes them, it read as an error: the
-   * column said 28.760 and this said 37.660, two numbers for one day with no
-   * statement of why they differ.
+   * This used to be `dayTotal(rows)`: correct arithmetic over the wrong set. The
+   * ledger loads at most `PAGE` documents, so a busy period's footer quietly
+   * stopped at the page boundary — and the label above it said "period".
    *
-   * Measured, not assumed: it is `dayTotal` over the same rows, so the foot and
-   * the column cannot disagree. A statement whose foot does not add up to its
-   * own column is the one error a statement never makes.
+   * The running balance below is still computed from the rows on screen, because
+   * a column of per-row balances is a statement's maths and cannot be folded
+   * into one number by the server. What the server guarantees is the figure the
+   * shop reads to know where the period stands; the column starts from whatever
+   * is visible and says so wherever it could be mistaken for the period's own
+   * running total.
    */
-  const shownTotal = $derived(
-    dayTotal(
-      rows.map((row) => ({
-        total: row.total,
-        counts: !(isAnnulled(row) || isFullyRefunded(row))
-      }))
-    )
-  );
-  const refundedTotal = $derived(
-    sumAmounts(rows.flatMap((row) => row.credit_notes.map((note) => note.total))) ?? '0.00'
-  );
+  const shownTotal = $derived(summary?.net ?? null);
+  const refundedTotal = $derived(summary?.refunded ?? '0.00');
+  const periodDocuments = $derived(summary?.documents ?? null);
+  /** True when the period holds more documents than this page shows. */
+  const pageIsPartial = $derived(periodDocuments !== null && rows.length < periodDocuments);
 
   $effect(() => {
     // Read the reactive inputs so the effect re-runs when the span, the scope or
@@ -157,21 +154,28 @@
       if (cancelled || !salesFresh || !cashFresh) return;
       refundStale.retireAll();
     };
-    // Resolve both scoped and current-day boundaries through the server before
-    // requesting sales; a failed day lookup must never invent a client range.
-    // Both reads are scoped to the same span, so "is this the current one?" is
-    // one comparison rather than a special case per scope. The second read is
-    // always a day: it only needs to answer "what is the current boundary", and
-    // asking it for a week would compare a week's start against a day's.
-    Promise.all([fetchDay(at, scope), fetchDay(new Date())])
+    // Resolve the scoped span and the *same* span ending now, both through the
+    // server. The second read uses the same scope on purpose: comparing a week's
+    // start against a day's start is never equal, so "is this the current
+    // period?" was false on every day but the first — and the pager happily
+    // walked forward into the future. One scope, one comparison, all three
+    // widths.
+    Promise.all([fetchDay(at, scope), fetchDay(new Date(), scope)])
       .then(async ([day, today]) => {
         if (cancelled) return;
         range = day;
         todayFrom = today.from;
         shopZone = day.zone;
-        const sales = await listSales({ from: day.from, to: day.to, limit: PAGE, offset: 0 });
+        // The totals come from the database, not from the rows this page
+        // happens to hold: `listSales` caps at PAGE, so anything summed here
+        // omits the rest of the period. One request covers the whole span.
+        const [sales, totals] = await Promise.all([
+          listSales({ from: day.from, to: day.to, limit: PAGE, offset: 0 }),
+          getSalesSummary(day.from, day.to)
+        ]);
         if (cancelled) return;
         rows = sales;
+        summary = totals;
         expanded.clear();
         // The figures are current again, so nothing on this screen is stale. A
         // warning here would contradict the data beside it, and an operator who
@@ -298,6 +302,10 @@
     const computed = runningBalances(
       oldestFirst.map((row) => ({
         total: row.total,
+        // What went back on *this* document. The column is a sum of money the
+        // shop kept, so a partly refunded sale contributes its net: 100.00 sold
+        // with 30.00 returned moved 70.00 through the till, not 100.00.
+        refunded: row.credit_notes.reduce((sum, note) => sum + Number(note.total), 0).toFixed(2),
         counts: !(isAnnulled(row) || isFullyRefunded(row))
       }))
     );
@@ -438,6 +446,14 @@
       </div>
       <span class="date-chip figures">{scopeLabel}</span>
       <span class="pager">
+        <!-- One click back to the current period. The old Today/Yesterday pair
+             had this built into "Hoy"; when the pair became three widths the
+             reset went with it, and a cashier who paged three weeks back had no
+             way home except reloading the page. Disabled when already there, so
+             it never looks like it will do something. -->
+        <button type="button" onclick={() => (scopeInstant = new Date())} disabled={isCurrent}>
+          {lang.t.sales_scope_now}
+        </button>
         <button type="button" onclick={() => shiftSpan(-1)}>
           ← {lang.t.sales_older}
         </button>
@@ -531,9 +547,16 @@
                  No `<button>` wraps the row: a button cannot contain table
                  cells without breaking the table's semantics, and a screen
                  reader would lose the column headers. So the row is a
-                 keyboard-reachable element with its own role and the document
-                 id as its name, and the visible chevron stays as the
-                 affordance that tells the eye the row opens. -->
+                 keyboard-reachable element with its own role and state, and the
+                 visible chevron stays as the affordance that tells the eye the
+                 row opens.
+
+                 No `aria-label`, deliberately. An accessible name on a
+                 container *replaces* everything inside it, so labelling the row
+                 "Open the document #abc123" made a screen reader skip the time,
+                 the customer, the state and the amount — the four things the
+                 row exists to say. The document id is already the first cell's
+                 text, and the expanded state is announced by `aria-expanded`. -->
             <tr
               class="doc"
               class:open
@@ -541,7 +564,6 @@
               tabindex="0"
               aria-expanded={open}
               aria-controls="lines-{row.id}"
-              aria-label="{lang.t.sales_open_document} #{row.id.slice(0, 8)}"
               onclick={() => toggle(row.id)}
               onkeydown={(e) => {
                 if (e.key === 'Enter' || e.key === ' ') {
@@ -774,8 +796,18 @@
     </div>
     <div class="fig">
       <span class="label">{lang.t.sales_shown_sales}</span>
-      <span class="value figures">{formatMoney(shownTotal)}</span>
-      <span class="note">{lang.t.sales_shown_note}</span>
+      <span class="value figures">{shownTotal === null ? '—' : formatMoney(shownTotal)}</span>
+      <span class="note">
+        <!-- The note says which set the figure covers, and says when the table
+             beside it is only part of it. A footer that reads as the period's
+             total while the table above shows a page is the defect this
+             replaces. -->
+        {#if pageIsPartial}
+          {lang.t.sales_shown_note_partial(rows.length, periodDocuments ?? rows.length)}
+        {:else}
+          {lang.t.sales_shown_note}
+        {/if}
+      </span>
     </div>
     <!-- The gift-lines footing is gone. It answered "how many lines were given
          away", a number the shop never acts on from this screen, and it cost a
