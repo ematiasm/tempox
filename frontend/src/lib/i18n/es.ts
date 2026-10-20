@@ -63,6 +63,8 @@ const es: Dict = {
   sales_scope_month: 'Mes',
   sales_today: 'Hoy',
   sales_yesterday: 'Ayer',
+  sales_more_one: 'comprobante más',
+  sales_more_many: 'comprobantes más',
   sales_scope_now: 'Ahora',
   sales_older: 'Anterior',
   sales_newer: 'Siguiente',

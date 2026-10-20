@@ -60,6 +60,8 @@ export interface Dict {
   sales_scope_month: string;
   sales_today: string;
   sales_yesterday: string;
+  sales_more_one: string;
+  sales_more_many: string;
   sales_scope_now: string;
   sales_older: string;
   sales_newer: string;
