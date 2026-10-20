@@ -337,7 +337,7 @@
         {/if}
       </span>
     </div>
-    <div class="total figures">{formatMoney(total)}</div>
+    <div class="total figures">{total === null ? '—' : formatMoney(total)}</div>
   </div>
 
   <div class="actions">

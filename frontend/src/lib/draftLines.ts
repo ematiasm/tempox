@@ -36,23 +36,22 @@ export type ParsedLine = {
   readonly unitPrice: Amount;
 };
 
-/** A line's parse result: `null` until both fields are readable. */
+/**
+ * A line's parse result: `null` until both fields are readable.
+ *
+ * This is the one place a line's validity is decided; every other function here
+ * asks it rather than re-deriving the rule, so there is a single answer to "is
+ * this line money yet".
+ *
+ * A half-typed line is not money: it is either an empty field the cashier has not
+ * reached yet, or text that will never parse. Neither is a line to record, and
+ * neither may contribute to the preview total.
+ */
 export function parseDraftLine(line: DraftLine): ParsedLine | null {
   const quantity = parseQuantity(line.qtyText);
   const unitPrice = parseAmount(line.priceText);
   if (quantity === null || unitPrice === null) return null;
   return { quantity, unitPrice };
-}
-
-/**
- * A line that counts, or `null`.
- *
- * A half-typed line is not money: it is either an empty field the cashier has not
- * reached yet or text that will never parse. Neither is a line to record, and
- * neither may contribute to the preview total.
- */
-export function isCompleteLine(line: DraftLine): boolean {
-  return parseDraftLine(line) !== null;
 }
 
 /**
@@ -74,7 +73,7 @@ export function completeLines<T extends DraftLine>(lines: readonly T[]): (T & Pa
 /**
  * Whether any line holds text that does not parse.
  *
- * Deliberately different from `!isCompleteLine`: an **empty** field is not an
+ * Deliberately different from `parseDraftLine`: an **empty** field is not an
  * error, it is a field the cashier has not reached. Only text that is present and
  * unreadable is a mistake worth telling them about. Without this distinction the
  * form would claim "something you typed is invalid" the instant a new empty line
@@ -95,42 +94,34 @@ export function hasInvalidLine(lines: readonly DraftLine[]): boolean {
 /**
  * The exact sum of a set of complete lines, as an `Amount`.
  *
- * One implementation for all three places that used to sum money by hand: the
- * sales draft preview, the purchase draft preview, and `sumAmounts`' callers.
- * The duplicates agreed only because `parseAmount` and `lineTotalAmount` both
- * refuse a negative, so no line total can carry a sign today — an agreement of
- * the current domain, not of the code.
+ * One implementation for all the places that used to sum money by hand: the sales
+ * draft preview and the purchase draft preview, plus `sumAmounts`' callers. The
+ * duplicates agreed only because `parseAmount` and `lineTotalAmount` both refuse a
+ * negative, so no line total can carry a sign today -- an agreement of the current
+ * domain, not of the code.
  *
  * Summed as whole cents in `BigInt` so no float ever touches money. Returns
  * `'0.00'` for no lines, because an empty draft previews as zero and not as a
  * missing figure.
+ *
+ * A line whose total cannot be computed is **refused**, not skipped. `lineTotalAmount`
+ * returns `null` for a non-positive quantity or a malformed price, neither of which
+ * `parseDraftLine` can produce -- so reaching that branch means the two parsers have
+ * started to disagree. Skipping it would quietly under-report the preview total, and
+ * a wrong total that looks plausible is worse than a dash. `null` propagates so the
+ * caller shows one.
  */
-export function draftTotal(complete: readonly ParsedLine[]): Amount {
+export function draftTotal(complete: readonly ParsedLine[]): Amount | null {
   let cents = 0n;
   for (const line of complete) {
     const lineTotal = lineTotalAmount(line.quantity, line.unitPrice);
-    // `lineTotalAmount` refuses a non-positive quantity or a malformed price. A
-    // caller only reaches here with a parsed line, so `null` would mean the two
-    // parsers disagree; skipping keeps the sum truthful instead of inventing a
-    // figure for a line that has none.
-    if (lineTotal === null) continue;
+    if (lineTotal === null) return null;
     const [whole, fraction] = lineTotal.split('.');
     cents += BigInt(whole) * 100n + BigInt(fraction);
   }
   const negative = cents < 0n;
   const digits = (negative ? -cents : cents).toString().padStart(3, '0');
   return `${negative ? '-' : ''}${digits.slice(0, -2)}.${digits.slice(-2)}`;
-}
-
-/**
- * The sum of a draft's complete lines, for a form that previews as it is typed.
- *
- * Equivalent to `draftTotal(completeLines(lines))`, in one call. The sales sheet
- * uses this shape; the purchase sheet wants all-or-nothing and uses
- * `draftTotal` behind its own guard.
- */
-export function draftTotalOf(lines: readonly DraftLine[]): Amount {
-  return draftTotal(completeLines(lines));
 }
 
 /**
@@ -148,7 +139,7 @@ export function canRecord(lines: readonly DraftLine[], submitting: boolean): boo
 
 /** Whether every line parses, and there is at least one. The purchase sheet's rule. */
 export function everyLineComplete(lines: readonly DraftLine[]): boolean {
-  return lines.length > 0 && lines.every(isCompleteLine);
+  return lines.length > 0 && lines.every((line) => parseDraftLine(line) !== null);
 }
 
 /** How many whole units the complete lines amount to, for the draft's summary. */

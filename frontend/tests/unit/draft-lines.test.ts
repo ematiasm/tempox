@@ -4,10 +4,8 @@ import {
   canRecord,
   completeLines,
   draftTotal,
-  draftTotalOf,
   everyLineComplete,
   hasInvalidLine,
-  isCompleteLine,
   isInvalidLine,
   parseDraftLine,
   unitCountOf,
@@ -67,11 +65,11 @@ describe('parseDraftLine', () => {
   });
 });
 
-describe('isCompleteLine', () => {
-  it('is true only when both fields parse', () => {
-    expect(isCompleteLine(line('1', '10,00'))).toBe(true);
-    expect(isCompleteLine(line('', '10,00'))).toBe(false);
-    expect(isCompleteLine(line('1', ''))).toBe(false);
+describe('parseDraftLine is the single answer to "is this line money yet"', () => {
+  it('is null unless both fields parse', () => {
+    expect(parseDraftLine(line('1', '10,00'))).not.toBeNull();
+    expect(parseDraftLine(line('', '10,00'))).toBeNull();
+    expect(parseDraftLine(line('1', ''))).toBeNull();
   });
 });
 
@@ -173,13 +171,18 @@ describe('draftTotal', () => {
   });
 });
 
-describe('draftTotalOf', () => {
-  it('is the total of the lines that count, ignoring half-typed ones', () => {
-    expect(draftTotalOf([line('2', '10,00'), line('', ''), line('1', '5,00')])).toBe('25.00');
+describe('draftTotal refuses rather than skipping a line it cannot total', () => {
+  it('is null when a line total cannot be computed, instead of under-reporting', () => {
+    // `parseDraftLine` cannot produce this shape today (it refuses a non-positive
+    // quantity and a malformed price), so this pins the *policy* for the day the
+    // two parsers start to disagree: a plausible-looking wrong total is worse than
+    // a dash.
+    expect(draftTotal([{ quantity: 0, unitPrice: '10.00' }])).toBeNull();
+    expect(draftTotal([{ quantity: 1, unitPrice: 'nope' as never }])).toBeNull();
   });
 
-  it('is zero when nothing has been typed yet', () => {
-    expect(draftTotalOf([line('', '')])).toBe('0.00');
+  it('still sums the lines it can, and reports a number when all of them work', () => {
+    expect(draftTotal([{ quantity: 1, unitPrice: '10.00' }])).toBe('10.00');
   });
 });
 
