@@ -1,6 +1,6 @@
 ---
 name: Tempox
-description: A shop's sales ledger — every event wears its state on its face.
+description: A shop's business ledger — every event wears its state on its face.
 colors:
   crimson: "#a81b2a"
   crimson-deep: "#7e1420"
