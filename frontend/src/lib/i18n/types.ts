@@ -55,6 +55,9 @@ export interface Dict {
   sales_draft_hint: string;
   sales_price_unit: string;
   sales_scope: string;
+  sales_scope_day: string;
+  sales_scope_week: string;
+  sales_scope_month: string;
   sales_today: string;
   sales_yesterday: string;
   sales_older: string;
@@ -71,13 +74,13 @@ export interface Dict {
   sales_no_sales_day: string;
   sales_time: string;
   sales_open_document: string;
+  sales_refunded_state: string;
   sales_running_balance: string;
   sales_sale: string;
   sales_items: string;
   sales_status: string;
   sales_total: string;
   sales_annulled: string;
-  sales_refunded_state: string;
   sales_lines_of: string;
   sales_unit_price: string;
   sales_bonus: string;

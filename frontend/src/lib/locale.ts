@@ -84,6 +84,12 @@ export interface LocaleFormat {
   day(date: Date, zone?: string): string;
 
   /**
+   * The name of a calendar month, for the ledger's chip when the page is scoped
+   * to a month. "octubre de 2026", not a day: a month page is not about one day.
+   */
+  month(date: Date, zone?: string): string;
+
+  /**
    * A wall-clock time, for a document's stamp.
    *
    * `zone` names the shop's IANA timezone. It is required of every caller that
@@ -176,6 +182,23 @@ function makeDateFmt(tag: string) {
   };
 }
 
+function makeMonthFmt(tag: string) {
+  // A month chip names the month, not a day inside it. Same caching reason as
+  // the day formatter, and the same `Intl` tz database so the month is the
+  // shop's month rather than the browser's.
+  const byZone = new Map<string, Intl.DateTimeFormat>();
+  return (date: Date, zone?: string) => {
+    const opts: Intl.DateTimeFormatOptions = { year: 'numeric', month: 'long' };
+    if (!zone) return new Intl.DateTimeFormat(tag, opts).format(date);
+    let fmt = byZone.get(zone);
+    if (!fmt) {
+      fmt = new Intl.DateTimeFormat(tag, { ...opts, timeZone: zone });
+      byZone.set(zone, fmt);
+    }
+    return fmt.format(date);
+  };
+}
+
 function makeTimeFmt(tag: string) {
   // The formatter is cached per zone because `Intl.DateTimeFormat` construction
   // is the expensive part and the ledger renders one per row. `Intl` itself
@@ -218,6 +241,7 @@ export const esAR: LocaleFormat = (() => {
     amountHint: () => '0,00',
     amountInput: (amount) => amount.replace('.', ','),
     day: makeDateFmt('es-AR'),
+    month: makeMonthFmt('es-AR'),
     time: makeTimeFmt('es-AR')
   };
 })();
@@ -239,6 +263,7 @@ export const en: LocaleFormat = (() => {
     amountHint: () => '0.00',
     amountInput: (amount) => amount,
     day: makeDateFmt('en'),
+    month: makeMonthFmt('en'),
     time: makeTimeFmt('en')
   };
 })();

@@ -373,7 +373,52 @@ describe('fetchDay (S8)', () => {
     expect(error).toBeInstanceOf(ApiError);
     expect((error as ApiError).status).toBe(500);
   });
+
+  // The scope is a word sent to the server, never two instants computed here:
+  // a client that chose its own boundaries could scope itself to a week the shop
+  // never worked. What matters on the wire is that the default stays silent and
+  // a real choice is named.
+  it('sends no scope parameter for the default day', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse(dayRangeFixture()));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchDay(new Date('2026-10-14T19:42:00.000Z'));
+
+    const url = calledUrl(fetchMock);
+    expect(url.searchParams.has('scope')).toBe(false);
+  });
+
+  it.each(['week', 'month'] as const)('names the %s scope explicitly', async (scope) => {
+    const fetchMock = vi.fn(async () => jsonResponse(dayRangeFixture()));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchDay(new Date('2026-10-14T19:42:00.000Z'), scope);
+
+    const url = calledUrl(fetchMock);
+    expect(url.searchParams.get('scope')).toBe(scope);
+  });
+
+  it('sends no scope parameter for an explicit day either', async () => {
+    // `day` is the server's default, so sending it would only risk a server
+    // that predates the parameter refusing a value it does not know.
+    const fetchMock = vi.fn(async () => jsonResponse(dayRangeFixture()));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchDay(new Date('2026-10-14T19:42:00.000Z'), 'day');
+
+    const url = calledUrl(fetchMock);
+    expect(url.searchParams.has('scope')).toBe(false);
+  });
 });
+
+function dayRangeFixture() {
+  return {
+    from: '2026-10-14T03:00:00Z',
+    to: '2026-10-15T03:00:00Z',
+    prev: '2026-10-13T03:00:00Z',
+    next: '2026-10-15T03:00:00Z'
+  };
+}
 
 describe('dayRange (S8, S9)', () => {
   it('spans local midnight to local midnight around the given instant', () => {

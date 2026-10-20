@@ -15,6 +15,7 @@
     listSales,
     fetchDay,
     type DayRange,
+    type Scope,
     type SaleListItem
   } from '#lib/api.js';
   import { formatDay, formatMoney, formatQuantity, formatTime, sumAmounts } from '#lib/money.js';
@@ -40,8 +41,11 @@
 
   const PAGE = 50;
 
-  // Keep the instant the page is scoped to; the server resolves its local day.
+  // Keep the instant the page is scoped to; the server resolves its span.
   let scopeInstant = $state(new Date());
+  // Which calendar span the page shows. The word is sent to the server, which
+  // owns the boundaries — see `fetchDay`.
+  let scope = $state<Scope>('day');
   let range = $state<DayRange | null>(null);
   let todayFrom = $state<string | null>(null);
   // The shop's own zone, as the server names it. Every time on the page is
@@ -80,8 +84,10 @@
   // `SvelteMap` so retiring it re-renders.
   const refundStale = createStaleNotice(new SvelteMap<string, string>());
 
-  // The server's current-day boundary is the sole authority for this state.
-  const isToday = $derived(range !== null && todayFrom !== null && range.from === todayFrom);
+  // The server's current-span boundary is the sole authority for this state.
+  // It is "today"/"this week"/"this month" depending on the scope, so one
+  // comparison covers all three.
+  const isCurrent = $derived(range !== null && todayFrom !== null && range.from === todayFrom);
 
   // The chip and the times carry the active language (S6). They read from the
   // same formatters the money does, so a language switch cannot leave the dates
@@ -90,9 +96,18 @@
   // is. `range.from` is that day's first instant and `shopZone` says which clock
   // to read it on; using `scopeInstant` here labels the page with the machine's
   // date, which is a day late on a UTC browser (S19).
-  const scopeLabel = $derived(
-    range ? formatDay(new Date(range.from), shopZone) : formatDay(scopeInstant, shopZone)
-  );
+  const scopeLabel = $derived.by(() => {
+    if (!range) return formatDay(scopeInstant, shopZone);
+    const start = new Date(range.from);
+    if (scope === 'month') return lang.fmt.month(start, shopZone);
+    if (scope === 'week') {
+      // A week needs both ends: "12 oct 2026" alone does not say the span, and
+      // the end is exclusive, so the last day shown is the one before it.
+      const lastDay = new Date(new Date(range.to).getTime() - 1);
+      return `${formatDay(start, shopZone)} – ${formatDay(lastDay, shopZone)}`;
+    }
+    return formatDay(start, shopZone);
+  });
 
   /** The rows the page actually holds — pagination shows no total count (S10). */
   /**
@@ -123,9 +138,10 @@
   );
 
   $effect(() => {
-    // Read the reactive inputs so the effect re-runs when the day or the
-    // refresh token changes.
+    // Read the reactive inputs so the effect re-runs when the span, the scope or
+    // the refresh token changes.
     const at = scopeInstant;
+    void scope;
     void refreshToken;
     let cancelled = false;
 
@@ -143,7 +159,11 @@
     };
     // Resolve both scoped and current-day boundaries through the server before
     // requesting sales; a failed day lookup must never invent a client range.
-    Promise.all([fetchDay(at), fetchDay(new Date())])
+    // Both reads are scoped to the same span, so "is this the current one?" is
+    // one comparison rather than a special case per scope. The second read is
+    // always a day: it only needs to answer "what is the current boundary", and
+    // asking it for a week would compare a week's start against a day's.
+    Promise.all([fetchDay(at, scope), fetchDay(new Date())])
       .then(async ([day, today]) => {
         if (cancelled) return;
         range = day;
@@ -190,16 +210,34 @@
   });
 
   /**
-   * Pages to the adjacent day the *server* named.
+   * Pages to the adjacent span the *server* named.
    *
-   * The bounds come from `range.prev`/`range.next`, computed by the same
-   * calendar that scoped the page, so a zone whose DST change crosses midnight
-   * cannot make one click skip a day.
+   * The old version shifted the instant by one local calendar day on the
+   * browser's clock, which is not one shop day: in a zone whose DST change
+   * crosses midnight (Santiago, Havana) a single click could skip a day or land
+   * two back. `range.prev` and `range.next` are already the neighbouring span's
+   * first instants, computed by the same calendar that scoped the page — and
+   * under a week or month scope they are the neighbouring week or month, so one
+   * function pages all three.
    */
-  function shiftDay(delta: number) {
+  function shiftSpan(delta: number) {
     if (!range) return;
     const target = delta < 0 ? range.prev : range.next;
     scopeInstant = new Date(target);
+  }
+
+  /**
+   * Changes the width of the window, leaving the instant where it is.
+   *
+   * Deliberately not `scopeInstant = new Date()`: the width and the position are
+   * separate questions. Pressing "Semana" while the page is showing yesterday
+   * must show yesterday's week; jumping to today's week would silently discard a
+   * navigation the cashier just made. Returning to *now* is what the "Hoy"
+   * button inside each scope does, and what the pager's disabled state enforces
+   * once you are there.
+   */
+  function setScope(next: Scope) {
+    scope = next;
   }
 
   function toggle(id: string) {
@@ -382,20 +420,28 @@
       <div class="sub">{lang.t.sales_ledger_sub}</div>
     </div>
     <div class="scope">
+      <!-- Two independent controls, because they answer two different
+           questions. The first picks the *width* of the window; the second
+           moves that window one step along. Pressing "Semana" while looking at
+           yesterday should show yesterday's week, not jump back to today — so
+           it sets the span and leaves the instant alone. -->
       <div class="segmented" role="group" aria-label={lang.t.sales_scope}>
-        <button type="button" aria-pressed={isToday} onclick={() => (scopeInstant = new Date())}>
-          {lang.t.sales_today}
+        <button type="button" aria-pressed={scope === 'day'} onclick={() => setScope('day')}>
+          {lang.t.sales_scope_day}
         </button>
-        <button type="button" aria-pressed={!isToday} onclick={() => shiftDay(-1)}>
-          {lang.t.sales_yesterday}
+        <button type="button" aria-pressed={scope === 'week'} onclick={() => setScope('week')}>
+          {lang.t.sales_scope_week}
+        </button>
+        <button type="button" aria-pressed={scope === 'month'} onclick={() => setScope('month')}>
+          {lang.t.sales_scope_month}
         </button>
       </div>
       <span class="date-chip figures">{scopeLabel}</span>
       <span class="pager">
-        <button type="button" onclick={() => shiftDay(-1)}>
+        <button type="button" onclick={() => shiftSpan(-1)}>
           ← {lang.t.sales_older}
         </button>
-        <button type="button" onclick={() => shiftDay(1)} disabled={isToday}>
+        <button type="button" onclick={() => shiftSpan(1)} disabled={isCurrent}>
           {lang.t.sales_newer} →
         </button>
       </span>
@@ -452,10 +498,10 @@
     </div>
   {:else if rows.length === 0}
     <div class="empty">
-      <p>{isToday ? lang.t.sales_no_sales_today : lang.t.sales_no_sales_day}</p>
+      <p>{isCurrent ? lang.t.sales_no_sales_today : lang.t.sales_no_sales_day}</p>
       <div class="pager">
-        <button type="button" onclick={() => shiftDay(-1)}>← {lang.t.sales_older}</button>
-        <button type="button" onclick={() => shiftDay(1)} disabled={isToday}>
+        <button type="button" onclick={() => shiftSpan(-1)}>← {lang.t.sales_older}</button>
+        <button type="button" onclick={() => shiftSpan(1)} disabled={isCurrent}>
           {lang.t.sales_newer} →
         </button>
       </div>

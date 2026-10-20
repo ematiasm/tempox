@@ -542,9 +542,23 @@ export function dayRange(at: Date = new Date()): DayRange {
 }
 
 /** The shop-local day containing `at`, as determined by the server. */
-export async function fetchDay(at: Date): Promise<DayRange> {
+/** Which span of the shop's calendar a ledger page is scoped to. */
+export type Scope = 'day' | 'week' | 'month';
+
+/**
+ * Asks the server which instants make up the span containing `at`.
+ *
+ * The span is never computed here. `scope` is a word, the boundaries come back
+ * as instants: a client that chose its own boundaries could scope itself to a
+ * week the shop never worked, which is the same reason the day is computed
+ * server-side (S7).
+ */
+export async function fetchDay(at: Date, scope: Scope = 'day'): Promise<DayRange> {
   const url = new URL('/api/day', BASE);
   url.searchParams.set('at', at.toISOString());
+  // Sent only when it is not the default, so an older server that does not know
+  // the parameter keeps answering exactly as before.
+  if (scope !== 'day') url.searchParams.set('scope', scope);
   return request<DayRange>(url);
 }
 
