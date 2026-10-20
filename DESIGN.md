@@ -78,6 +78,7 @@ The printed account statement is the money document the shop already trusts. The
 The signature is a running-balance column in the ledger's left margin, recomputed per row so it reads as one continuous number down the page. Work areas are contained in closed, bordered panels: their own edges establish separation, rather than whitespace alone. The sales surface and shell are documented here; `/products` and `/purchases` have not yet been redesigned and remain outside this system's implemented scope.
 
 **Key Characteristics:**
+
 - A cold near-white ground, dark ink, quiet grey and a restrained blue accent.
 - Computed money figures, with a continuous running balance as the ledger's signature.
 - Closed, white work panels separated by their own border and a 24px gap.
@@ -88,9 +89,11 @@ The signature is a running-balance column in the ledger's left margin, recompute
 Near-white surfaces and cool rules let ink carry the reading; blue is reserved for the running balance and active navigation, while red and amber communicate exceptional document states.
 
 ### Primary
+
 - **Statement Blue** (`#0b5f8a`): the running-balance figures and active navigation marker; it is a signal, not a general decorative fill.
 
 ### Neutral
+
 - **Cold Ground** (`#fbfcfd`): the page background.
 - **White Surface** (`#ffffff`): the work panels and control surfaces.
 - **Fine Rule** (`#e8ecf1`): the quiet border and separator for contained work areas and calculated rows.
@@ -99,6 +102,7 @@ Near-white surfaces and cool rules let ink carry the reading; blue is reserved f
 - **Soft Ink** (`#5f6f7d`): secondary copy and supporting information.
 
 ### Named Rules
+
 **The Balance Owns the Accent Rule.** Keep the blue accent for the running-balance column and active destination. Focus and caret affordances also use the accent in the shared stylesheet; do not turn it into a general-purpose section colour or filled action colour.
 
 **The State Is Readable Rule.** State is text plus a 2px tick. Confirmed stays in ink; annulled or refunded uses the void state colour; pending uses the pending state colour. Never encode a state only by colour.
@@ -111,6 +115,7 @@ Near-white surfaces and cool rules let ink carry the reading; blue is reserved f
 **Character:** Condensed Plex carries figures, labels and headings; Plex Text carries prose. Amounts use tabular numerals so their columns stay aligned.
 
 ### Hierarchy
+
 - **Figures** (600, 0.75rem–2.375rem across the implemented scale, line-height 1.45 at the base): amounts and other values that need to align; use tabular numerals.
 - **Headings** (600, 1.25rem–1.75rem, line-height 1.1–1.15): page and work-panel titles, set in Plex Condensed.
 - **Body** (400, 0.875rem, line-height 1.45): prose, hints and table content.
@@ -135,37 +140,47 @@ Controls use restrained 2px corners. Work panels use an 8px radius and clip thei
 ## Components
 
 ### Primary Action
+
 The primary action is a solid ink bar at the foot of the draft it closes, not a page-wide band.
+
 - **Shape:** restrained corners (2px).
 - **Color:** ink fill with white text; never the blue accent.
 - **Size:** full available width in the sales draft, with 12px 18px padding.
 - **Disabled:** white surface, soft-ink text and a dashed strong-rule outline, with an adjacent hint explaining why it is not ready.
 
 ### Work Panels
+
 Each work area is a closed surface with a visible edge.
+
 - **Shape:** 8px radius, clipped contents.
 - **Background:** white surface.
 - **Border:** 1px fine rule.
 - **Separation:** 24px panel gap in the sales workspace.
 
 ### Navigation
+
 The rail is the page's margin, not a filled slab.
+
 - **Desktop:** 88px wide, transparent against the ground, separated from content by a 1px fine rule.
 - **Active:** blue text and a blue left rule; it is not a filled block. At narrow widths, the rail becomes a horizontal bar and the active marker moves to its bottom edge.
 
 ### Ledger Row and Balance
+
 Rows are document figures, not generic CRUD records.
+
 - **Signature:** a recomputed, right-aligned running balance in the ledger's left margin, set in blue and tabular figures.
 - **Rows:** fine-rule separators; the balance column has a right boundary to distinguish its continuous reading column.
 - **Annulled or fully refunded:** the row's amount and inherited balance are struck through; a cancellation does not add money to the running balance.
 
 ### Document State
+
 - **Shape:** uppercase condensed text beside a 2px tick; no filled background or stamp silhouette.
 - **Confirmed:** ink.
 - **Annulled or refunded:** void-state red.
 - **Pending:** pending-state amber.
 
 ### Fields
+
 - **Style:** white surface, 1px strong-rule border, 2px radius, 10px 11px padding.
 - **Focus:** visible 2px accent outline with a 2px offset; the caret also uses the accent.
 - **Figure fields:** condensed, tabular and right-aligned.
@@ -173,6 +188,7 @@ Rows are document figures, not generic CRUD records.
 ## Do's and Don'ts
 
 ### Do:
+
 - **Do** recompute and show a running balance beside each ledger row.
 - **Do** use the blue accent for the balance and active destination, and preserve its observed use for focus and caret affordances.
 - **Do** keep work areas closed by their own white surface, fine-rule border and 8px radius, with the observed 24px gap between sales panels.
@@ -181,7 +197,8 @@ Rows are document figures, not generic CRUD records.
 - **Do** strike through a cancelled or fully refunded row's amount and inherited balance.
 
 ### Don't:
+
 - **Don't** use a filled state pill or a rotated rubber stamp.
 - **Don't** make the primary action a full-bleed accent band or an accent-filled button.
 - **Don't** replace the panel's separating border with whitespace alone.
-- **Don't** use a name from the transitional token alias block for a new component. It is temporary migration debt kept so the two remaining legacy consumers render; remove each alias when its last legacy consumer is rewritten.
+- **Don't** use a name from the transitional token alias block for a new component. It is temporary migration debt, kept only so the components written for the previous world still render while they are rewritten one at a time; six of them consume it today. Remove each alias when its last consumer is gone.

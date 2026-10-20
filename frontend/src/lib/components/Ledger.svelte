@@ -1182,7 +1182,11 @@
     font-weight: 600;
     color: var(--accent);
     padding-right: 16px !important;
-    border-right: 1px solid var(--rule);
+    /* The boundary that makes the balance read as its own continuous column.
+       In `--rule-strong`, not `--rule`: at `--rule` the line measures 1.19:1
+       against the surface, which is painted but invisible — the design document
+       claimed a boundary the render did not show. */
+    border-right: 1px solid var(--rule-strong);
   }
   .balance.void {
     /* A cancelled document never moved money. Its balance still shows what it
