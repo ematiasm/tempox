@@ -73,6 +73,7 @@ const es: Dict = {
   sales_no_sales_today: 'Todavía no hay ventas hoy — la primera aparece acá con su sello.',
   sales_no_sales_day: 'No hay ventas ese día.',
   sales_time: 'Hora',
+  sales_running_balance: 'Saldo',
   sales_sale: 'Venta',
   sales_items: 'Líneas',
   sales_status: 'Estado',

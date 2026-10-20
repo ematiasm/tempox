@@ -27,6 +27,7 @@
   } from '#lib/salesRefund.js';
   import { lang } from '#lib/i18n/index.svelte.js';
   import { createStaleNotice } from '#lib/screenTrust.js';
+  import { runningBalances } from '#lib/runningBalance.js';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import Stamp from './Stamp.svelte';
 
@@ -224,6 +225,37 @@
     return saleIsFullyRefunded(row.items, row.credit_notes);
   }
 
+  /**
+   * The running balance each row carries, keyed by sale id.
+   *   * The ledger lists newest first; a statement reads down from the oldest, so
+   * the column is computed over the reversed rows and handed back keyed by id.
+   * The arithmetic itself lives in `runningBalance.ts`, where a unit test can
+   * reach it — a column that merely repeats each row's own total looks correct
+   * in a screenshot and is wrong on paper.
+   *
+   * A cancelled sale contributes nothing but still inherits the balance above
+   * it, which is why this is keyed rather than positional: the row stays
+   * visible and struck through, and its cell reads the same number as the row
+   * before it.
+   */
+  const balances = $derived.by(() => {
+    const oldestFirst = [...rows].reverse();
+    const computed = runningBalances(
+      oldestFirst.map((row) => ({
+        total: row.total,
+        counts: !(isAnnulled(row) || isFullyRefunded(row))
+      }))
+    );
+    // `SvelteMap`, not `Map`: the column must recompute when the day reloads.
+    // A plain Map inside `$derived.by` is rebuilt on every recompute anyway, but
+    // the lint rule is right about the class — a mutable Map in Svelte state is
+    // the shape that silently stops updating when it is hoisted out of a
+    // derived, and the next person to touch this will not know which one it is.
+    const byId = new SvelteMap<string, string>();
+    oldestFirst.forEach((row, index) => byId.set(row.id, computed[index]));
+    return byId;
+  });
+
   /** The draft refund text for one line: what was refunded sits above it as "left". */
   function refundText(rowId: string, itemId: string, remaining: number): string {
     return refundDraft.get(rowId)?.get(itemId) ?? String(remaining);
@@ -416,6 +448,7 @@
       <table class="docs">
         <thead>
           <tr>
+            <th scope="col" class="balance-col">{lang.t.sales_running_balance}</th>
             <th scope="col">{lang.t.sales_time}</th>
             <th scope="col">{lang.t.sales_sale}</th>
             <th scope="col">{lang.t.sales_customer}</th>
@@ -429,6 +462,15 @@
             {@const open = expanded.has(row.id)}
             {@const annulled = isAnnulled(row) || isFullyRefunded(row)}
             <tr class="doc">
+              <!-- The running balance, in the margin where a printed statement
+                   puts it. It is the design's signature: a column that reads as
+                   one continuous number down the page. A cancelled document
+                   shows the balance it inherits, struck through with the rest
+                   of its row, because money that never moved cannot appear in
+                   a running total. -->
+              <td class="figures balance" class:void={annulled}>
+                {formatMoney(balances.get(row.id) ?? row.total)}
+              </td>
               <td class="figures time">
                 {formatTime(new Date(row.created_at), shopZone)}
               </td>
@@ -476,7 +518,7 @@
             </tr>
             {#if open}
               <tr class="lines-row">
-                <td colspan="6">
+                <td colspan="7">
                   <div class="lines" id="lines-{row.id}">
                     <table>
                       <caption>{lang.t.sales_lines_of} #{row.id.slice(0, 8)}</caption>
@@ -778,6 +820,26 @@
     overflow-x: auto;
     border-radius: 0 0 4px 4px;
   }
+  /* The running-balance column: the design's signature move, set in the margin
+     the way a printed statement puts it. It is right-aligned like every other
+     figure so the digits line up down the page and the column reads as one
+     continuous number rather than six unrelated ones. */
+  .balance-col,
+  .balance {
+    text-align: right;
+    white-space: nowrap;
+    font-weight: 600;
+    color: var(--accent);
+    padding-right: 16px !important;
+    border-right: 1px solid var(--rule);
+  }
+  .balance.void {
+    /* A cancelled document never moved money. Its balance still shows what it
+       inherits, struck through with the rest of the row. */
+    color: var(--ink-soft);
+    text-decoration: line-through;
+  }
+
   table.docs {
     width: 100%;
     min-width: 640px;

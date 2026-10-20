@@ -34,87 +34,134 @@
 
 <svelte:window {onkeydown} />
 
-<header class="band">
-  <div>
+<!-- The header carries the day's count, not a coloured band with the action in
+     it. In the statement world the page does not shout: the figures are the
+     loudest thing on it, and the single action sits where the work happens —
+     at the foot of the draft it closes. The action is still reachable from the
+     keyboard exactly as before, so F2 keeps meaning one thing. -->
+<header class="head">
+  <div class="head-line">
     <h1>{lang.t.sales_title}</h1>
-    <p>{lang.t.sales_tagline}</p>
+    <span class="tagline">{lang.t.sales_tagline}</span>
   </div>
-  <button
-    class="action"
-    disabled={!ready}
-    onclick={() => draft?.record()}
-    aria-keyshortcuts="F2 Control+Enter"
-  >
-    {lang.t.sales_action} <kbd>F2</kbd>
-  </button>
 </header>
 
 <div class="workspace">
-  <SaleDraft bind:this={draft} onrecorded={() => refreshToken++} onready={(r) => (ready = r)} />
-  <Ledger {refreshToken} />
+  <section class="panel" aria-label={lang.t.sales_draft_title}>
+    <SaleDraft bind:this={draft} onrecorded={() => refreshToken++} onready={(r) => (ready = r)} />
+    <!-- The page's single next action, at the foot of the draft it closes. It
+         used to live in a coloured band above everything, which made the page
+         shout before it had said anything; here it sits where the work ends.
+         F2 still reaches it through the route's handler, so the shortcut keeps
+         meaning exactly one thing. -->
+    <div class="action-foot">
+      <button
+        class="do"
+        disabled={!ready}
+        onclick={() => draft?.record()}
+        aria-keyshortcuts="F2 Control+Enter"
+      >
+        {lang.t.sales_action} <kbd>F2</kbd>
+      </button>
+    </div>
+  </section>
+  <section class="panel panel-ledger" aria-label={lang.t.sales_ledger_title}>
+    <Ledger {refreshToken} />
+  </section>
 </div>
 
 <style>
-  .band {
-    background: var(--crimson);
-    color: #fff;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 24px;
-    padding: 14px 26px 14px 28px;
-    min-height: 78px;
+  .head {
+    padding: 22px 26px 16px 28px;
   }
-  .band h1 {
+  .head-line {
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    flex-wrap: wrap;
+  }
+  .head h1 {
     font-family: var(--font-figure);
     font-size: var(--step-4);
     font-weight: 600;
     line-height: 1.1;
+    letter-spacing: -0.01em;
+    color: var(--ink);
   }
-  .band p {
-    color: rgb(255 255 255 / 0.94);
+  /* Beside the heading, never above it. A kicker is a ban in this system's
+     craft floor: the heading carries its own weight, and a label over it is
+     decoration pretending to be hierarchy. */
+  .tagline {
     font-size: var(--step-0);
-    margin-top: 2px;
+    color: var(--ink-soft);
   }
-  .action {
+
+  /* Two closed panels, separated by a 24px gap AND their own edges. The border
+     is what separates them; the gap only keeps the rules from touching. Each
+     area starts and stops on the page, which is what makes a row belonging to
+     the day read differently from a row belonging to the draft. */
+  .workspace {
+    display: grid;
+    grid-template-columns: 480px minmax(0, 1fr);
+    gap: var(--panel-gap);
+    align-items: start;
+    padding: 0 26px 26px 28px;
+  }
+
+  .panel-ledger {
+    /* The day is the tall column: it grows and the draft stays where it is. */
+    min-height: 480px;
+  }
+
+  /* The action is a solid ink bar, never the accent: the accent on this page
+     belongs to the running balance, and a second use of it would dilute the one
+     number the column exists to make readable. */
+  .action-foot {
+    padding: 0 20px 20px;
+  }
+  .do {
+    width: 100%;
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     gap: 10px;
-    background: var(--paper-raised);
-    color: var(--ink);
-    border: 0;
+    background: var(--ink);
+    color: var(--surface);
+    border: 1px solid var(--ink);
     border-radius: var(--radius);
     padding: 12px 18px;
     font-family: var(--font-figure);
-    font-size: var(--step-3);
+    font-size: var(--step-2);
     font-weight: 600;
-    box-shadow:
-      0 2px 0 rgb(0 0 0 / 0.18),
-      0 8px 18px -10px rgb(0 0 0 / 0.55);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
     cursor: pointer;
   }
-  .action:hover:not(:disabled) {
-    background: #fff;
+  .do:hover:not(:disabled) {
+    background: #0a1622;
   }
-  .action:disabled {
-    opacity: 0.55;
+  .do:disabled {
+    background: var(--surface);
+    color: var(--ink-soft);
+    border-color: var(--rule-strong);
     cursor: default;
   }
-  .action kbd {
+  .do kbd {
     font-family: var(--font-text);
     font-size: var(--step--1);
     font-weight: 600;
-    color: var(--ink-soft);
-    border: 1px solid var(--rule-strong);
+    letter-spacing: 0.02em;
+    text-transform: none;
+    color: inherit;
+    border: 1px solid currentColor;
     border-radius: 2px;
-    padding: 2px 5px;
-    background: var(--paper);
+    padding: 1px 5px;
+    opacity: 0.75;
   }
 
-  .workspace {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    gap: 24px;
-    padding: 22px 26px 0 28px;
+  @media (max-width: 1080px) {
+    .workspace {
+      grid-template-columns: minmax(0, 1fr);
+    }
   }
 </style>

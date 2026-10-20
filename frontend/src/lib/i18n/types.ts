@@ -69,6 +69,7 @@ export interface Dict {
   sales_no_sales_today: string;
   sales_no_sales_day: string;
   sales_time: string;
+  sales_running_balance: string;
   sales_sale: string;
   sales_items: string;
   sales_status: string;
