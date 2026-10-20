@@ -189,6 +189,25 @@
     return () => cancelAnimationFrame(id);
   });
 
+  // And when the window itself changes size, which no `$state` read can see.
+  // Without this the count was measured once and then lied: a 1440×900 window
+  // reported "+40 comprobantes más" and the same window grown to 1400px tall —
+  // where far more rows are visible — kept saying forty, because nothing had
+  // asked it to look again. The review found it by resizing.
+  $effect(() => {
+    const onResize = () => measureBelowFold();
+    window.addEventListener('resize', onResize);
+    // Expanded rows change the frame's height too, and they are a `$state` read
+    // the effect above already watches; a `ResizeObserver` covers the rest —
+    // fonts landing, a scrollbar appearing, a panel growing.
+    const observer = frameEl ? new ResizeObserver(onResize) : null;
+    if (frameEl && observer) observer.observe(frameEl);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      observer?.disconnect();
+    };
+  });
+
   // Tell the page how many documents the period holds, whenever that changes.
   $effect(() => {
     oncount?.(periodDocuments);
