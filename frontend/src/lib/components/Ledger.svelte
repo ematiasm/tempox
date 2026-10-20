@@ -194,17 +194,41 @@
   // reported "+40 comprobantes más" and the same window grown to 1400px tall —
   // where far more rows are visible — kept saying forty, because nothing had
   // asked it to look again. The review found it by resizing.
+  //
+  // Two things this effect must not do, both caught by the review:
+  //
+  //   * It must depend on `frameEl`. The element is `undefined` on the first
+  //     pass, so an effect that reads it outside its own body binds an observer
+  //     to nothing and never re-runs — the listener above still worked, which is
+  //     exactly why the defect was invisible without reading the code.
+  //   * It must not measure on every event. A drag-resize fires dozens a second,
+  //     and `measureBelowFold` calls `getBoundingClientRect` once per row, which
+  //     forces layout synchronously. Measured before this fix: 350 layout reads
+  //     across seven resize events. One frame of coalescing turns that into one
+  //     pass per painted frame.
+  let pending = 0;
   $effect(() => {
-    const onResize = () => measureBelowFold();
-    window.addEventListener('resize', onResize);
-    // Expanded rows change the frame's height too, and they are a `$state` read
-    // the effect above already watches; a `ResizeObserver` covers the rest —
-    // fonts landing, a scrollbar appearing, a panel growing.
-    const observer = frameEl ? new ResizeObserver(onResize) : null;
-    if (frameEl && observer) observer.observe(frameEl);
+    const frame = frameEl;
+    if (!frame) return;
+
+    const schedule = () => {
+      if (pending) return;
+      pending = requestAnimationFrame(() => {
+        pending = 0;
+        measureBelowFold();
+      });
+    };
+
+    window.addEventListener('resize', schedule);
+    // A `ResizeObserver` on the frame covers what is not a window event: a font
+    // landing and reflowing the rows, a scrollbar appearing, the panel growing.
+    const observer = new ResizeObserver(schedule);
+    observer.observe(frame);
     return () => {
-      window.removeEventListener('resize', onResize);
-      observer?.disconnect();
+      window.removeEventListener('resize', schedule);
+      observer.disconnect();
+      if (pending) cancelAnimationFrame(pending);
+      pending = 0;
     };
   });
 
