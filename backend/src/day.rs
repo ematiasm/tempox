@@ -20,7 +20,9 @@
 //!   exist, an hour later. Taking `naive.and_local_timezone(zone)` and
 //!   unwrapping a `None` would be a panic on two days a year.
 
-use chrono::{DateTime, Duration, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
+use chrono::{
+    DateTime, Datelike, Duration, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc,
+};
 use chrono_tz::Tz;
 
 /// The window of instants that makes up one shop day, and its neighbours.
@@ -51,6 +53,103 @@ pub fn day_range(zone: Tz, at: DateTime<Utc>) -> DayRange {
         to: first_instant_of(today.succ_opt().expect("a date that has a tomorrow"), zone),
         prev: first_instant_of(today.pred_opt().expect("a date that has a yesterday"), zone),
         next: first_instant_of(today.succ_opt().expect("a date that has a tomorrow"), zone),
+        zone: zone.name().to_string(),
+    }
+}
+
+/// Which span of the shop's calendar a page is scoped to.
+///
+/// The three are calendar spans, not rolling durations: "this week" is the
+/// Monday-to-Sunday week the shop is in, and "this month" is its calendar month.
+/// A rolling "last 7 days" would be a different number every morning and would
+/// not match the calendar pinned to the shop's wall.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    Day,
+    Week,
+    Month,
+}
+
+impl Scope {
+    /// Parses the `scope` query parameter.
+    ///
+    /// Absent means `Day`, which is what every ledger asked for until the
+    /// selector existed: an older client that sends no scope keeps its exact
+    /// behaviour. An unrecognised value is `None`, so the caller can answer 400
+    /// instead of silently scoping to something the client did not ask for.
+    pub fn parse(raw: Option<&str>) -> Option<Self> {
+        match raw {
+            None | Some("") | Some("day") => Some(Self::Day),
+            Some("week") => Some(Self::Week),
+            Some("month") => Some(Self::Month),
+            Some(_) => None,
+        }
+    }
+}
+
+/// The shop span containing `at`, for the requested scope.
+pub fn range_for(zone: Tz, at: DateTime<Utc>, scope: Scope) -> DayRange {
+    match scope {
+        Scope::Day => day_range(zone, at),
+        Scope::Week => week_range(zone, at),
+        Scope::Month => month_range(zone, at),
+    }
+}
+
+/// The Monday-to-Sunday week containing `at`, in `zone`.
+///
+/// Monday first because that is the shop's calendar, not ISO's nominal one: the
+/// week is a working week, and paging back from a Sunday lands on the Monday
+/// that started it rather than on the Sunday of the week before.
+///
+/// Built by walking to the boundaries' dates and then through `first_instant_of`,
+/// never by adding `7 * 24h`: a week that crosses a DST change is not 168 hours
+/// long, and the same reason the day cannot add 24h applies here one scale up.
+pub fn week_range(zone: Tz, at: DateTime<Utc>) -> DayRange {
+    let today = at.with_timezone(&zone).date_naive();
+    // `num_days_from_monday` is 0 on Monday and 6 on Sunday.
+    let offset = today.weekday().num_days_from_monday() as i64;
+    let monday = today - Duration::days(offset);
+    let next_monday = monday + Duration::days(7);
+    let prev_monday = monday - Duration::days(7);
+    DayRange {
+        from: first_instant_of(monday, zone),
+        to: first_instant_of(next_monday, zone),
+        prev: first_instant_of(prev_monday, zone),
+        next: first_instant_of(next_monday, zone),
+        zone: zone.name().to_string(),
+    }
+}
+
+/// The calendar month containing `at`, in `zone`.
+///
+/// The end is the first instant of the *next* month, found by incrementing the
+/// year and month fields rather than by adding days: months are 28 to 31 days
+/// long, and a `+ 30 days` would land mid-month on February and skip a day in a
+/// 31-day month.
+pub fn month_range(zone: Tz, at: DateTime<Utc>) -> DayRange {
+    let today = at.with_timezone(&zone).date_naive();
+    let first = NaiveDate::from_ymd_opt(today.year(), today.month(), 1)
+        .expect("day 1 exists in every month");
+    let (next_year, next_month) = if today.month() == 12 {
+        (today.year() + 1, 1)
+    } else {
+        (today.year(), today.month() + 1)
+    };
+    let next_first = NaiveDate::from_ymd_opt(next_year, next_month, 1)
+        .expect("day 1 exists in every month");
+    let (prev_year, prev_month) = if today.month() == 1 {
+        (today.year() - 1, 12)
+    } else {
+        (today.year(), today.month() - 1)
+    };
+    let prev_first = NaiveDate::from_ymd_opt(prev_year, prev_month, 1)
+        .expect("day 1 exists in every month");
+    DayRange {
+        from: first_instant_of(first, zone),
+        to: first_instant_of(next_first, zone),
+        prev: first_instant_of(prev_first, zone),
+        next: first_instant_of(next_first, zone),
         zone: zone.name().to_string(),
     }
 }
@@ -283,6 +382,167 @@ mod tests {
     fn a_malformed_instant_is_rejected_rather_than_guessed() {
         for raw in ["", "   ", "yesterday", "2026-13-01T00:00:00Z", "16/10/2026"] {
             assert_eq!(parse_instant(raw), None, "{raw:?} is not an instant");
+        }
+    }
+
+    // ── Spans: a week and a month are calendar spans, not durations ──────────
+
+    #[test]
+    fn an_absent_scope_means_a_day_so_an_older_client_keeps_its_behaviour() {
+        // The selector is new. A client that predates it sends no `scope`, and
+        // must keep getting exactly what it got before. An unknown value is a
+        // different thing: refused, never silently turned into a day.
+        assert_eq!(Scope::parse(None), Some(Scope::Day));
+        assert_eq!(Scope::parse(Some("")), Some(Scope::Day));
+        assert_eq!(Scope::parse(Some("day")), Some(Scope::Day));
+        assert_eq!(Scope::parse(Some("week")), Some(Scope::Week));
+        assert_eq!(Scope::parse(Some("month")), Some(Scope::Month));
+        assert_eq!(Scope::parse(Some("year")), None);
+        assert_eq!(Scope::parse(Some("WEEK")), None);
+    }
+
+    #[test]
+    fn the_week_runs_monday_to_monday_in_the_shop_zone() {
+        // Thursday 16 Oct 2026. The week it belongs to started Monday the 12th
+        // and ends at midnight on Monday the 19th.
+        let range = week_range(buenos_aires(), utc(2026, 10, 16, 15, 0));
+        assert_eq!(range.from, utc(2026, 10, 12, 3, 0)); // 00:00 -03 on Monday the 12th
+        assert_eq!(range.to, utc(2026, 10, 19, 3, 0)); // 00:00 -03 on Monday the 19th
+        assert_eq!(range.prev, utc(2026, 10, 5, 3, 0));
+        assert_eq!(range.next, utc(2026, 10, 19, 3, 0));
+    }
+
+    #[test]
+    fn every_day_of_one_week_answers_the_same_week() {
+        // The property that makes a week a week: Monday through Sunday all live
+        // in it, and the Monday after does not. Without this, paging a day at a
+        // time inside a week scope could silently leave the week.
+        let zone = buenos_aires();
+        let monday = week_range(zone, utc(2026, 10, 12, 15, 0));
+        for offset in 0..7 {
+            let at = monday.from + Duration::days(offset);
+            assert_eq!(
+                week_range(zone, at),
+                monday,
+                "day {offset} of the week must belong to that same week"
+            );
+        }
+        let next_monday = monday.to + Duration::seconds(1);
+        assert_ne!(week_range(zone, next_monday), monday);
+    }
+
+    #[test]
+    fn a_sunday_belongs_to_the_week_that_started_six_days_before_it() {
+        // The off-by-one this pins: Sunday is the *last* day of the week, not the
+        // first. Taking `days_until(Monday)` instead of `days_from(Monday)` puts
+        // Sunday a whole week ahead of where the shop worked it.
+        let sunday = utc(2026, 10, 18, 15, 0); // Sunday 18 Oct, 12:00 -03
+        let range = week_range(buenos_aires(), sunday);
+        assert_eq!(range.from, utc(2026, 10, 12, 3, 0), "the Monday before it");
+        assert!(
+            range.from <= sunday && sunday < range.to,
+            "the Sunday must fall inside the week it was scoped from"
+        );
+    }
+
+    #[test]
+    fn a_week_crossing_a_dst_change_is_not_168_hours() {
+        // New York springs forward on 14 Mar 2027, inside the week of Monday the
+        // 8th. That week is 167 hours long. `from + 7 * 24h` would end an hour
+        // late and count an hour of the next Monday as this week's.
+        let zone: Tz = "America/New_York".parse().unwrap();
+        let range = week_range(zone, utc(2027, 3, 10, 12, 0));
+        assert_eq!(range.from, utc(2027, 3, 8, 5, 0)); // 00:00 EST on Monday the 8th
+        assert_eq!(range.to, utc(2027, 3, 15, 4, 0)); // 00:00 EDT on Monday the 15th
+        let hours = (range.to - range.from).num_hours();
+        assert_eq!(hours, 167, "the week is short by the hour the clocks moved");
+    }
+
+    #[test]
+    fn the_month_runs_from_the_first_to_the_first_of_the_next() {
+        let range = month_range(buenos_aires(), utc(2026, 10, 16, 15, 0));
+        assert_eq!(range.from, utc(2026, 10, 1, 3, 0));
+        assert_eq!(range.to, utc(2026, 11, 1, 3, 0));
+        assert_eq!(range.prev, utc(2026, 9, 1, 3, 0));
+        assert_eq!(range.next, utc(2026, 11, 1, 3, 0));
+    }
+
+    #[test]
+    fn february_ends_where_february_ends_not_thirty_days_later() {
+        // 2027 is not a leap year: February is 28 days. The end of the month is
+        // the first of March, which `+ 30 days` would miss by two days and
+        // `+ 31 days` would overshoot.
+        let range = month_range(buenos_aires(), utc(2027, 2, 10, 15, 0));
+        assert_eq!(range.from, utc(2027, 2, 1, 3, 0));
+        assert_eq!(range.to, utc(2027, 3, 1, 3, 0));
+        let days = (range.to - range.from).num_days();
+        assert_eq!(days, 28);
+    }
+
+    #[test]
+    fn a_leap_february_is_twenty_nine_days() {
+        let range = month_range(buenos_aires(), utc(2028, 2, 10, 15, 0));
+        assert_eq!(range.to, utc(2028, 3, 1, 3, 0));
+        assert_eq!((range.to - range.from).num_days(), 29);
+    }
+
+    #[test]
+    fn december_rolls_into_the_next_year_and_january_back_into_the_previous_one() {
+        let december = month_range(buenos_aires(), utc(2026, 12, 20, 15, 0));
+        assert_eq!(december.from, utc(2026, 12, 1, 3, 0));
+        assert_eq!(december.to, utc(2027, 1, 1, 3, 0));
+        assert_eq!(december.next, utc(2027, 1, 1, 3, 0));
+
+        let january = month_range(buenos_aires(), utc(2027, 1, 5, 15, 0));
+        assert_eq!(january.prev, utc(2026, 12, 1, 3, 0));
+    }
+
+    #[test]
+    fn the_three_scopes_contain_the_instant_they_were_asked_about() {
+        // The one invariant that must hold for every scope, every zone and every
+        // day of the year: scoping to a span a sale is not in means the shop
+        // cannot find its own document.
+        let zones: [Tz; 3] = [
+            buenos_aires(),
+            "America/New_York".parse().unwrap(),
+            "America/Santiago".parse().unwrap(),
+        ];
+        for zone in zones {
+            for day in 1..=28 {
+                for hour in [3u32, 12, 23] {
+                    let at = utc(2027, 3, day, hour, 0);
+                    for scope in [Scope::Day, Scope::Week, Scope::Month] {
+                        let range = range_for(zone, at, scope);
+                        assert!(
+                            range.from <= at && at < range.to,
+                            "{scope:?} in {zone} excluded the instant {at} it was scoped from"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn adjacent_spans_partition_the_calendar_with_no_gap_and_no_overlap() {
+        // Half-open at `to`, at every scale: the midnight document belongs to
+        // exactly one week and exactly one month, never to two.
+        let zone = buenos_aires();
+        for scope in [Scope::Week, Scope::Month] {
+            let mut range = range_for(zone, utc(2026, 1, 1, 15, 0), scope);
+            for _ in 0..14 {
+                let next = range_for(zone, range.to + Duration::seconds(1), scope);
+                assert_eq!(range.to, next.from, "{scope:?} left a gap or an overlap");
+                assert_eq!(
+                    range.next, next.from,
+                    "{scope:?} paging forward must land on the neighbour's start"
+                );
+                assert_eq!(
+                    next.prev, range.from,
+                    "{scope:?} paging back must land on this span's start"
+                );
+                range = next;
+            }
         }
     }
 }

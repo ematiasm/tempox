@@ -2217,6 +2217,79 @@ async fn v1_5_a_malformed_day_is_a_refusal_not_a_guess(pool: sqlx::PgPool) {
     );
 }
 
+// ── v2 redesign: the ledger can be scoped to a week or a month ──────────────
+//
+// Same contract as the day: the server names the boundaries, the client sends a
+// word. These pin the three things that would be silent if wrong — the default
+// stays exactly as it was, an unknown scope is refused rather than guessed, and
+// every scope actually contains the instant it was asked about.
+
+async fn scoped(pool: sqlx::PgPool, at: &str, scope: &str) -> serde_json::Value {
+    let client = common::client(pool);
+    let at_q = common::encode_query(at);
+    let resp = client
+        .get(&format!("/api/day?at={at_q}&scope={scope}"))
+        .await;
+    assert_eq!(resp.status(), 200, "{scope} answers for {at}");
+    resp.json().clone()
+}
+
+#[sqlx::test]
+async fn v2_the_default_scope_is_still_exactly_one_day(pool: sqlx::PgPool) {
+    // The selector is new and every existing caller sends no `scope`. If the
+    // default moved, every older client would silently start showing a week.
+    let at = "2026-10-16T04:00:00Z";
+    let client = common::client(pool);
+    let at_q = common::encode_query(at);
+
+    let bare = client.get(&format!("/api/day?at={at_q}")).await.json().clone();
+    let explicit = client
+        .get(&format!("/api/day?at={at_q}&scope=day"))
+        .await
+        .json()
+        .clone();
+    assert_eq!(bare, explicit, "an absent scope and `day` are the same answer");
+
+    // And it really is one day, not a week that happens to match itself.
+    let from: chrono::DateTime<chrono::Utc> = bare["from"].as_str().unwrap().parse().unwrap();
+    let to: chrono::DateTime<chrono::Utc> = bare["to"].as_str().unwrap().parse().unwrap();
+    assert_eq!((to - from).num_days(), 1, "the default is one shop day");
+}
+
+#[sqlx::test]
+async fn v2_a_week_scope_spans_seven_shop_days_and_contains_the_instant(pool: sqlx::PgPool) {
+    let body = scoped(pool, "2026-10-16T04:00:00Z", "week").await;
+    let from: chrono::DateTime<chrono::Utc> = body["from"].as_str().unwrap().parse().unwrap();
+    let to: chrono::DateTime<chrono::Utc> = body["to"].as_str().unwrap().parse().unwrap();
+    let at: chrono::DateTime<chrono::Utc> = "2026-10-16T04:00:00Z".parse().unwrap();
+
+    assert!(from <= at && at < to, "the week must contain the instant asked about");
+    assert_eq!((to - from).num_days(), 7, "an Argentine week is seven days");
+}
+
+#[sqlx::test]
+async fn v2_a_month_scope_spans_the_calendar_month(pool: sqlx::PgPool) {
+    let body = scoped(pool, "2026-10-16T04:00:00Z", "month").await;
+    let from: chrono::DateTime<chrono::Utc> = body["from"].as_str().unwrap().parse().unwrap();
+    let to: chrono::DateTime<chrono::Utc> = body["to"].as_str().unwrap().parse().unwrap();
+
+    assert_eq!((to - from).num_days(), 31, "October is 31 days");
+}
+
+#[sqlx::test]
+async fn v2_an_unknown_scope_is_refused_rather_than_answered_with_a_day(pool: sqlx::PgPool) {
+    // Answering a `year` request with a day would show a page whose button and
+    // whose numbers disagree, which is worse than an error the client can show.
+    let client = common::client(pool);
+    let at = common::encode_query("2026-10-16T04:00:00Z");
+    for scope in ["year", "WEEK", "weeks", "7"] {
+        let resp = client
+            .get(&format!("/api/day?at={at}&scope={scope}"))
+            .await;
+        assert_eq!(resp.status(), 400, "{scope:?} is not a scope this endpoint knows");
+    }
+}
+
 // ── v2 (T1): the purchases schema ──────────────────────────────────────────
 //
 // plan-v2.md, "Data model" and the `0008` lesson: the tables exist, the seeded
