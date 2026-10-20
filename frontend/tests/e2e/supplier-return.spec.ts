@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { money, recordedDocumentId } from './unique.js';
+import { pickFromCatalog } from './picker.js';
 
 /**
  * Returning goods to their supplier, end to end, through the real UI.
@@ -35,11 +36,7 @@ test('a return takes stock out and brings money back, and the purchase stands', 
 
   // 2. Buy 6 units, so the stock goes to 6 and the purchase has its own total.
   await page.goto('/purchases');
-  await page.getByRole('combobox', { name: 'Producto' }).fill(name);
-  const matches = page.getByRole('listbox', { name: 'Productos encontrados' });
-  await expect(matches.getByRole('option').first()).toContainText(name);
-  await page.keyboard.press('ArrowDown');
-  await page.keyboard.press('Enter');
+  await pickFromCatalog(page, name);
 
   const draftLine = page.locator('.sheet table.lines tbody tr').first();
   await expect(draftLine).toContainText(name);
@@ -129,12 +126,7 @@ test('more than a line has left is refused on the screen, and no request leaves 
   await expect(page.getByRole('status')).toContainText(name);
 
   await page.goto('/purchases');
-  await page.getByRole('combobox', { name: 'Producto' }).fill(name);
-  await expect(
-    page.getByRole('listbox', { name: 'Productos encontrados' }).getByRole('option').first()
-  ).toContainText(name);
-  await page.keyboard.press('ArrowDown');
-  await page.keyboard.press('Enter');
+  await pickFromCatalog(page, name);
 
   const draftLine = page.locator('.sheet table.lines tbody tr').first();
   await draftLine.locator('input[aria-label^="Cant"]').fill('3');
@@ -196,12 +188,7 @@ test('a return of one line leaves the other line alone, which is the normal case
     [keep, '2'],
     [back, '3']
   ] as const) {
-    await page.getByRole('combobox', { name: 'Producto' }).fill(name);
-    await expect(
-      page.getByRole('listbox', { name: 'Productos encontrados' }).getByRole('option').first()
-    ).toContainText(name);
-    await page.keyboard.press('ArrowDown');
-    await page.keyboard.press('Enter');
+    await pickFromCatalog(page, name);
     await page
       .locator('.sheet table.lines tbody tr')
       .filter({ hasText: name })
