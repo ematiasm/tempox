@@ -13,12 +13,18 @@
   let draft = $state<SaleDraft | undefined>(undefined);
   let ready = $state(false);
 
+  /**
+   * F2 does two jobs, and both are printed where they happen.
+   *
+   * With lines in the sheet it records; with an empty sheet it puts the caret
+   * in the product field. That is one key with one meaning per state, not two
+   * shortcuts competing: the cashier presses F2 to "continue the sale", and
+   * what continuing means depends on whether there is a sale yet. The button
+   * prints F2 because it is the state where F2 records.
+   */
   function onkeydown(e: KeyboardEvent) {
     if (e.key === 'F2') {
       e.preventDefault();
-      // F2 is printed on the band's action, so it records. A key labelled on a
-      // control and bound to something else teaches the cashier that the
-      // shortcut lies.
       if (ready) draft?.record();
       else document.getElementById('product-search')?.focus();
     }
@@ -34,40 +40,46 @@
 
 <svelte:window {onkeydown} />
 
-<!-- The header carries the day's count, not a coloured band with the action in
+<div class="page">
+  <!-- The header carries the day's count, not a coloured band with the action in
      it. In the statement world the page does not shout: the figures are the
      loudest thing on it, and the single action sits where the work happens —
      at the foot of the draft it closes. The action is still reachable from the
      keyboard exactly as before, so F2 keeps meaning one thing. -->
-<header class="head">
-  <div class="head-line">
-    <h1>{lang.t.sales_title}</h1>
-    <span class="tagline">{lang.t.sales_tagline}</span>
-  </div>
-</header>
-
-<div class="workspace">
-  <section class="panel" aria-label={lang.t.sales_draft_title}>
-    <SaleDraft bind:this={draft} onrecorded={() => refreshToken++} onready={(r) => (ready = r)} />
-    <!-- The page's single next action, at the foot of the draft it closes. It
-         used to live in a coloured band above everything, which made the page
-         shout before it had said anything; here it sits where the work ends.
-         F2 still reaches it through the route's handler, so the shortcut keeps
-         meaning exactly one thing. -->
-    <div class="action-foot">
-      <button
-        class="do"
-        disabled={!ready}
-        onclick={() => draft?.record()}
-        aria-keyshortcuts="F2 Control+Enter"
-      >
-        {lang.t.sales_action} <kbd>F2</kbd>
-      </button>
+  <header class="head">
+    <div class="head-line">
+      <h1>{lang.t.sales_title}</h1>
+      <span class="tagline">{lang.t.sales_tagline}</span>
     </div>
-  </section>
-  <section class="panel panel-ledger" aria-label={lang.t.sales_ledger_title}>
-    <Ledger {refreshToken} />
-  </section>
+  </header>
+
+  <div class="workspace">
+    <section class="panel panel-draft" aria-label={lang.t.sales_draft_title}>
+      <SaleDraft bind:this={draft} onrecorded={() => refreshToken++} onready={(r) => (ready = r)} />
+      <!-- The page's single next action, at the foot of the draft it closes and
+         always on screen. It used to live in a coloured band above everything,
+         which made the page shout before it had said anything; then it moved
+         here and the panel grew past the viewport, which was worse — an action
+         you have to scroll to find is one the cashier will not use. Pinned
+         below the scrolling middle, with F2 printed on it. -->
+      <div class="action-foot">
+        {#if !ready}
+          <span class="why">{lang.t.sales_action_hint}</span>
+        {/if}
+        <button
+          class="do"
+          disabled={!ready}
+          onclick={() => draft?.record()}
+          aria-keyshortcuts="F2 Control+Enter"
+        >
+          {lang.t.sales_action} <kbd>F2</kbd>
+        </button>
+      </div>
+    </section>
+    <section class="panel panel-ledger" aria-label={lang.t.sales_ledger_title}>
+      <Ledger {refreshToken} />
+    </section>
+  </div>
 </div>
 
 <style>
@@ -102,23 +114,93 @@
      the day read differently from a row belonging to the draft. */
   .workspace {
     display: grid;
-    grid-template-columns: 480px minmax(0, 1fr);
+    /* The draft is the page's main work, so it gets the extra width: it is the
+       only area that benefits from room (more search results, longer product
+       names, a wider total). The day's ledger is a reading column and stops
+       being useful once its rows fit, so it takes what it needs and no more —
+       growing it instead would push every figure further from the eye that is
+       scanning them. */
+    grid-template-columns: minmax(520px, 1fr) minmax(420px, 640px);
     gap: var(--panel-gap);
-    align-items: start;
+    align-items: stretch;
     padding: 0 26px 26px 28px;
+    min-height: 0;
+  }
+
+  /* Grid items default to `min-height: auto`, which refuses to shrink below
+     their content. Without this the panels keep their natural height, the grid
+     track keeps theirs, and the action lands below the fold. */
+  .workspace > section {
+    min-height: 0;
+  }
+
+  /* The page pins itself to the viewport so the panels divide a known height
+     instead of growing with their content.
+     `:global` on `.content` is deliberate: that element belongs to the layout,
+     and a page-scoped style only exists while this page is mounted — so
+     `/products` and `/purchases`, which are ordinary scrolling documents, get
+     their own behaviour back the moment this component unmounts. */
+  :global(.content) {
+    height: 100dvh;
+    overflow: hidden;
+  }
+
+  /* The page is a two-row grid: the header takes what it needs and the
+     workspace gets the rest. `minmax(0, 1fr)` rather than `1fr` because a grid
+     track's default minimum is its content, which is what let the panels push
+     past the viewport in the first place. */
+  .page {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    height: 100%;
+    min-height: 0;
+  }
+
+  /* The draft panel is a column that scrolls its middle rather than one that
+     grows past the viewport: the action must stay on screen, because an action
+     you have to scroll to find is an action the cashier will not use. */
+  .panel-draft {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .action-foot {
+    /* Pinned to the panel's foot, outside the scrolling middle, with the
+       breathing room a primary action needs. It sat flush against the panel's
+       edges and against the sheet's own border, which read as a caption rather
+       than a control. */
+    flex-shrink: 0;
+    padding: 16px 20px 20px;
+    border-top: 1px solid var(--rule);
+    background: var(--surface);
+  }
+
+  .action-foot .why {
+    /* When there is nothing to record the button says why, instead of sitting
+       greyed out with no explanation. A disabled control that looks like text
+       is a control the cashier never learns exists — which is exactly what
+       happened: the action was there and unreachable to the eye. */
+    display: block;
+    margin: 0 0 8px;
+    font-size: var(--step--1);
+    color: var(--ink-soft);
+    text-align: center;
   }
 
   .panel-ledger {
-    /* The day is the tall column: it grows and the draft stays where it is. */
+    /* The day is a reading column: it fills its share of the height and
+       scrolls its own rows, never the page. */
     min-height: 480px;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
   }
 
   /* The action is a solid ink bar, never the accent: the accent on this page
      belongs to the running balance, and a second use of it would dilute the one
      number the column exists to make readable. */
-  .action-foot {
-    padding: 0 20px 20px;
-  }
   .do {
     width: 100%;
     display: inline-flex;
@@ -141,9 +223,13 @@
     background: #0a1622;
   }
   .do:disabled {
+    /* Outlined rather than transparent: a disabled primary action must still
+       read as the button it will become. When it was a white box with grey text
+       it read as a caption, and the cashier could not tell the action existed
+       at all. The hint above it now says why it is not ready yet. */
     background: var(--surface);
     color: var(--ink-soft);
-    border-color: var(--rule-strong);
+    border: 1px dashed var(--rule-strong);
     cursor: default;
   }
   .do kbd {

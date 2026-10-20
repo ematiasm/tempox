@@ -22,6 +22,7 @@ export interface Dict {
   sales_title: string;
   sales_tagline: string;
   sales_action: string;
+  sales_action_hint: string;
   sales_draft_title: string;
   sales_ledger_title: string;
   sales_ledger_sub: string;
@@ -69,12 +70,14 @@ export interface Dict {
   sales_no_sales_today: string;
   sales_no_sales_day: string;
   sales_time: string;
+  sales_open_document: string;
   sales_running_balance: string;
   sales_sale: string;
   sales_items: string;
   sales_status: string;
   sales_total: string;
   sales_annulled: string;
+  sales_refunded_state: string;
   sales_lines_of: string;
   sales_unit_price: string;
   sales_bonus: string;

@@ -144,18 +144,28 @@ textarea {
   outline-offset: 2px;
   border-radius: 2px;
 }
+/* Scrollbars are visible, not hidden until hover. The day's ledger scrolls
+ * inside its panel, and a scroll region the user cannot see is a scroll region
+ * they do not know exists: rows simply appear to stop. `thin` keeps it out of
+ * the way while `rule-strong` gives it enough contrast to be found. */
 * {
-  scrollbar-color: var(--rule-strong) transparent;
+  scrollbar-color: var(--rule-strong) var(--rule);
   scrollbar-width: thin;
 }
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
+::-webkit-scrollbar-track {
+  background: var(--rule);
+}
 ::-webkit-scrollbar-thumb {
   background: var(--rule-strong);
-  border: 3px solid var(--ground);
+  border: 2px solid var(--rule);
   border-radius: 99px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-soft);
 }
 
 /* Reusable world primitives */

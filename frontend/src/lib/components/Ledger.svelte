@@ -27,7 +27,7 @@
   } from '#lib/salesRefund.js';
   import { lang } from '#lib/i18n/index.svelte.js';
   import { createStaleNotice } from '#lib/screenTrust.js';
-  import { runningBalances } from '#lib/runningBalance.js';
+  import { runningBalances, dayTotal } from '#lib/runningBalance.js';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import Stamp from './Stamp.svelte';
 
@@ -95,12 +95,31 @@
   );
 
   /** The rows the page actually holds — pagination shows no total count (S10). */
-  const shownTotal = $derived(sumAmounts(rows.map((r) => r.total)) ?? '0.00');
+  /**
+   * What the visible page is worth, computed with the same rule the balance
+   * column uses.
+   *
+   * It used to be `sumAmounts(rows.map(r => r.total))`, which adds every row
+   * including the cancelled and fully-refunded ones. That is a defensible
+   * definition on its own — "the documents shown above" — but sitting directly
+   * beneath a balance column that excludes them, it read as an error: the
+   * column said 28.760 and this said 37.660, two numbers for one day with no
+   * statement of why they differ.
+   *
+   * Measured, not assumed: it is `dayTotal` over the same rows, so the foot and
+   * the column cannot disagree. A statement whose foot does not add up to its
+   * own column is the one error a statement never makes.
+   */
+  const shownTotal = $derived(
+    dayTotal(
+      rows.map((row) => ({
+        total: row.total,
+        counts: !(isAnnulled(row) || isFullyRefunded(row))
+      }))
+    )
+  );
   const refundedTotal = $derived(
     sumAmounts(rows.flatMap((row) => row.credit_notes.map((note) => note.total))) ?? '0.00'
-  );
-  const bonusLines = $derived(
-    rows.reduce((n, r) => n + r.items.filter((i) => i.unit_price === '0.00').length, 0)
   );
 
   $effect(() => {
@@ -173,11 +192,9 @@
   /**
    * Pages to the adjacent day the *server* named.
    *
-   * The old version shifted the instant by one local calendar day on the
-   * browser's clock, which is not one shop day: in a zone whose DST change
-   * crosses midnight (Santiago, Havana) a single click could skip a day or land
-   * two back. `range.prev` and `range.next` are already the neighbouring days'
-   * first instants, computed by the same calendar that scoped the page.
+   * The bounds come from `range.prev`/`range.next`, computed by the same
+   * calendar that scoped the page, so a zone whose DST change crosses midnight
+   * cannot make one click skip a day.
    */
   function shiftDay(delta: number) {
     if (!range) return;
@@ -452,7 +469,6 @@
             <th scope="col">{lang.t.sales_time}</th>
             <th scope="col">{lang.t.sales_sale}</th>
             <th scope="col">{lang.t.sales_customer}</th>
-            <th scope="col" class="num">{lang.t.sales_items}</th>
             <th scope="col">{lang.t.sales_status}</th>
             <th scope="col" class="num">{lang.t.sales_total}</th>
           </tr>
@@ -461,7 +477,33 @@
           {#each rows as row (row.id)}
             {@const open = expanded.has(row.id)}
             {@const annulled = isAnnulled(row) || isFullyRefunded(row)}
-            <tr class="doc">
+            <!-- The whole row is the control. The chevron used to be the only
+                 thing that opened a document, which means aiming a mouse at a
+                 12px triangle — on a shop PC, several times an hour. A row is
+                 what a person points at when they want that document.
+
+                 No `<button>` wraps the row: a button cannot contain table
+                 cells without breaking the table's semantics, and a screen
+                 reader would lose the column headers. So the row is a
+                 keyboard-reachable element with its own role and the document
+                 id as its name, and the visible chevron stays as the
+                 affordance that tells the eye the row opens. -->
+            <tr
+              class="doc"
+              class:open
+              role="button"
+              tabindex="0"
+              aria-expanded={open}
+              aria-controls="lines-{row.id}"
+              aria-label="{lang.t.sales_open_document} #{row.id.slice(0, 8)}"
+              onclick={() => toggle(row.id)}
+              onkeydown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  toggle(row.id);
+                }
+              }}
+            >
               <!-- The running balance, in the margin where a printed statement
                    puts it. It is the design's signature: a column that reads as
                    one continuous number down the page. A cancelled document
@@ -475,13 +517,7 @@
                 {formatTime(new Date(row.created_at), shopZone)}
               </td>
               <td>
-                <button
-                  type="button"
-                  class="doc-id"
-                  aria-expanded={open}
-                  aria-controls="lines-{row.id}"
-                  onclick={() => toggle(row.id)}
-                >
+                <span class="doc-id">
                   <svg
                     class="chev"
                     class:open
@@ -499,17 +535,23 @@
                     />
                   </svg>
                   <span class="figures">#{row.id.slice(0, 8)}</span>
-                </button>
+                </span>
               </td>
               <td class="customer" class:walkin={row.customer_name === 'walk-in'}>
                 {row.customer_name === 'walk-in' ? lang.t.sales_walkin : row.customer_name}
               </td>
-              <td class="num figures items">{row.items.length}</td>
               <td>
-                {#if annulled}
-                  <Stamp label={lang.t.sales_annulled} tone="annulled" size="cell" />
+                {#if isAnnulled(row)}
+                  <Stamp label={lang.t.sales_annulled} tone="annulled" />
+                {:else if isFullyRefunded(row)}
+                  <!-- A sale that came back whole is not an annulment: nothing
+                       was wrong with it, the customer returned the goods. It
+                       says so, because the two need different follow-ups: one
+                       is a mistake to investigate, the other is a normal
+                       return. Both contribute nothing to the day. -->
+                  <Stamp label={lang.t.sales_refunded_state} tone="annulled" />
                 {:else}
-                  <Stamp label={lang.t.sales_confirmed} size="cell" />
+                  <Stamp label={lang.t.sales_confirmed} />
                 {/if}
               </td>
               <td class="num">
@@ -518,7 +560,7 @@
             </tr>
             {#if open}
               <tr class="lines-row">
-                <td colspan="7">
+                <td colspan="6">
                   <div class="lines" id="lines-{row.id}">
                     <table>
                       <caption>{lang.t.sales_lines_of} #{row.id.slice(0, 8)}</caption>
@@ -689,11 +731,11 @@
       <span class="value figures">{formatMoney(shownTotal)}</span>
       <span class="note">{lang.t.sales_shown_note}</span>
     </div>
-    <div class="fig">
-      <span class="label">{lang.t.sales_bonus_lines}</span>
-      <span class="value figures">{bonusLines}</span>
-      <span class="note">{lang.t.sales_bonus_lines_note(formatMoney('0.00'))}</span>
-    </div>
+    <!-- The gift-lines footing is gone. It answered "how many lines were given
+         away", a number the shop never acts on from this screen, and it cost a
+         quarter of the footer's width that the two money figures needed. A gift
+         line is still visible where it matters: marked on its own line inside
+         the document, and counted in the total like any other. -->
     <div class="fig">
       <span class="label">{lang.t.sales_refunded}</span>
       <span class="value figures">{formatMoney(refundedTotal)}</span>
@@ -704,7 +746,14 @@
 
 <style>
   .ledger {
+    /* A column: the scope controls and legend are fixed, the table scrolls, the
+       footings close it. `min-height: 0` lets the middle actually scroll instead
+       of pushing the footings out of the panel. */
     padding: 0 0 30px;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
   }
   .head {
     display: flex;
@@ -712,12 +761,20 @@
     justify-content: space-between;
     gap: 20px;
     padding-bottom: 12px;
+    /* The title lets go first: it has a subtitle and a heading that wrap, while
+       the controls beside it do not. Without this the pager and the scope
+       buttons were the things that lost their width. */
+    flex-wrap: wrap;
   }
   .head h2 {
     font-family: var(--font-figure);
-    font-size: var(--step-4);
+    /* A panel's title, not a page's. It sat at --step-4, the same size as the
+       page's own h1, so two headings competed for the first glance and the
+       panel looked like a second page stacked beside the first. */
+    font-size: var(--step-3);
     font-weight: 600;
-    line-height: 1.05;
+    line-height: 1.15;
+    letter-spacing: 0.01em;
   }
   .head .sub {
     color: var(--ink-soft);
@@ -728,13 +785,25 @@
   .scope {
     display: flex;
     align-items: center;
-    gap: 10px;
+    /* Wraps instead of squeezing. Three scope buttons plus a date chip plus a
+       pager is more than the reading column can hold on one line, and the
+       default behaviour was to clip the last control — the "Mes" button was
+       there and unreachable, cut off behind the chip. Wrapping keeps every
+       control visible and lets the row grow to two lines when it must. */
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px 10px;
+    /* Never shrinks below its contents: the panel is a reading column and the
+       controls need their real width more than the title needs its last word. */
+    flex-shrink: 0;
+    min-width: 0;
   }
   .segmented {
     display: inline-flex;
     border: 1px solid var(--rule-strong);
     border-radius: var(--radius);
     overflow: hidden;
+    flex-shrink: 0;
   }
   .segmented button {
     background: var(--paper-raised);
@@ -816,9 +885,18 @@
     /* The ledger is a wide document. Below the point where its columns stop
        fitting, it scrolls inside its own frame instead of making the whole page
        scroll sideways — a page that pans horizontally under a thumb is how a
-       shop employee loses the column they were reading. */
-    overflow-x: auto;
+       shop employee loses the column they were reading.
+
+       `min-width: 0` is what makes this frame able to be narrower than its
+       table: a grid/flex child defaults to its content's width, so without it
+       the table simply spills out of the panel's right edge and the columns
+       are clipped rather than scrollable. */
+    overflow: auto;
+    min-width: 0;
     border-radius: 0 0 4px 4px;
+    /* The table scrolls inside the panel; the panel itself scrolls neither. */
+    flex: 1 1 auto;
+    min-height: 0;
   }
   /* The running-balance column: the design's signature move, set in the margin
      the way a printed statement puts it. It is right-aligned like every other
@@ -890,19 +968,40 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    background: none;
-    border: 0;
-    padding: 2px 0;
     font-family: var(--font-figure);
     font-size: var(--step-2);
     font-weight: 600;
     font-variant-numeric: tabular-nums;
-    color: var(--indigo);
+    color: var(--ink);
+  }
+
+  /* The whole row is the control, so it has to say so: a pointer, a hover wash,
+     and a visible focus ring for the keyboard reach it now has. Without the
+     hover state the row looks like text and the affordance stays invisible
+     however wide the hit area is. */
+  tr.doc {
     cursor: pointer;
   }
+  tr.doc > td {
+    transition: background-color 100ms ease-out;
+  }
+  tr.doc:hover > td,
+  tr.doc:focus-visible > td {
+    background: #f2f6fa;
+  }
+  tr.doc:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  tr.doc.open > td {
+    background: #f2f6fa;
+  }
+  /* The chevron stays as the affordance the eye reads: it is the shape that
+     says "this opens", even though the row is what actually opens. */
   .chev {
     width: 12px;
     height: 12px;
+    color: var(--ink-soft);
     transition: transform 120ms ease-out;
   }
   .chev.open {
@@ -915,9 +1014,6 @@
   .customer.walkin {
     color: var(--ink-soft);
     font-style: italic;
-  }
-  .items {
-    color: var(--ink-soft);
   }
   .total {
     font-size: var(--step-3);
@@ -1203,20 +1299,31 @@
 
   .footings {
     display: grid;
-    grid-template-columns: 1.2fr 1fr 1fr 1fr;
-    gap: 0;
+    /* Four footings with the same left and right inset, so the first does not
+       start flush against the panel's edge while the last one stops short of
+       it. `gap: 0` plus an even `padding` per column would put the rules
+       off-centre; `gap` alone gives every column the same air on both sides,
+       which is what makes four figures read as four rather than as one crowded
+       row. */
+    grid-template-columns: 1.2fr 1fr 1fr;
+    gap: 0 20px;
     border-top: 1px solid var(--rule-strong);
     margin-top: 18px;
+    padding: 14px 18px 16px 20px;
   }
   .fig {
     display: grid;
     gap: 3px;
-    padding: 14px 16px 0 0;
-    border-right: 1px solid var(--rule);
+    align-content: start;
+    /* The rule between figures is a column separator, drawn by the column
+       itself so it can never sit closer to one neighbour than the other. */
+    padding-left: 20px;
+    border-left: 1px solid var(--rule);
+    min-width: 0;
   }
-  .fig:last-child {
-    border-right: 0;
-    padding-right: 0;
+  .fig:first-child {
+    padding-left: 0;
+    border-left: 0;
   }
   .value {
     font-size: var(--step-4);

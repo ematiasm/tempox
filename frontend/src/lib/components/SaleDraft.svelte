@@ -215,7 +215,7 @@
            other field to select its own document by. A total is not unique either:
            100.00 x 7 and 175.00 x 4 both come to 700.00. The id is. -->
       <span class="recorded" data-doc-id={justRecorded.id}>
-        <Stamp label={lang.t.sales_confirmed} size="cell" land />
+        <Stamp label={lang.t.sales_confirmed} />
         <span class="figures">{formatMoney(justRecorded.total)}</span>
       </span>
     {:else}
@@ -239,6 +239,11 @@
   </div>
 
   <div class="customer-actions">
+    <!-- The new-customer field belongs to the customer field above it, and read
+         as a separate unlabelled input it looked like a second question. The
+         inline create is part of choosing a customer: name one that is not in
+         the list and it is created. The button says the action, so the field
+         only needs to say what to type. -->
     <input
       class="control"
       bind:value={newCustomerName}
@@ -258,64 +263,71 @@
   {#if lines.length === 0}
     <p class="empty">{lang.t.sales_no_lines}</p>
   {:else}
-    <table class="lines">
-      <thead>
-        <tr>
-          <th scope="col">{lang.t.sales_product}</th>
-          <th scope="col" class="num">{lang.t.sales_qty}</th>
-          <th scope="col" class="num">{lang.t.sales_price}</th>
-          <th scope="col" class="num">{lang.t.sales_line}</th>
-          <th scope="col"><span class="sr">{lang.t.sales_remove_column}</span></th>
-        </tr>
-      </thead>
-      <tbody>
-        {#each lines as line, i (line.id)}
-          {@const qty = parseQuantity(line.qtyText)}
-          {@const price = parseAmount(line.priceText)}
-          {@const lt = qty !== null && price !== null ? lineTotalAmount(qty, price) : null}
+    <!-- The lines are the one part of the draft that grows without limit, so
+         they scroll and everything around them does not: the product field, the
+         total and the action stay exactly where the cashier left them, however
+         many items the sale has. -->
+    <div class="lines-scroll">
+      <table class="lines">
+        <thead>
           <tr>
-            <td class="pname">
-              {line.product.name}
-              <span class="unit-note">· {lang.fmt.unit(line.product.unit)}</span>
-            </td>
-            <td class="num">
-              <input
-                class="control tiny"
-                class:bad={line.qtyText.trim() !== '' && qty === null}
-                bind:this={lastQtyEl}
-                bind:value={line.qtyText}
-                inputmode="numeric"
-                aria-label="{lang.t.sales_qty} — {line.product.name}"
-              />
-            </td>
-            <td class="num">
-              <div class="pricewrap">
-                <span class="cur">$</span>
+            <th scope="col">{lang.t.sales_product}</th>
+            <th scope="col" class="num">{lang.t.sales_qty}</th>
+            <th scope="col" class="num">{lang.t.sales_price}</th>
+            <th scope="col" class="num">{lang.t.sales_line}</th>
+            <th scope="col"><span class="sr">{lang.t.sales_remove_column}</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each lines as line, i (line.id)}
+            {@const qty = parseQuantity(line.qtyText)}
+            {@const price = parseAmount(line.priceText)}
+            {@const lt = qty !== null && price !== null ? lineTotalAmount(qty, price) : null}
+            <tr>
+              <td class="pname">
+                {line.product.name}
+                <span class="unit-note">· {lang.fmt.unit(line.product.unit)}</span>
+              </td>
+              <td class="num">
                 <input
                   class="control tiny"
-                  class:bad={line.priceText.trim() !== '' && price === null}
-                  bind:value={line.priceText}
-                  inputmode="decimal"
-                  aria-label="{lang.t.sales_price} {priceHint(line.product)} — {line.product.name}"
+                  class:bad={line.qtyText.trim() !== '' && qty === null}
+                  bind:this={lastQtyEl}
+                  bind:value={line.qtyText}
+                  inputmode="numeric"
+                  aria-label="{lang.t.sales_qty} — {line.product.name}"
                 />
-                <span class="per">/{lang.fmt.unit(line.product.unit)}</span>
-              </div>
-            </td>
-            <td class="num figures linetotal">{lt === null ? '—' : formatMoney(lt)}</td>
-            <td class="num">
-              <button
-                type="button"
-                class="remove"
-                onclick={() => removeLine(i)}
-                aria-label="{lang.t.sales_remove} — {line.product.name}"
-              >
-                ×
-              </button>
-            </td>
-          </tr>
-        {/each}
-      </tbody>
-    </table>
+              </td>
+              <td class="num">
+                <div class="pricewrap">
+                  <span class="cur">$</span>
+                  <input
+                    class="control tiny"
+                    class:bad={line.priceText.trim() !== '' && price === null}
+                    bind:value={line.priceText}
+                    inputmode="decimal"
+                    aria-label="{lang.t.sales_price} {priceHint(line.product)} — {line.product
+                      .name}"
+                  />
+                  <span class="per">/{lang.fmt.unit(line.product.unit)}</span>
+                </div>
+              </td>
+              <td class="num figures linetotal">{lt === null ? '—' : formatMoney(lt)}</td>
+              <td class="num">
+                <button
+                  type="button"
+                  class="remove"
+                  onclick={() => removeLine(i)}
+                  aria-label="{lang.t.sales_remove} — {line.product.name}"
+                >
+                  ×
+                </button>
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
   {/if}
 
   {#if error}
@@ -357,6 +369,27 @@
     background: var(--paper-raised);
     border: 1px solid var(--rule);
     border-radius: 4px;
+    /* The draft fills the panel it sits in, so its own foot lands on the shared
+       bottom edge rather than leaving a gap under it. */
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  /* The one region that grows without limit. It takes whatever height is left
+     after the fixed parts and scrolls inside it, so a forty-line sale never
+     pushes the total or the action off the screen. `min-height: 0` is what lets
+     a flex child actually scroll instead of stretching to its content. */
+  .lines-scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    /* The scrollbar sits in the table's own margin instead of over the price
+       column. */
+    padding-right: 2px;
+    margin-right: -2px;
   }
   .head {
     display: flex;
