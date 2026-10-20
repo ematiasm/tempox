@@ -12,6 +12,8 @@
   // path rather than two that can drift.
   let draft = $state<SaleDraft | undefined>(undefined);
   let ready = $state(false);
+  // The period's document count, reported by the ledger once its reads land.
+  let docCount = $state<number | null>(null);
 
   /**
    * F2 does two jobs, and both are printed where they happen.
@@ -51,6 +53,17 @@
       <h1>{lang.t.sales_title}</h1>
       <span class="tagline">{lang.t.sales_tagline}</span>
     </div>
+    <!-- The period's size, beside the heading and never above it: the contract
+         asks for it in the first viewport, and a count is a fact the shop reads
+         to know how big the period is, not a label for the heading. -->
+    {#if docCount !== null}
+      <div class="count">
+        <span class="count-n">{docCount}</span>
+        <span class="count-l">
+          {docCount === 1 ? lang.t.sales_document_one : lang.t.sales_documents}
+        </span>
+      </div>
+    {/if}
   </header>
 
   <div class="workspace">
@@ -77,7 +90,7 @@
       </div>
     </section>
     <section class="panel panel-ledger" aria-label={lang.t.sales_ledger_title}>
-      <Ledger {refreshToken} />
+      <Ledger {refreshToken} oncount={(c) => (docCount = c)} />
     </section>
   </div>
 </div>
@@ -85,6 +98,32 @@
 <style>
   .head {
     padding: 22px 26px 16px 28px;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 20px;
+  }
+  /* The period's size, set like the other figures: condensed, tabular, quiet. */
+  .count {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .count-n {
+    font-family: var(--font-figure);
+    font-size: var(--step-4);
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    color: var(--ink);
+  }
+  .count-l {
+    font-family: var(--font-figure);
+    font-size: var(--step--1);
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
   }
   .head-line {
     display: flex;
@@ -136,13 +175,38 @@
 
   /* The page pins itself to the viewport so the panels divide a known height
      instead of growing with their content.
-     `:global` on `.content` is deliberate: that element belongs to the layout,
-     and a page-scoped style only exists while this page is mounted — so
-     `/products` and `/purchases`, which are ordinary scrolling documents, get
-     their own behaviour back the moment this component unmounts. */
+     `:global` on `.content` is deliberate: that element belongs to the layout.
+
+     Desktop only, and that is the fix for the mobile blocker the finish review
+     found: at 390px the panels stack, so pinning the page to the viewport meant
+     the draft's own fields were clipped inside a panel that could not grow, and
+     the pinned action sat on top of "Nombre del cliente nuevo". A stacked layout
+     has to be allowed to scroll; a side-by-side one has to not. */
   :global(.content) {
     height: 100dvh;
     overflow: hidden;
+  }
+
+  @media (max-width: 1080px) {
+    /* The stack scrolls like a document. The action is still pinned — but to the
+       bottom of the viewport, with the panel's own padding holding it clear of
+       whatever it would otherwise cover. */
+    :global(.content) {
+      height: auto;
+      min-height: 100dvh;
+      overflow: visible;
+    }
+    .panel-draft {
+      max-height: none;
+    }
+    .action-foot {
+      position: sticky;
+      bottom: 0;
+      z-index: 3;
+    }
+    .workspace {
+      grid-template-columns: minmax(0, 1fr);
+    }
   }
 
   /* The page is a two-row grid: the header takes what it needs and the
@@ -243,11 +307,5 @@
     border-radius: 2px;
     padding: 1px 5px;
     opacity: 0.75;
-  }
-
-  @media (max-width: 1080px) {
-    .workspace {
-      grid-template-columns: minmax(0, 1fr);
-    }
   }
 </style>

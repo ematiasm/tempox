@@ -37,9 +37,18 @@
   interface Props {
     /** Changes whenever a sale is recorded, so the day reloads. */
     refreshToken?: number;
+    /**
+     * Reports the period's document count to the page header.
+     *
+     * The count belongs in the header — the contract puts it there, and the
+     * header's own comment claimed it already did — but the number is only known
+     * after the ledger's reads land. So the ledger, which owns the data, hands it
+     * up rather than the page duplicating a request to learn it.
+     */
+    oncount?: (count: number | null) => void;
   }
 
-  let { refreshToken = 0 }: Props = $props();
+  let { refreshToken = 0, oncount }: Props = $props();
 
   const PAGE = 50;
 
@@ -133,6 +142,11 @@
   const periodDocuments = $derived(summary?.documents ?? null);
   /** True when the period holds more documents than this page shows. */
   const pageIsPartial = $derived(periodDocuments !== null && rows.length < periodDocuments);
+
+  // Tell the page how many documents the period holds, whenever that changes.
+  $effect(() => {
+    oncount?.(periodDocuments);
+  });
 
   $effect(() => {
     // Read the reactive inputs so the effect re-runs when the span, the scope or
@@ -975,6 +989,35 @@
     /* The table scrolls inside the panel; the panel itself scrolls neither. */
     flex: 1 1 auto;
     min-height: 0;
+    /* A visible scroll line, always — not only while hovering.
+       The finish review found a 50-document ledger showing ten rows with no cue
+       that more existed: rows simply appeared to stop. `scrollbar-gutter`
+       reserves the channel whether or not the bar is drawn, and the thumb below
+       gives it enough contrast to be found against the cold ground. */
+    scrollbar-gutter: stable;
+    /* `auto`, not `thin`: a thin bar is drawn only while the pointer is near it
+       in some engines, which is exactly the case the review photographed. The
+       full-width channel is what makes "this list continues" visible without a
+       gesture. */
+    scrollbar-width: auto;
+    scrollbar-color: var(--ink-soft) var(--rule);
+  }
+  .table-scroll::-webkit-scrollbar {
+    width: 12px;
+  }
+  .table-scroll::-webkit-scrollbar-track {
+    background: var(--rule);
+    border-left: 1px solid var(--rule);
+  }
+  .table-scroll::-webkit-scrollbar-thumb {
+    /* Wider than the global thumb and in ink rather than a pale grey: this bar is
+       the only thing telling the shop the list continues. */
+    background: var(--ink-soft);
+    border: 2px solid var(--rule);
+    border-radius: 99px;
+  }
+  .table-scroll::-webkit-scrollbar-thumb:hover {
+    background: var(--ink);
   }
   /* The running-balance column: the design's signature move, set in the margin
      the way a printed statement puts it. It is right-aligned like every other
@@ -1019,9 +1062,6 @@
   .docs th:first-child,
   .docs > tbody > tr > td:first-child {
     padding-left: 16px;
-    /* A hairline of the same line system: the margin rule of a ruled page,
-       never a decorative rail. */
-    border-left: 1px solid rgb(168 27 42 / 0.5);
   }
   .docs th:last-child,
   .docs > tbody > tr > td:last-child {
