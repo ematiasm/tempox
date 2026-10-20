@@ -21,7 +21,8 @@
     type Product,
     type Supplier
   } from '#lib/api.js';
-  import { formatMoney, lineTotalAmount, parseAmount, parseQuantity } from '#lib/money.js';
+  import { formatMoney, lineTotalAmount } from '#lib/money.js';
+  import { draftTotal, everyLineComplete, parseDraftLine } from '#lib/draftLines.js';
   import { lang } from '#lib/i18n/index.svelte.js';
   import ProductPicker from './ProductPicker.svelte';
 
@@ -77,36 +78,20 @@
 
   // The lines as parsed numbers, or null when any field is unreadable. The text
   // is the source of truth for each field's validity; a parsed value only exists
-  // once it parses.
-  const parsed = $derived(
-    lines.map((line) => {
-      const quantity = parseQuantity(line.qtyText);
-      const price = parseAmount(line.priceText);
-      return quantity !== null && price !== null ? { quantity, price } : null;
-    })
-  );
+  // once it parses. Positional on purpose: the markup and `record` both index
+  // this by the line's index in `lines`.
+  const parsed = $derived(lines.map((line) => parseDraftLine(line)));
 
-  const parsedOk = $derived(parsed.length > 0 && parsed.every((p) => p !== null));
+  // Deliberately stricter than the sales sheet: a purchase is a supplier's
+  // document, so a single unreadable line blocks the whole thing rather than
+  // being dropped from it.
+  const parsedOk = $derived(everyLineComplete(lines));
 
+  // `null` rather than `0.00` when the form is not recordable: the preview shows
+  // a dash, because a partial purchase has no total worth showing.
   const total = $derived.by(() => {
     if (!parsedOk) return null;
-    const amounts: string[] = [];
-    for (const p of parsed) {
-      if (p === null) return null;
-      const lineTotal = lineTotalAmount(p.quantity, p.price);
-      if (lineTotal === null) return null;
-      amounts.push(lineTotal);
-    }
-    // Summed with the same helper the recorded total is checked against, so the
-    // live figure and the server's answer cannot drift in different directions.
-    let cents = 0n;
-    for (const a of amounts) {
-      const [whole, frac] = a.split('.');
-      cents += BigInt(whole) * 100n + BigInt(frac ?? '0');
-    }
-    const sign = cents < 0n ? '-' : '';
-    const abs = cents < 0n ? -cents : cents;
-    return `${sign}${abs / 100n}.${String(abs % 100n).padStart(2, '0')}`;
+    return draftTotal(parsed.filter((p) => p !== null));
   });
 
   const ready = $derived(parsedOk && !submitting);
@@ -161,7 +146,7 @@
         return {
           product_id: line.product.id,
           quantity: p.quantity,
-          unit_price: p.price
+          unit_price: p.unitPrice
         };
       });
       const created = await createPurchase({ supplier_id: supplierId, items });
@@ -295,7 +280,7 @@
             </td>
             <td class="num figure">
               {#if parsed[i]}
-                {formatMoney(lineTotalAmount(parsed[i]!.quantity, parsed[i]!.price) ?? '0.00')}
+                {formatMoney(lineTotalAmount(parsed[i]!.quantity, parsed[i]!.unitPrice) ?? '0.00')}
               {:else}
                 —
               {/if}
