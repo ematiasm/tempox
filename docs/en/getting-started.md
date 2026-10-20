@@ -41,15 +41,16 @@ The three levels cover different things, and the integration and e2e suites do
 
 ```bash
 make test-unit       # backend + frontend unit tests, needs nothing running
-make test-backend    # integration, against tempox_test on :3099
+make test-backend    # integration, against tempox_test, no external backend
 make test-e2e        # Playwright, against tempox_test on :3099
 make test-db         # drop and recreate the test database (disposable)
 ```
 
 `tempox_test` lives in the **same** postgres container as `tempox`, on the same
-volume. There is no second stack and no second image. The suite starts its own
-backend on `:3099` so the one you are using on `:3001` keeps serving, and it
-refuses to start if `TEST_DATABASE_URL` names the development database.
+volume. There is no second stack and no second image. The integration suite gives
+each test its own database and spawns the binary itself on an ephemeral port; the
+e2e suite lets Playwright own one backend on `:3099`. Either way the backend you
+are using on `:3001` keeps serving, and nothing in a run points at it.
 
 Why the tests do not use `tempox`: its ledger is append-only by trigger, so a row
 a test left there cannot be deleted individually — only by discarding the whole
@@ -94,12 +95,20 @@ runs in, not from `.env` (which is development-only and never leaves the laptop)
 - `POSTGRES_PASSWORD` — the compose default is `tempox`, deliberately, so a clean
   clone starts. A server that inherits that default runs with a published password
   and no warning.
-- `PUBLIC_API_BASE` — the frontend's default points at `localhost:3001`.
+- `PUBLIC_API_BASE` — `docker-compose.yml` sets `http://localhost:3001` for the
+  frontend service, and that is the right value for the *frontend's* container
+  talking to a browser running on the same host. It is wrong for a real server:
+  every browser would be told to call its own `localhost`. Note that `api.ts`
+  itself has no default any more (F6); the value has to come from the build or the
+  process environment.
 - **CORS**: `backend/src/main.rs` allows any origin. That is right for development
   and wrong for a public server.
 
-Each of those three fails **silently** when left unset: the stack starts and works.
-Nothing in the repository currently turns that into an error at boot, because the
-binary has no notion of "which environment am I in" — there is no `ENVIRONMENT`
-variable and no deploy to derive one from. Adding that guard is tracked as a
-follow-up, not built here.
+Of those, `POSTGRES_PASSWORD` and the CORS policy fail **silently** when left
+unset: the stack starts and works. A frontend build made without
+`PUBLIC_API_BASE` fails loudly instead — `api.ts` throws at module load, and
+`REQUIRE_PUBLIC_API_BASE=1` turns that into a build error. What no guard covers is
+the binary having no notion of "which environment am I in": there is no
+`ENVIRONMENT` variable and no deploy to derive one from, so the CORS default cannot
+become strict by itself. Adding that guard is tracked as a follow-up, not built
+here.

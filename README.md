@@ -74,12 +74,13 @@ make test        # unit + integration + e2e
 
 `make test` runs all three levels. They never touch the development database:
 they use `tempox_test`, a separate database in the **same** postgres container,
-and the suite starts its own backend on `:3099` so the one you are using on
-`:3001` keeps serving. Nothing test-related needs `docker compose down -v`, and
+and each suite owns the backend it talks to — the integration tests spawn the
+binary themselves, and Playwright starts one on `:3099` — so the one you are using
+on `:3001` keeps serving. Nothing test-related needs `docker compose down -v`, and
 the rows a run creates are discarded with `make test-db`.
 
 The full rationale — which level covers what, how to reset the test database, and
-the direction for removing the last piece of plumbing — is
+how the six phases removed the last piece of plumbing — is
 [`docs/en/testing.md`](./docs/en/testing.md). That document is the authority; this
 section is a summary of it.
 
@@ -94,7 +95,7 @@ that cache; CI fails if it is stale. See
 backend/     Axum server + sqlx migrations + integration tests
 frontend/    SvelteKit app (Svelte 5 runes, Tailwind)
 docs/        Documentation (en)
-scripts/     Test harness: the test stack and the test database
+scripts/     Test database helpers (`test-db.sh`)
 .github/     CI + dependabot + PR template
 ```
 

@@ -2,7 +2,7 @@
 
 This document is the single authority for how tests run in this repository. Other
 files link here instead of restating it. Every number, port and path below was
-measured on 2026-10-18, not recalled.
+measured on 2026-10-19, after the six phases below had landed, not recalled.
 
 The rule this document replaces lived only in an agent's memory and in ODD logs.
 That is why it failed twice. It lives in a file now.
@@ -11,33 +11,41 @@ That is why it failed twice. It lives in a file now.
 
 | Level | Count | What it needs running | What it **cannot** see |
 | --- | --- | --- | --- |
-| Unit (backend) | 29 | nothing | the database, the router, a real order of operations |
+| Unit (backend) | 39 | nothing | the database, the router, a real order of operations |
 | Unit (frontend) | 139 cases in 9 files | nothing | the API, the DOM as the browser builds it |
-| Integration | 43 | a postgres container and a backend on `:3001` | whether the screen renders |
-| End to end | 16 cases in 4 specs | postgres, a backend, chromium | why a row is missing |
+| Integration | 47 | a postgres container | whether the screen renders |
+| End to end | 16 cases in 4 specs | postgres, chromium | why a row is missing |
 
 ```bash
 make test-unit        # backend + frontend, nothing running
-make test-backend     # integration, owns :3001 briefly
-make test-e2e         # Playwright, builds and serves its own preview
+make test-backend     # integration: a database per test, no external backend
+make test-e2e         # Playwright starts the backend, builds and serves its own preview
 make test             # all three
 ```
+
+No level needs a backend someone else started. `make test-backend` gives every test
+its own database and lets the tests that need a socket spawn the binary themselves;
+`make test-e2e` has Playwright own the long-lived backend on `:3099`. The development
+backend on `:3001` is never stopped, and nothing in a test run points at it.
 
 ### Why each level exists
 
 They are not a ladder from cheap to expensive. Each one covers something the
 others structurally cannot.
 
-- **Backend unit tests** (`cargo test --bins`) cover pure logic that needs no I/O:
-  money arithmetic, whole-cent rounding, the shop's calendar day, sale totals.
+- **Backend unit tests** (`cargo test --lib --bins`, as `make test-unit` runs it)
+  cover pure logic that needs no I/O: money arithmetic, whole-cent rounding, the
+  shop's calendar day, sale totals. Both flags matter: since F1 the tests live in
+  the library target, and `--bins` alone reports "0 passed" and exits 0 — a green
+  that proves nothing (`odd/tasks/f1-config-seam.md`, L10).
 - **Frontend unit tests** (Vitest, jsdom) cover pure derivations: amount
   formatting in the shop's own shape, the ledger's arithmetic, API client request
   construction with `fetch` stubbed. They never touch the network.
 - **Integration tests** exist because **the database is the product**. Seventeen
-  append-only triggers enforce that stock may only be corrected by a compensating
-  row, never by an edit. No unit test can see a trigger, and a handler can be
-  perfectly correct while the schema silently permits an edit. They drive the real
-  handlers and the real schema.
+  triggers — append-only, truncate and coherence guards alike — enforce that stock
+  may only be corrected by a compensating row, never by an edit. No unit test can
+  see a trigger, and a handler can be perfectly correct while the schema silently
+  permits an edit. They drive the real handlers and the real schema.
 - **End-to-end tests** exist because **the stamp is invisible to everything else**.
   A recorded sale wearing `Confirmada` is a rendered fact: the browser, the
   compiled bundle and the real API all have to agree. That is what a Playwright
@@ -212,12 +220,31 @@ suite as well.
   the wrong database.
 - **A leftover preview on `:4173`.** `reuseExistingServer` is on outside CI, so a
   stale preview is reused. Stop it before trusting an e2e result.
-- **Running a suite directly.** `npx playwright test` on its own reaches
-  `localhost:3001` — the development backend — because `frontend/src/lib/api.ts`
-  defaults to it and cannot tell a test from a user. The suites that write must go
-  through `make`, which points them at the test backend. This repository has
-  already paid for this shortcut once, with 5 sales, 11 products and 22 movements
-  in the development database that no `DELETE` can remove.
+- **Running a suite directly.** The dangerous half is gone; the inconvenient half
+  is not, and the difference is worth knowing precisely.
+
+  What F6 closed: `npx playwright test` can no longer reach the development
+  backend through a default. Measured on 2026-10-19, the three shapes are —
+
+  | invocation | result |
+  | --- | --- |
+  | no `TEST_DATABASE_URL`, no `PUBLIC_API_BASE` | `error with configuration: relative URL without a base`, exit 1 |
+  | `TEST_DATABASE_URL` set, no `PUBLIC_API_BASE` | lists and runs; the build's origin comes from `:3099` |
+  | `make test-e2e` | sets both, and is the supported path |
+
+  The first row fails because the backend entry hands the binary an empty
+  `DATABASE_URL`, not because of `PUBLIC_API_BASE`: `playwright.config.ts` derives
+  the build's origin from `:3099` itself, so a missing `PUBLIC_API_BASE` in the
+  shell is no longer a way to end up pointed at development.
+
+  So `TEST_DATABASE_URL` is what the harness still owns, and a bare invocation that
+  supplies it runs against the test database. Nothing here can reach `tempox`. That
+  is a weaker promise than "shout at anyone who skips the Makefile", and it is the
+  accurate one.
+
+  The shortcut this repository already paid for was different and cannot recur: 5
+  sales, 11 products and 22 movements written to `tempox` while `api.ts` defaulted
+  to `:3001`.
 - **A stale test database.** The schema applies on the backend's boot, so a
   unit-only run migrates nothing. `make test-db` recreates it when the schema has
   moved.
@@ -249,79 +276,109 @@ CI has no development stack, so it builds its own:
   CI never builds the backend image — see the note above about a green CI saying
   nothing about it.
 - **Frontend job**: lint, `svelte-check`, Vitest, build.
-- **Image job**: builds the frontend image and asserts it serves `/sales`.
-- **E2E job**: the same ephemeral shape, with the backend started by the job, then
-  Playwright.
+- **Image job**: builds the **frontend** image and asserts it serves `/sales`. It is
+  the only artifact CI covers; the backend image is deliberately not built here.
+- **E2E job**: its own `postgres:18-alpine` service and a `tempox_test` database, then
+  `cargo build` for the binary Playwright will start, then `npx playwright test`.
+  Playwright starts both servers itself — the backend on `:3099` and the preview on
+  `:4173` — so the job has no separate server step; it only sets `PUBLIC_API_BASE`,
+  because `vite` inlines that value at build time.
 
 That is the shape **of CI**, which owns its own services. It is not a pattern to
 copy locally, and copying it is what produced throwaway stacks and rebuilt images
 here.
 
-## Direction: making the guard unnecessary
+## Direction: how the guard became unnecessary
 
-The guard exists for one reason:
+The guard existed for one reason:
 
 > Something else owns what the test needs to control. Change the owner and the guard
 > goes away.
 
-Today `docker-compose` owns the backend, so a test must either use that one or
-provoke a second one. The target architecture assigns ownership explicitly:
+`docker-compose` used to own the backend, so a test had to either use that one or
+provoke a second one on `:3001` and then verify it was talking to the right
+database — the check the six phases exist to retire. Each level now owns what it
+measures:
 
 | Level | Proves | Owns the process | Owns the database | Desync possible? |
 | --- | --- | --- | --- | --- |
 | T1 unit | pure logic | nothing | nothing | n/a |
 | T2 handler, in-process | routing, extractors, status, body, effects | the test, same process | the test, fresh per test | **no** |
 | T3 boot and reality | migrations on boot, real TCP, `serve()` middleware | the test, via `CARGO_BIN_EXE_tempox` | the test, fresh per test | **no** |
-| T4 end to end | the real screen in a browser | Playwright | an external backend | **yes — the guard stays, permanently** |
+| T4 end to end | the real screen in a browser | Playwright, one long-lived backend on `:3099` | the test, `tempox_test` | **no — Playwright starts the backend itself**, so there is no other process to be wrong about |
 
 T2 is `tower::oneshot`: the router runs inside the test, with no socket and no
 second process. It keeps the public surface and removes the desync. T3 is the real
 binary, which is the only level that covers boot, migrations and `serve()`.
 
-### The six phases
+### The six phases, all landed
 
-Ordered by dependency. **Only the prerequisites are documented here; no phase is
-authorized.**
+Ordered by dependency, and **complete**: F1–F6 shipped between 2026-10-18 and
+2026-10-19. What follows is the record of what each one did, kept because the
+measurements in them are what the rest of this document rests on.
 
 | Phase | Work | Size |
 | --- | --- | --- |
-| **F1** | The seam: `src/lib.rs` with `build_app(state) -> Router` and `Config::from_env()`; `main.rs` keeps boot only. `BACKEND_PORT=0` reports the real port. **Touches product code.** | ~150 lines |
-| **F2** | `tests/common/mod.rs` harness on `#[sqlx::test]`; converts the 14 pool-only tests. `--test-threads=1` stops being needed for those. | per domain |
-| **F3** | `tower::oneshot` for the 29 HTTP tests, including the 23 that use both. Removes the desync. | per domain |
-| **F4** | **Done.** T3: the test spawns `CARGO_BIN_EXE_tempox` on `BACKEND_PORT=0` against its own database, with `migrations = false` so boot's migration step is what gets proven. `docker-compose` no longer needs a backend for tests. | small |
-| **F5** | **Done.** E2E: Playwright's `webServer` starts the backend on its own database, in array order, and owns its lifetime. `PUBLIC_API_BASE` still comes from the target, because `webServer.env` cannot reach the build. | small |
-| **F6** | **Done.** Retired the plumbing that measurement found, which was less than this row used to claim: `test-stack.sh` (no caller left), and **a direct suite invocation can no longer reach the development backend** — `api.ts` has no fallback, a build without `PUBLIC_API_BASE` fails, and the e2e refuses `:3001` by name. The "38 hardcoded URLs" was wrong: there was exactly one, in `api.ts`. The `Makefile` health guard was already gone. | cleanup |
+| **F1** | **Done** — PR #56. The seam: `src/lib.rs` with `build_app(state) -> Router` and `Config::from_env()`; `main.rs` keeps boot only. `BACKEND_PORT=0` reports the real port. `DATABASE_URL` became a required input instead of a silent fallback. | ~150 lines |
+| **F2** | **Done** — PR #57. `tests/common/mod.rs` harness on `#[sqlx::test]`; the 14 pool-only tests each got their own database. `--test-threads=1` stopped being needed for those. | per domain |
+| **F3** | **Done** — PR #61–#65. `tower::oneshot` for the 27 HTTP tests, in five domain slices. Removes the desync: the router runs in the test's own process. | per domain |
+| **F4** | **Done** — PR #66. T3: the test spawns `CARGO_BIN_EXE_tempox` on an ephemeral port — `BACKEND_PORT=0` and the real address read from the binary's own log — against its own database, with `migrations = false` so boot's migration step is what gets proven. `docker-compose` no longer needs a backend for tests. | small |
+| **F5** | **Done** — PR #67. E2E: Playwright's `webServer` starts the backend on its own database, in array order, and owns its lifetime. `PUBLIC_API_BASE` still comes from the target, because `webServer.env` cannot reach the build. | small |
+| **F6** | **Done** — PR #68. Retired the plumbing that measurement found, which was less than this row used to claim: `test-stack.sh` (no caller left), and **a direct suite invocation can no longer reach the development backend** — `api.ts` has no fallback, a build without `PUBLIC_API_BASE` emits a client that throws at module load instead of falling back to `:3001`, and the e2e refuses `:3001` by name. The "38 hardcoded URLs" was wrong: there was exactly one, in `api.ts`. The `Makefile` health guard was already gone. | cleanup |
+
+One wording from that row needed correcting, and the measurement is the reason: a
+build without `PUBLIC_API_BASE` **succeeds** and emits a client that throws when a
+page runs. Measured on 2026-10-19:
+
+| build | result |
+| --- | --- |
+| `vite build`, no `PUBLIC_API_BASE` | **succeeds**; the emitted chunk contains `PUBLIC_API_BASE is not set` and no `:3001` anywhere |
+| same, `REQUIRE_PUBLIC_API_BASE=1` | fails at config load: `PUBLIC_API_BASE is required for this build and was not set` |
+
+The build error is opt-in on purpose: `make build` and CI's frontend job exist to
+prove the app compiles, never to serve it. What is not optional is the absence of
+the fallback — no build emits a URL pointing at development.
 
 Cut each phase by domain, which is how the tests are already named: `v1` (7),
-`v1a` (2), `v1_5` (11), `v2` (11), `v2_5` (12). An old test is deleted only once its
-replacement is green and proven to bite.
+`v1a` (2), `v1_5` (11), `v2` (10), `v2_5` (10), plus 7 that belong to no domain —
+`health`, `notes`, the three `ledger_*` constraint proofs and `smoke_arithmetic`.
+An old test is deleted only once its replacement is green and proven to bite.
 
 ### Measured constraints
 
-- `tower 0.5.3` is already in `Cargo.lock`; `oneshot` needs only
-  `features = ["util"]`. `axum 0.8`. **There is no `src/lib.rs` today** — F1 is real
-  work, not a rename.
+All four of the following were read before the work started, and the first two are
+what made F1 real work rather than a rename.
+
+- `tower 0.5.3` was already in `Cargo.lock`; `oneshot` needs only
+  `features = ["util"]`. `axum 0.8`. **There was no `src/lib.rs`** — the crate had no
+  `[lib]` target at all, which is why F1 touched product code.
 - Role `tempox` has `rolcreatedb`, so `#[sqlx::test]` can create databases.
-- `max_connections = 100`, shared with the development stack. 43 tests each holding
-  a pool will exhaust it before it exhausts the 12 cores. Cap `--test-threads`.
+- `max_connections = 100`, shared with the development stack. 47 tests each holding
+  a pool could exhaust it before it exhausts the 12 cores — which is why
+  `--test-threads=1` stayed through F3, and why removing it was measured rather
+  than assumed (`odd/tasks/f3-oneshot.md`, L17–L30: ten consecutive green runs).
 - `#[sqlx::test]` reads `DATABASE_URL`, so `TEST_DATABASE_URL` is mapped at the
   command boundary. The variable does not change name or shape across the
   migration: what changes is who reads it.
 
-### Why the harness is worth doing first anyway
+### Why the harness was worth doing first
 
-The harness is plumbing, not architecture, and this document says so plainly so
-nobody reads "the harness solves it" and stops. It is worth building now because:
+The harness is plumbing, not architecture, and this document said so plainly so
+nobody would read "the harness solves it" and stop. It was worth building first
+because:
 
-1. It removes the desync for the **29 tests that speak HTTP — 67% of the real
-   problem** — at a cost of one script and two Makefile targets.
-2. `TEST_DATABASE_URL` is the input F2–F5 consume unchanged.
+1. It removed the desync for the tests that speak HTTP: F3 converted **27 of them**
+   to `tower::oneshot`, at a cost of one harness and two Makefile targets. The
+   original estimate said 29; the true count was found while doing it.
+2. `TEST_DATABASE_URL` is the input F2–F5 consumed unchanged.
 
 Starting the process with a known `DATABASE_URL` and reaching `/health` is already
 the proof that it connected: a missing or unreachable database stops the binary at
-boot, in `main.rs`, before it can serve anything. That is why no `/health` change is
-needed, and why the guard is a property of how the harness starts the process
+boot, in `main.rs`, before it can serve anything. That is why no `/health` change was
+needed, and why the guard was a property of how the harness starts the process
 rather than an endpoint that reports on it.
 
 It became unnecessary in F4, and only for the levels the test owns — which is now
-every backend level. The e2e need for an external backend stays for good.
+every backend level. The e2e level got the same property its own way in F5:
+Playwright starts the backend, so there is still no process someone else could have
+started on the wrong database.

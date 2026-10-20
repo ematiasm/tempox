@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { lineTotal, money, recordedDocumentId } from './unique.js';
+import { pickFromCatalog } from './picker.js';
 
 /**
  * The sale flow, end to end, through the real UI against the real API (S14).
@@ -34,12 +35,7 @@ test('a sale is recorded from the draft sheet and wears its stamp', async ({ pag
 
   // 2. Record the sale: type-ahead, keyboard pick, quantity, live total.
   await page.goto('/sales');
-  await page.getByRole('combobox', { name: 'Producto' }).fill(name);
-  const option = page.getByRole('option').first();
-  await expect(option).toContainText(name);
-
-  await page.keyboard.press('ArrowDown');
-  await page.keyboard.press('Enter');
+  await pickFromCatalog(page, name);
 
   const line = page.locator('.sheet table.lines tbody tr').first();
   await expect(line).toContainText(name);
@@ -90,10 +86,7 @@ test('a sale can be returned in parts with credit notes', async ({ page }) => {
   await expect(page.getByRole('status')).toContainText(name);
 
   await page.goto('/sales');
-  await page.getByRole('combobox', { name: 'Producto' }).fill(name);
-  await expect(page.getByRole('option').first()).toContainText(name);
-  await page.keyboard.press('ArrowDown');
-  await page.keyboard.press('Enter');
+  await pickFromCatalog(page, name);
   const line = page.locator('.sheet table.lines tbody tr').first();
   await expect(line).toContainText(name);
   await line.locator('input[aria-label^="Cant"]').fill('4');
@@ -161,10 +154,7 @@ test('a refund of one line leaves the other lines untouched', async ({ page }) =
     [a, '4'],
     [b, '3']
   ]) {
-    await page.getByRole('combobox', { name: 'Producto' }).fill(name);
-    await expect(page.getByRole('option').first()).toContainText(name);
-    await page.keyboard.press('ArrowDown');
-    await page.keyboard.press('Enter');
+    await pickFromCatalog(page, name);
     const line = page.locator('.sheet table.lines tbody tr', { hasText: name });
     await expect(line).toContainText(name);
     await line.locator('input[aria-label^="Cant"]').fill(quantity);
@@ -221,10 +211,7 @@ test('a refund with every line excluded is refused before sending', async ({ pag
   await expect(page.getByRole('status')).toContainText(name);
 
   await page.goto('/sales');
-  await page.getByRole('combobox', { name: 'Producto' }).fill(name);
-  await expect(page.getByRole('option').first()).toContainText(name);
-  await page.keyboard.press('ArrowDown');
-  await page.keyboard.press('Enter');
+  await pickFromCatalog(page, name);
   await page.getByRole('button', { name: /Registrar venta/ }).click();
 
   // Same reason as above: selected by the id the draft reported (#52).
@@ -253,10 +240,7 @@ test('a bonus line is recorded and moves no money', async ({ page }) => {
   await expect(page.getByRole('status')).toContainText(name);
 
   await page.goto('/sales');
-  await page.getByRole('combobox', { name: 'Producto' }).fill(name);
-  await expect(page.getByRole('option').first()).toContainText(name);
-  await page.keyboard.press('ArrowDown');
-  await page.keyboard.press('Enter');
+  await pickFromCatalog(page, name);
 
   // The line arrives priced; zeroing it is what makes it a regalo.
   const line = page.locator('.sheet table.lines tbody tr').first();

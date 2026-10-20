@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { money, recordedDocumentId } from './unique.js';
+import { pickFromCatalog } from './picker.js';
 
 /**
  * The purchase flow, end to end, through the real UI against the real API.
@@ -38,19 +39,7 @@ test('a purchase is recorded and raises the stock it brought in', async ({ page 
 
   // 2. Record the purchase: type-ahead, keyboard pick, quantity, live total.
   await page.goto('/purchases');
-  await page.getByRole('combobox', { name: 'Producto' }).fill(name);
-  // Scoped to the product listbox on purpose. A bare `getByRole('option')`
-  // resolves to the supplier <select>'s options instead, because that control
-  // sits earlier in the DOM than the sale sheet's — the assertion then fails
-  // with "Proveedor ocasional" as the received text, which names the symptom
-  // rather than the cause. The sales spec never hit this because its customer
-  // select comes after the picker.
-  const matches = page.getByRole('listbox', { name: 'Productos encontrados' });
-  const option = matches.getByRole('option').first();
-  await expect(option).toContainText(name);
-
-  await page.keyboard.press('ArrowDown');
-  await page.keyboard.press('Enter');
+  await pickFromCatalog(page, name);
 
   const line = page.locator('.sheet table.lines tbody tr').first();
   await expect(line).toContainText(name);
