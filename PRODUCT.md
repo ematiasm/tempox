@@ -8,15 +8,19 @@ web
 
 ## Users
 
-The owner of a small retail business, plus the employees who will use the system alongside them. Day-to-day job: record sales, check stock and cash, know what happened. The owner is also the sole developer (beginner, building for their own business); employees are future users who need explicit navigation and clear affordances rather than power-user density.
+The owner of a small retail business **and one real employee**, as of a 2026-10-20 interview that replaced the earlier "employees are future users" assumption. Two people work the same shop on different shifts: the employee is on the counter, recording sales and looking things up all day; the owner sits behind, reviewing, correcting and deciding. The owner is also the sole developer (beginner, building for their own business).
+
+That second person is not hypothetical and not deferred to v5: it is the constraint that makes "who did this?" a real question this year, and it rules out any affordance only the owner knows how to use. What it does **not** change is the shell: both see one application, and the only difference is which destinations appear. The owner's review work has no screen of its own, by decision — the owner accepted that cost rather than introducing two modes.
 
 ## Product Purpose
 
-Tempox replaces paper-plus-spreadsheet bookkeeping for a small business: register a sale once and stock, cash, and history update together. Success = the owner stops double-entering the same event, and can answer "what's left?" and "how much did I take?" without manual calculation.
+Tempox replaces paper-plus-spreadsheet bookkeeping for a small business: register a sale once and stock, cash, and history update together. Success has two halves. For the shop: the owner stops double-entering the same event and can answer "what's left?" and "how much did I take?" without manual calculation. For the work: two people share the till without stepping on each other, and the record says who did what.
 
 ## Positioning
 
 **Everything connected in one step**: a single sale writes stock, cash, and the record at once — no second entry anywhere. Built on an append-only ledger, so every number the system shows can be explained.
+
+The order between those two claims is settled and it is not negotiable: **recording once is the reason the product exists, and every derived figure is a consequence of that.** Reports exist inside the system (decided 2026-10-20, see Capabilities), and the rule that keeps them honest is one line: **no report may ever justify asking for an extra field at write time.** A number the shop did not record is a number the shop does not get to see.
 
 ## Operating Context
 
@@ -31,11 +35,16 @@ Back office at a fixed PC in the shop: desktop-first, keyboard-friendly, mobile 
 - **The three surfaces shipped (v1a, v2a)**: `/sales` records a multi-item sale and reads the day's stamped ledger with its cash foot; `/products` is the paginated catalog with search and create; `/purchases` records a purchase with its supplier picker inside the draft, reads the day's purchases, and carries each purchase's returns under the purchase they correct. The rail names those three jobs. `/notes` exists but stays out of the rail, reachable by URL only.
 - Compile-time checked queries. The crate compiles with **no database at all**, from the `.sqlx/` offline cache (`SQLX_OFFLINE=true`); CI verifies that cache is current against a real PostgreSQL, so the image build never reaches one.
 - **The UI speaks es-AR by default, with an English side** (v1.5). Money is ARS written `$ 1.234,56`, the ledger's day is the shop's own (server-side, `SHOP_TIMEZONE`), and `walk-in` displays as "Consumidor Final" while the stored value stays `walk-in`. The language choice is not persisted: the shop opens in its own language every time.
-- Undecided: auth and roles (v5 staff), expenses/accounting (v4–v6), multi-currency. **Decided for v2**: a purchase is a fact with no status, and a purchase order (with partial reception) is a later, separate document rather than a state of this one. **Decided for v2.5**: returns to a supplier are their own document too, and what a purchase is worth back is read from the purchase line, never sent by the client — the shop records what happened, and recording what was merely asked for is a different job.
+- Undecided: multi-currency (ARS only), auth mechanics for v5, credit sales scope.
+- **Decided 2026-10-20 — two people, one shell, permissions only.** No separate counter mode and no separate owner mode; the employee sees fewer destinations and the owner sees more, in the same application. Roles are v5 work but the *second person* is not deferred: "who recorded this?" is a question the system must be able to answer this year.
+- **Decided 2026-10-20 — financial reporting lives inside the system, not only in an export.** The system closes its own books: v6 is no longer purely "derived, always last" as a reason to defer it; it is a promised outcome. The recognised risk, accepted rather than dismissed: this can duplicate what the shop's accountant already does well. The export path is not the deliverable; the in-system report is.
+- **Decided for v2**: a purchase is a fact with no status, and a purchase order (with partial reception) is a later, separate document rather than a state of this one. **Decided for v2.5**: returns to a supplier are their own document too, and what a purchase is worth back is read from the purchase line, never sent by the client — the shop records what happened, and recording what was merely asked for is a different job.
 
 ## Brand Commitments
 
-Name: **Tempox**. No logo and no identity asset. No voice is committed as a product decision — the UI's tone is described in `DESIGN.md`, not here. A visual world **is** committed and binding: "The Stamped Ledger" lives in [`DESIGN.md`](./DESIGN.md) and `.impeccable/design.json` (paper ground, hairline rules, ink, one crimson accent spent on the stamp). This record deliberately carries no palette of its own; when the two disagree, the design system wins on visual questions and this file wins on product truth.
+Name: **Tempox**. No logo and no identity asset. No voice is committed as a product decision.
+
+**The visual world is being replaced, by explicit decision (2026-10-20).** "The Stamped Ledger" — paper ground, hairline rules, ink, one crimson accent on the stamp — is now **anti-reference**: evidence of what the subject is, never authority over what it becomes. `DESIGN.md` and `.impeccable/design.json` still describe it because they record the incumbent build; they are frozen until the new world is committed through the visual-world flow, at which point they are rewritten from the built result. Nothing in the current world is protected by this record: the rail, the composition and the stamp gesture are all reopenable.
 
 ## Evidence on Hand
 
@@ -43,11 +52,12 @@ Live API verified by curl, by integration tests against a real PostgreSQL, and b
 
 ## Product Principles
 
-1. **One action, one write**: the sale is the single entry point; stock and cash derive from it. A purchase is the same shape in the other direction — one action, one transaction, and the consequences derive.
+1. **One action, one write**: the sale is the single entry point; stock and cash derive from it. A purchase is the same shape in the other direction — one action, one transaction, and the consequences derive. **No report may justify a new field at write time.**
 2. **The ledger is the truth**: balances are sums, never stored fields.
 3. **Immutable events**: a mistake is corrected by a reversal, never an edit — a credit note when a customer brings something back, a supplier return when the shop does.
-4. **Explicit over clever**: a future employee must be able to use it without training.
+4. **Explicit over clever**: a second person must be able to use it without training. This is now a live constraint, not a hypothetical one — an affordance only the owner understands is a defect.
+5. **Trust is the register**: this is a work tool, never an engagement product. Delight is welcome where it does not read as a reward for doing the job — no confetti, no streaks, no achievement for recording a sale. Exuberance is not the enemy; gamification is.
 
 ## Accessibility & Inclusion
 
-No product-specific requirement established; standard keyboard-and-screen-reader practice applies.
+No product-specific requirement established; standard keyboard-and-screen-reader practice applies. Two constraints follow from the two-person decision above and are not negotiable: the employee operates at the counter under time pressure, so every control must be reachable and legible without training; and "who recorded this?" must be answerable from the record itself, not from memory.
