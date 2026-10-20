@@ -17,6 +17,14 @@
     type Product
   } from '#lib/api.js';
   import { formatMoney, lineTotalAmount, parseAmount, parseQuantity } from '#lib/money.js';
+  import {
+    bonusCountOf,
+    canRecord as canRecordNow,
+    completeLines,
+    draftTotal,
+    hasInvalidLine,
+    unitCountOf
+  } from '#lib/draftLines.js';
   import { lang } from '#lib/i18n/index.svelte.js';
   import ProductPicker from './ProductPicker.svelte';
   import Stamp from './Stamp.svelte';
@@ -78,29 +86,11 @@
       });
   });
 
-  const parsed = $derived(
-    lines.map((l) => ({
-      product: l.product,
-      quantity: parseQuantity(l.qtyText),
-      unitPrice: parseAmount(l.priceText)
-    }))
-  );
+  const complete = $derived(completeLines(lines));
 
-  /** A line counts only when both of its fields parse; a half-typed line is not money. */
-  const complete = $derived(parsed.filter((l) => l.quantity !== null && l.unitPrice !== null));
+  const total = $derived(draftTotal(complete));
 
-  const total = $derived.by(() => {
-    const cents = complete.reduce((sum, line) => {
-      const lineTotal = lineTotalAmount(line.quantity as number, line.unitPrice as string);
-      if (lineTotal === null) return sum;
-      const [whole, fraction] = lineTotal.split('.');
-      return sum + BigInt(whole) * 100n + BigInt(fraction);
-    }, 0n);
-    const digits = cents.toString().padStart(3, '0');
-    return `${digits.slice(0, -2)}.${digits.slice(-2)}`;
-  });
-
-  const canRecord = $derived(complete.length > 0 && !submitting);
+  const canRecord = $derived(canRecordNow(lines, submitting));
 
   // Tell the route whether the band's action is live. Without this the button
   // would look clickable while the sheet has nothing to record.
@@ -109,16 +99,10 @@
   });
 
   /** True when a line has text in a field that does not parse. */
-  const hasInvalid = $derived(
-    parsed.some(
-      (l, i) =>
-        (l.quantity === null && lines[i].qtyText.trim() !== '') ||
-        (l.unitPrice === null && lines[i].priceText.trim() !== '')
-    )
-  );
+  const hasInvalid = $derived(hasInvalidLine(lines));
 
-  const unitCount = $derived(complete.reduce((sum, l) => sum + (l.quantity as number), 0));
-  const bonusCount = $derived(complete.filter((l) => (l.unitPrice as string) === '0.00').length);
+  const unitCount = $derived(unitCountOf(complete));
+  const bonusCount = $derived(bonusCountOf(complete));
 
   function addProduct(product: Product) {
     // The price is prefilled from the list price but stays overridable: a
@@ -191,8 +175,8 @@
         customer_id: customerId || undefined,
         items: complete.map((l) => ({
           product_id: l.product.id,
-          quantity: l.quantity as number,
-          unit_price: l.unitPrice as string
+          quantity: l.quantity,
+          unit_price: l.unitPrice
         }))
       });
       lines = [];
