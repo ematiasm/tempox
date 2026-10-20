@@ -15,7 +15,7 @@
  * that Svelte exists.
  */
 import type { Amount } from './locale.js';
-import { lineTotalAmount, parseAmount, parseQuantity } from './money.js';
+import { lineTotalAmount, parseAmount, parseQuantity, sumAmounts } from './money.js';
 
 /**
  * One line as the form holds it: the two fields as typed text.
@@ -71,9 +71,9 @@ export function completeLines<T extends DraftLine>(lines: readonly T[]): (T & Pa
 }
 
 /**
- * Whether any line holds text that does not parse.
+ * Whether a line holds text that does not parse.
  *
- * Deliberately different from `parseDraftLine`: an **empty** field is not an
+ * Deliberately **not** `parseDraftLine(line) === null`: an empty field is not an
  * error, it is a field the cashier has not reached. Only text that is present and
  * unreadable is a mistake worth telling them about. Without this distinction the
  * form would claim "something you typed is invalid" the instant a new empty line
@@ -94,34 +94,30 @@ export function hasInvalidLine(lines: readonly DraftLine[]): boolean {
 /**
  * The exact sum of a set of complete lines, as an `Amount`.
  *
- * One implementation for all the places that used to sum money by hand: the sales
- * draft preview and the purchase draft preview, plus `sumAmounts`' callers. The
- * duplicates agreed only because `parseAmount` and `lineTotalAmount` both refuse a
- * negative, so no line total can carry a sign today -- an agreement of the current
- * domain, not of the code.
+ * Deliberately delegates the cent arithmetic to `sumAmounts` instead of walking
+ * `BigInt` by hand: that helper already sums whole cents exactly, already refuses
+ * a malformed amount, and is already covered by its own cases. Two copies of the
+ * same addition is what this module exists to stop.
  *
- * Summed as whole cents in `BigInt` so no float ever touches money. Returns
- * `'0.00'` for no lines, because an empty draft previews as zero and not as a
- * missing figure.
+ * The one thing this adds on top is the line totals themselves: it asks
+ * `lineTotalAmount` for each, and **refuses** rather than skips if one comes back
+ * `null`. `lineTotalAmount` returns `null` for a non-positive quantity or a
+ * malformed price, neither of which `parseDraftLine` can produce -- so reaching
+ * that branch means the two parsers have started to disagree. Skipping would
+ * quietly under-report the preview total, and a wrong total that looks plausible
+ * is worse than a dash. `null` propagates so the caller shows one.
  *
- * A line whose total cannot be computed is **refused**, not skipped. `lineTotalAmount`
- * returns `null` for a non-positive quantity or a malformed price, neither of which
- * `parseDraftLine` can produce -- so reaching that branch means the two parsers have
- * started to disagree. Skipping it would quietly under-report the preview total, and
- * a wrong total that looks plausible is worse than a dash. `null` propagates so the
- * caller shows one.
+ * Returns `'0.00'` for no lines, because an empty draft previews as zero and not
+ * as a missing figure.
  */
 export function draftTotal(complete: readonly ParsedLine[]): Amount | null {
-  let cents = 0n;
+  const totals: Amount[] = [];
   for (const line of complete) {
     const lineTotal = lineTotalAmount(line.quantity, line.unitPrice);
     if (lineTotal === null) return null;
-    const [whole, fraction] = lineTotal.split('.');
-    cents += BigInt(whole) * 100n + BigInt(fraction);
+    totals.push(lineTotal);
   }
-  const negative = cents < 0n;
-  const digits = (negative ? -cents : cents).toString().padStart(3, '0');
-  return `${negative ? '-' : ''}${digits.slice(0, -2)}.${digits.slice(-2)}`;
+  return sumAmounts(totals);
 }
 
 /**

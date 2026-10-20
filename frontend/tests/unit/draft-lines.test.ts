@@ -181,7 +181,7 @@ describe('draftTotal refuses rather than skipping a line it cannot total', () =>
     expect(draftTotal([{ quantity: 1, unitPrice: 'nope' as never }])).toBeNull();
   });
 
-  it('still sums the lines it can, and reports a number when all of them work', () => {
+  it('reports a figure when every line can be totalled', () => {
     expect(draftTotal([{ quantity: 1, unitPrice: '10.00' }])).toBe('10.00');
   });
 });
