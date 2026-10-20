@@ -38,11 +38,15 @@ import { expect, type Page } from '@playwright/test';
  *    On a slow runner that is exactly CI's `element(s) not found`.
  *
  * The fix for (2) is not a longer timeout: waiting cannot help if nothing will
- * ever happen. It is to wait for evidence that hydration ran, which the page
- * provides — the catalog search input is filled by the same kind of handler, so
- * re-typing into it until the sheet responds would be circular. Instead we wait
- * for the product list the screen loads over the API after hydration, which
- * cannot exist in the server-rendered HTML.
+ * ever happen, because `open` is already `false` and no event is coming. The fix
+ * is to make the input event happen again — after hydration — and to require the
+ * listbox to attach as proof that the handler is live. The retry is bounded
+ * (15s) and each attempt is a real user action, so it cannot spin forever on a
+ * genuinely broken screen: a picker that never opens still fails, just later.
+ *
+ * What this deliberately does NOT do is wait for a fixed sleep or for
+ * `networkidle`; neither is evidence that Svelte attached `oninput`, and both
+ * would pass on a fast machine while staying green for the wrong reason.
  *
  * @param page the page, already on the draft screen
  * @param name the exact product name, unique to this run
@@ -51,11 +55,12 @@ export async function pickFromCatalog(page: Page, name: string): Promise<void> {
   const combobox = page.getByRole('combobox', { name: 'Producto' });
   const matches = page.getByRole('listbox', { name: 'Productos encontrados' });
 
-  // Hydration gate. `networkidle` is not it (the app may poll or the sheet may
-  // load more), and a fixed sleep is not it either. This is a real signal: the
-  // picker opens only from a hydrated `oninput`, so type once and require the
-  // listbox to appear; if the handler was not attached yet, type again. The
-  // retry is bounded and each attempt is a genuine user action.
+  // Type until the listbox attaches. The condition is the listbox existing at
+  // all — a fact only a hydrated `oninput` can produce — so a retry means the
+  // handler was not attached yet, not that the assertion was too strict.
+  //
+  // This helper owns the typing: callers must not `fill` the combobox first, or
+  // the pre-hydration value lands and the gate below types over it.
   await expect(async () => {
     await combobox.fill(name);
     await expect(matches).toBeAttached({ timeout: 1000 });

@@ -154,7 +154,6 @@ test('a refund of one line leaves the other lines untouched', async ({ page }) =
     [a, '4'],
     [b, '3']
   ]) {
-    await page.getByRole('combobox', { name: 'Producto' }).fill(name);
     await pickFromCatalog(page, name);
     const line = page.locator('.sheet table.lines tbody tr', { hasText: name });
     await expect(line).toContainText(name);
