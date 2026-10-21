@@ -392,6 +392,27 @@ export async function listPurchases(params: ListPurchasesParams = {}): Promise<P
 }
 
 /**
+ * The period's purchase totals, computed by the database.
+ *
+ * Not the page's. `listPurchases` loads at most a page, so a footer derived here
+ * would stop at row fifty and call itself the period — the defect the sales
+ * ledger shipped once and this surface does not repeat.
+ */
+export type PurchasesSummary = {
+  gross: string;
+  returned: string;
+  net: string;
+  documents: number;
+};
+
+export async function getPurchasesSummary(from: string, to: string): Promise<PurchasesSummary> {
+  const url = new URL('/api/purchases/summary', BASE);
+  url.searchParams.set('from', from);
+  url.searchParams.set('to', to);
+  return request<PurchasesSummary>(url);
+}
+
+/**
  * Records a purchase. The purchase, its lines and the positive stock movements
  * land in one transaction on the server, so there is no partial purchase to
  * clean up here.

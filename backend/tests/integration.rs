@@ -2967,6 +2967,107 @@ async fn v2_a_rejected_purchase_writes_nothing(pool: sqlx::PgPool) {
 // The contract is shared with sales on purpose — a day filter that means one
 // thing on one screen and another on the next is a bug that reads as a UI fault.
 
+// ── Purchases: the period's totals, not the page's ─────────────────────────
+//
+// Same finding the sales ledger produced, applied before this surface ships it:
+// a footer built from the loaded page stops at row fifty and calls itself a
+// period. Purchases and returns are counted separately because a return is its
+// own document correcting a purchase, not a negative purchase.
+
+async fn purchases_summary(
+    client: &common::Client,
+    from: &str,
+    to: &str,
+) -> serde_json::Value {
+    let f = common::encode_query(from);
+    let t = common::encode_query(to);
+    let resp = client
+        .get(&format!("/api/purchases/summary?from={f}&to={t}"))
+        .await;
+    assert_eq!(resp.status(), 200, "the summary answers for {from}..{to}");
+    resp.json().clone()
+}
+
+/// One product and one purchase of `quantity` at `price`.
+async fn buy(
+    pool: &sqlx::PgPool,
+    client: &common::Client,
+    price: &str,
+    quantity: i64,
+) -> serde_json::Value {
+    let stamp = uuid::Uuid::new_v4();
+    let product: (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO products (name, list_price) VALUES ($1, $2::numeric) RETURNING id",
+    )
+    .bind(format!("summary-buy-{stamp}"))
+    .bind(price)
+    .fetch_one(pool)
+    .await
+    .expect("insert product");
+
+    let resp = client
+        .post(
+            "/api/purchases",
+            serde_json::json!({
+                "items": [{ "product_id": product.0, "quantity": quantity, "unit_price": price }]
+            }),
+        )
+        .await;
+    resp.expect_status(axum::http::StatusCode::CREATED);
+    resp.json().clone()
+}
+
+#[sqlx::test]
+async fn v2_purchases_summary_is_empty_for_a_period_with_no_documents(pool: sqlx::PgPool) {
+    let client = common::client(pool);
+    let body = purchases_summary(&client, "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z").await;
+
+    assert_eq!(body["gross"], "0.00");
+    assert_eq!(body["returned"], "0.00");
+    assert_eq!(body["net"], "0.00");
+    assert_eq!(body["documents"], 0);
+}
+
+#[sqlx::test]
+async fn v2_purchases_summary_covers_the_whole_period_not_a_page_of_it(pool: sqlx::PgPool) {
+    // Sixty purchases is more than one page holds. A footer derived from the
+    // loaded page would stop at fifty and undercount by a fifth.
+    let client = common::client(pool.clone());
+    for _ in 0..60 {
+        buy(&pool, &client, "10.00", 1).await;
+    }
+
+    let body = purchases_summary(&client, "2000-01-01T00:00:00Z", "2100-01-01T00:00:00Z").await;
+    assert_eq!(body["documents"], 60);
+    assert_eq!(body["gross"], "600.00", "sixty tens, not the fifty a page shows");
+}
+
+#[sqlx::test]
+async fn v2_a_supplier_return_reduces_the_net_but_not_the_gross(pool: sqlx::PgPool) {
+    // The shop reads two facts: what it spent, and what the supplier gave back.
+    // A return is not a negative purchase — the purchase keeps its own figure.
+    let client = common::client(pool.clone());
+    let created = buy(&pool, &client, "100.00", 2).await;
+    let purchase_id = created["purchase"]["id"].as_str().unwrap();
+    let item_id = created["items"][0]["id"].as_str().unwrap();
+
+    client
+        .post(
+            &format!("/api/purchases/{purchase_id}/supplier-returns"),
+            serde_json::json!({
+                "items": [{ "purchase_item_id": item_id, "quantity": 1 }]
+            }),
+        )
+        .await
+        .expect_status(axum::http::StatusCode::CREATED);
+
+    let body = purchases_summary(&client, "2000-01-01T00:00:00Z", "2100-01-01T00:00:00Z").await;
+    assert_eq!(body["gross"], "200.00", "the purchase keeps the figure it was recorded with");
+    assert_eq!(body["returned"], "100.00", "one of two units came back");
+    assert_eq!(body["net"], "100.00", "what the period actually cost");
+    assert_eq!(body["documents"], 1);
+}
+
 #[sqlx::test]
 async fn v2_purchases_list_carries_its_lines_and_is_scoped_by_day(pool: sqlx::PgPool) {
     let client = common::client(pool.clone());

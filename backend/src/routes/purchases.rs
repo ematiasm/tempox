@@ -2,8 +2,9 @@ use axum::{
     Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
-    routing::post,
+    routing::{get, post},
 };
+use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use uuid::Uuid;
@@ -21,10 +22,88 @@ const ONE_OFF_SUPPLIER_ID: Uuid = Uuid::from_u128(2);
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/purchases", post(create_purchase).get(list_purchases))
+        .route("/purchases/summary", get(purchases_summary))
         .route(
             "/purchases/{id}/supplier-returns",
             post(create_supplier_return),
         )
+}
+
+/// What a scoped period of purchases is worth, computed by the database.
+///
+/// The sales ledger learned this the hard way: a footer derived from the loaded
+/// page silently omits every document the page does not hold, and a set labelled
+/// "the period" that stops at row fifty is a wrong number the shop reads as a
+/// total. Same shape as `GET /api/sales/summary`, minus the refund term — a
+/// purchase has no credit notes, and a supplier return is its own document.
+#[derive(Debug, serde::Serialize)]
+pub struct PurchasesSummary {
+    #[serde(serialize_with = "crate::money::serialize_amount")]
+    pub gross: Decimal,
+    /// What suppliers gave back on returns inside the same period.
+    #[serde(serialize_with = "crate::money::serialize_amount")]
+    pub returned: Decimal,
+    /// What the period cost the shop: purchases less returns.
+    #[serde(serialize_with = "crate::money::serialize_amount")]
+    pub net: Decimal,
+    pub documents: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SummaryQuery {
+    #[serde(default)]
+    pub from: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub to: Option<DateTime<Utc>>,
+}
+
+async fn purchases_summary(
+    State(state): State<AppState>,
+    Query(params): Query<SummaryQuery>,
+) -> Result<Json<PurchasesSummary>, StatusCode> {
+    // Absent bound means unbounded, the same contract `list_purchases` has. A
+    // sentinel instant cannot be used: `MIN_UTC` is outside Postgres's timestamp
+    // range and the whole period would read as empty — a silent zero.
+    let from = params.from;
+    let to = params.to;
+
+    let row = sqlx::query!(
+        // Purchases and returns are separate counts on purpose. A return is not
+        // a negative purchase: it is its own document correcting one, and the
+        // shop reads "what did I spend" and "what came back" as two facts.
+        r#"
+        WITH bought AS (
+            SELECT total FROM purchases
+             WHERE ($1::timestamptz IS NULL OR created_at >= $1)
+               AND ($2::timestamptz IS NULL OR created_at < $2)
+        ),
+        returned AS (
+            SELECT total FROM supplier_returns
+             WHERE ($1::timestamptz IS NULL OR created_at >= $1)
+               AND ($2::timestamptz IS NULL OR created_at < $2)
+        )
+        SELECT COALESCE((SELECT SUM(total) FROM bought), 0)::numeric   AS "gross!",
+               COALESCE((SELECT SUM(total) FROM returned), 0)::numeric AS "returned!",
+               (COALESCE((SELECT SUM(total) FROM bought), 0)
+                - COALESCE((SELECT SUM(total) FROM returned), 0))::numeric AS "net!",
+               (SELECT COUNT(*) FROM bought)::bigint AS "documents!"
+        "#,
+        from,
+        to
+    )
+    .fetch_one(&state.db)
+    .await
+    .map_err(|e| {
+        tracing::error!(?e, "purchases summary failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(Json(PurchasesSummary {
+        gross: row.gross,
+        returned: row.returned,
+        net: row.net,
+        documents: row.documents,
+    }))
 }
 
 /// Upper bound for a single list query, whatever the client asks for. Mirrors
