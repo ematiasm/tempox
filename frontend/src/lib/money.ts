@@ -40,6 +40,31 @@ export function parseQuantity(text: string): number | null {
   return value;
 }
 
+/**
+ * Reads a catalog form's initial-stock field into what the API expects.
+ *
+ * Deliberately NOT `parseQuantity`, and the reason is the same one
+ * `parseReturnQuantity` carries on the other side of the shop: that function
+ * answers `null` for `0` because a movement of zero units is not a movement.
+ * An initial stock of zero is not a movement either — it is the shelf before
+ * anything arrives, which is the ordinary state of a product nobody has bought
+ * yet. Wiring the sale parser here marked a typed `0` invalid, disabled the
+ * create button, and explained the refusal with a message about the name and the
+ * price. Nothing was sent, so the screen looked disconnected from the API.
+ *
+ * So: blank and `0` mean zero; a positive whole number means itself; anything
+ * else is `null` and the caller refuses the create. Digits only, like every other
+ * count in this interface — a quantity has no fractional part and no sign.
+ */
+export function parseInitialStock(text: string): number | null {
+  const normalized = text.trim();
+  if (normalized === '') return 0;
+  if (!/^\d+$/.test(normalized)) return null;
+  const value = Number(normalized);
+  if (!Number.isSafeInteger(value)) return null;
+  return value;
+}
+
 /** A quantity with the backend's unit, rendered in the active language. */
 export function formatQuantity(quantity: number, unit: Unit): string {
   return lang.fmt.quantityWithUnit(quantity, unit);

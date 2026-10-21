@@ -6,6 +6,7 @@ import {
   formatTime,
   lineTotalAmount,
   parseAmount,
+  parseInitialStock,
   parseQuantity,
   sumAmounts
 } from '#lib/money.js';
@@ -124,6 +125,36 @@ describe('parseQuantity', () => {
     expect(parseQuantity('')).toBeNull();
     expect(parseQuantity('abc')).toBeNull();
     expect(parseQuantity('1e3')).toBeNull();
+  });
+});
+
+describe('parseInitialStock', () => {
+  it('reads an empty field as zero, which is what the shelf holds', () => {
+    expect(parseInitialStock('')).toBe(0);
+    expect(parseInitialStock('   ')).toBe(0);
+  });
+
+  it('reads a typed zero as zero, exactly like the empty field', () => {
+    // The defect this exists for. The catalog reused `parseQuantity`, which
+    // refuses zero on purpose — a movement of zero units is not a movement. An
+    // initial stock of zero is not a movement either, it is the absence of one,
+    // and the form has to accept it instead of disabling its own button and
+    // explaining the refusal with a message about the name and the price.
+    expect(parseInitialStock('0')).toBe(0);
+    expect(parseInitialStock(' 0 ')).toBe(0);
+  });
+
+  it('reads a positive whole number as itself', () => {
+    expect(parseInitialStock('1')).toBe(1);
+    expect(parseInitialStock('500')).toBe(500);
+  });
+
+  it('refuses what is not a whole, non-negative count', () => {
+    expect(parseInitialStock('-1')).toBeNull();
+    expect(parseInitialStock('1.5')).toBeNull();
+    expect(parseInitialStock('1,5')).toBeNull();
+    expect(parseInitialStock('abc')).toBeNull();
+    expect(parseInitialStock('1e3')).toBeNull();
   });
 });
 

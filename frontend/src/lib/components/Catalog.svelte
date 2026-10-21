@@ -8,7 +8,7 @@
    * recorded event.
    */
   import { ApiError, createProduct, listProducts, type Product, type Unit } from '#lib/api.js';
-  import { formatMoney, formatQuantity, parseAmount, parseQuantity } from '#lib/money.js';
+  import { formatMoney, formatQuantity, parseAmount, parseInitialStock } from '#lib/money.js';
   import { lang } from '#lib/i18n/index.svelte.js';
   import { overflowsX } from '#lib/overflowsX.js';
 
@@ -80,10 +80,29 @@
   }
 
   const priceAmount = $derived(parseAmount(priceText));
-  const stockValue = $derived(stockText.trim() === '' ? 0 : parseQuantity(stockText));
+  // `parseInitialStock`, not `parseQuantity`: an empty field and a typed `0` both
+  // mean the shelf is empty, which is the ordinary state of a product nobody has
+  // bought yet. The sale parser refuses `0` on purpose (a movement of zero units
+  // is not a movement) and reusing it here marked the field invalid, disabled the
+  // create button, and blamed the name and the price for it.
+  const stockValue = $derived(parseInitialStock(stockText));
   const priceBad = $derived(priceText.trim() !== '' && priceAmount === null);
   const stockBad = $derived(stockText.trim() !== '' && stockValue === null);
   const canCreate = $derived(name.trim() !== '' && priceAmount !== null && !stockBad && !creating);
+
+  // Which field is wrong, named. One sentence for both fields used to read
+  // "fill in the name and the price" while the price was filled and the stock was
+  // not, so the reader was told to fix what was already right.
+  const invalidField = $derived(
+    priceBad ? lang.t.products_invalid_price : stockBad ? lang.t.products_invalid_stock : null
+  );
+  const missingField = $derived(
+    name.trim() === ''
+      ? lang.t.products_missing_name
+      : priceAmount === null
+        ? lang.t.products_missing_price
+        : null
+  );
 
   /** The price label declares the unit, so the number can never be misread. */
   function priceLabel(unit: Unit) {
@@ -339,8 +358,8 @@
         {error}
       </p>
     {/if}
-    {#if priceBad}
-      <p class="warn">{lang.t.products_invalid}</p>
+    {#if invalidField}
+      <p class="warn">{invalidField}</p>
     {/if}
 
     <!-- The page's single action, at the foot of the form it closes and always on
@@ -350,8 +369,8 @@
        disabled state carries a hint for the same reason it does on /sales: a
        greyed control with no explanation is a control nobody learns exists. -->
     <div class="action-foot">
-      {#if !canCreate && !creating}
-        <span class="why">{lang.t.products_action_hint}</span>
+      {#if !canCreate && !creating && missingField}
+        <span class="why">{missingField}</span>
       {/if}
       <button
         type="submit"

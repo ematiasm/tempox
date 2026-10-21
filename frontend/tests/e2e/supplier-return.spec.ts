@@ -26,8 +26,8 @@ test('a return takes stock out and brings money back, and the purchase stands', 
   const returnTotal = '20,00';
 
   // 1. The product exists, created through the catalog's own form. The stock
-  //    field is LEFT ALONE on purpose: an empty initial stock is 0, while a
-  //    typing `0` is refused because a quantity must be at least 1.
+  //    field is LEFT ALONE because this spec is about the return; an empty
+  //    initial stock is 0, the same state as a typed `0` (`catalog.spec.ts`).
   await page.goto('/products');
   await page.locator('#new-name').fill(name);
   await page.locator('#new-price').fill(price);

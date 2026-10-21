@@ -110,7 +110,12 @@ export interface Dict {
   sales_credit_note: string;
   sales_refunded: string;
   sales_refunded_note: string;
-  products_invalid: string;
+  /** Each message names the field it is about: one sentence for both was wrong. */
+  products_invalid_price: string;
+  products_invalid_stock: string;
+  /** What the disabled create button is waiting for, field by field. */
+  products_missing_name: string;
+  products_missing_price: string;
   products_search: string;
   products_error: string;
   products_no_match: string;
@@ -131,7 +136,6 @@ export interface Dict {
   more_column: string;
   more_columns: string;
   products_products_shown: string;
-  products_action_hint: string;
   products_initial_stock: string;
   products_create: string;
   products_creating: string;

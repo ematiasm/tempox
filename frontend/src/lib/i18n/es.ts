@@ -116,7 +116,12 @@ const es: Dict = {
   sales_credit_note: 'Nota de crédito',
   sales_refunded: 'Devuelto',
   sales_refunded_note: 'Notas de crédito de todo el período',
-  products_invalid: 'Un número de acá no es válido — corregilo antes de crear el producto.',
+  products_invalid_price:
+    'El precio no es un número válido — escribilo como 1.234,56 (coma decimal).',
+  products_invalid_stock:
+    'El stock inicial no es válido — tiene que ser un número entero, 0 o más.',
+  products_missing_name: 'Poné el nombre del producto',
+  products_missing_price: 'Poné el precio de lista',
   products_search: 'Buscar por nombre…',
   products_error: 'No se pudo leer el catálogo: ',
   products_no_match: 'Ningún producto coincide con esa búsqueda.',
@@ -138,7 +143,6 @@ const es: Dict = {
   more_column: 'columna más →',
   more_columns: 'columnas más →',
   products_products_shown: 'LISTADOS',
-  products_action_hint: 'Completá el nombre y el precio para crear el producto',
   products_initial_stock: 'Stock inicial',
   products_create: 'Crear producto',
   products_creating: 'Creando…',
