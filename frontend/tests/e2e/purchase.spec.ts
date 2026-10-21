@@ -21,11 +21,10 @@ test('a purchase is recorded and raises the stock it brought in', async ({ page 
   const sevenTotal = '70,00';
 
   // 1. The product exists first, created through the catalog's own form so this
-  //    test also covers that screen. The stock field is LEFT ALONE on purpose:
-  //    an empty initial stock is 0, while typing `0` is refused — a quantity
-  //    must be at least 1 — and the form then disables its own create button.
-  //    Measured while writing this test: filling `0` hangs the click for the
-  //    full 30s timeout instead of failing where the reader can see why.
+  //    test also covers that screen. The stock field is LEFT ALONE here: this
+  //    spec is about the purchase, and an empty initial stock is 0 — the same
+  //    state as typing `0`, which the form now accepts (`catalog.spec.ts`
+  //    proves that, because it used to refuse it).
   await page.goto('/products');
   await page.locator('#new-name').fill(name);
   await page.locator('#new-price').fill(price);
