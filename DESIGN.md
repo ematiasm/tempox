@@ -201,4 +201,4 @@ Rows are document figures, not generic CRUD records.
 - **Don't** use a filled state pill or a rotated rubber stamp.
 - **Don't** make the primary action a full-bleed accent band or an accent-filled button.
 - **Don't** replace the panel's separating border with whitespace alone.
-- **Don't** use a name from the transitional token alias block for a new component. It is temporary migration debt, kept only so the components written for the previous world still render while they are rewritten one at a time; six of them consume it today. Remove each alias when its last consumer is gone.
+- **Don't** reintroduce a name from the previous world's palette. The same rule stands, now with nothing left to migrate: `--paper`, `--indigo`, `--crimson` and `--tab-overhang` resolved through a transitional alias block for as long as the last five components still named them, and that block is deleted — every surface now asks for `--ground`, `--surface`, `--ink`, `--ink-soft`, `--accent` or a state tone by name. If you are looking at a diff that adds one of the old names, it is a regression, not a shortcut.

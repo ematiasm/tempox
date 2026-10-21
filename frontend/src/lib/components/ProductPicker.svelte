@@ -150,7 +150,7 @@
     list-style: none;
     margin: 0;
     padding: 3px;
-    background: var(--paper-raised);
+    background: var(--surface);
     border: 1px solid var(--rule-strong);
     border-radius: var(--radius);
     box-shadow: 0 14px 30px -14px rgb(21 22 28 / 0.45);
@@ -171,7 +171,7 @@
     cursor: pointer;
   }
   .match.active button {
-    background: var(--indigo);
+    background: var(--ink);
     color: #f2efe6;
   }
   .match.active .meta {

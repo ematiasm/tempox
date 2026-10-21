@@ -210,27 +210,3 @@ textarea {
   overflow: hidden;
   min-width: 0;
 }
-
-/* ── Transitional aliases ────────────────────────────────────────────────────
- *
- * The components written for the v1a "Stamped Ledger" world still name its
- * tokens. Rather than leave them resolving to nothing — which paints an
- * unstyled page while the visual work lands — each old name is mapped onto the
- * statement world's nearest equivalent, so the whole app keeps rendering while
- * the surfaces are redesigned one at a time.
- *
- * These are debt, not a design. They exist so the app never sits unstyled, and
- * every one goes away as its component is rewritten: `--crimson` becomes
- * `--accent`, `--paper` becomes `--ground` or `--surface`, `--indigo` becomes
- * `--ink`. A new component must not use a name from this block.
- */
-:root {
-  --paper: var(--ground);
-  --paper-raised: var(--surface);
-  --paper-sunk: #f2f5f8;
-  --indigo: var(--ink);
-  --indigo-soft: var(--ink-soft);
-  --crimson: var(--accent);
-  --crimson-deep: #084a6c;
-  --tab-overhang: 0px;
-}

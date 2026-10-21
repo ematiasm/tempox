@@ -658,7 +658,7 @@
     padding: 16px 0 4px;
   }
   .error {
-    color: var(--crimson);
+    color: var(--state-void);
     padding: 14px 0;
     display: flex;
     align-items: center;
@@ -906,7 +906,7 @@
   .return-block {
     border: 1px solid var(--rule-strong);
     border-radius: var(--radius);
-    background: var(--paper);
+    background: var(--ground);
     padding: 10px 12px;
     margin: 0 0 10px;
   }
@@ -968,7 +968,7 @@
   }
   .refund button {
     border: 1px solid var(--rule-strong);
-    background: var(--paper-raised);
+    background: var(--surface);
     color: var(--ink);
     border-radius: var(--radius);
     padding: 7px 11px;
@@ -982,8 +982,8 @@
     color: var(--ink);
   }
   .refund button.danger:hover:not(:disabled) {
-    border-color: var(--crimson);
-    color: var(--crimson);
+    border-color: var(--state-void);
+    color: var(--state-void);
     background: rgb(168 27 42 / 0.08);
   }
   .refund button:disabled {
@@ -992,7 +992,7 @@
   }
   .refund [role='alert'] {
     flex-basis: 100%;
-    color: var(--crimson-deep);
+    color: var(--state-void);
     font-size: var(--step-0);
   }
   /*

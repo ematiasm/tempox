@@ -337,7 +337,7 @@
 
 <style>
   .sheet {
-    background: var(--paper-raised);
+    background: var(--surface);
     border: 1px solid var(--rule);
     border-radius: var(--radius);
     padding: 18px 20px 0;
@@ -354,7 +354,7 @@
     font-weight: 600;
   }
   .done {
-    color: var(--indigo);
+    color: var(--ink);
     font-size: var(--step--1);
   }
   .supplier-row {
@@ -375,7 +375,7 @@
     padding: 7px 9px;
     border: 1px solid var(--rule-strong);
     border-radius: 2px;
-    background: var(--paper);
+    background: var(--ground);
     color: var(--ink);
   }
   .supplier-new {
@@ -422,7 +422,7 @@
     padding: 5px 7px;
     border: 1px solid var(--rule-strong);
     border-radius: 2px;
-    background: var(--paper);
+    background: var(--ground);
     width: 100%;
     font-variant-numeric: tabular-nums;
   }
@@ -448,12 +448,12 @@
     border-color: var(--ink-soft);
   }
   .notice {
-    color: var(--indigo);
+    color: var(--ink);
     font-size: var(--step--1);
     margin-top: 8px;
   }
   .error {
-    color: var(--crimson);
+    color: var(--state-void);
     font-size: var(--step-0);
     padding: 10px 0;
   }

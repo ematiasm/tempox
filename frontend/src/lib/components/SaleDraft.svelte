@@ -366,7 +366,7 @@
 
 <style>
   .sheet {
-    background: var(--paper-raised);
+    background: var(--surface);
     border: 1px solid var(--rule);
     border-radius: 4px;
     /* The draft fills the panel it sits in, so its own foot lands on the shared
@@ -437,7 +437,7 @@
   .ghost {
     background: none;
     border: 1px dashed var(--rule-strong);
-    color: var(--indigo);
+    color: var(--ink);
     border-radius: var(--radius);
     padding: 9px 12px;
     font-size: var(--step-1);
@@ -446,7 +446,7 @@
     white-space: nowrap;
   }
   .ghost:hover:not(:disabled) {
-    border-color: var(--indigo);
+    border-color: var(--ink);
     background: rgb(43 49 98 / 0.05);
   }
   .ghost:disabled {
@@ -479,7 +479,7 @@
     font-weight: 600;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: var(--indigo-soft);
+    color: var(--ink-soft);
     text-align: left;
     padding: 8px 10px;
     border-bottom: 1px solid var(--rule-strong);
@@ -530,7 +530,7 @@
   /* A field holding text that is not an amount says so on the field itself,
      not in a message somewhere else on the page. */
   .control.bad {
-    border-color: var(--crimson);
+    border-color: var(--state-void);
     background: rgb(168 27 42 / 0.05);
   }
 
@@ -557,7 +557,7 @@
     border-radius: 2px;
   }
   .remove:hover {
-    color: var(--crimson);
+    color: var(--state-void);
     background: rgb(168 27 42 / 0.08);
   }
 
@@ -571,7 +571,7 @@
   }
   .error strong {
     font-family: var(--font-figure);
-    color: var(--crimson-deep);
+    color: var(--state-void);
     margin-right: 6px;
   }
 
@@ -581,7 +581,10 @@
     justify-content: space-between;
     gap: 16px;
     padding: 13px 18px;
-    background: var(--paper-sunk);
+    /* The recessed band under the draft. `--paper-sunk` was the previous world's
+       name for "a shade darker than the sheet"; this world has one ground and one
+       surface, and the strip reads as part of the page beneath the draft. */
+    background: var(--ground);
     border-top: 1px solid var(--rule-strong);
   }
   .summary {
@@ -607,7 +610,7 @@
     border-top: 1px solid var(--rule);
   }
   .warn {
-    color: var(--crimson-deep);
+    color: var(--state-void);
     font-size: var(--step-0);
   }
 

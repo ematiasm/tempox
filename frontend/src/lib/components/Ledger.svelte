@@ -1007,25 +1007,27 @@
     flex-shrink: 0;
   }
   .segmented button {
-    background: var(--paper-raised);
+    background: var(--surface);
     border: 0;
     border-right: 1px solid var(--rule);
     padding: 7px 12px;
     font-size: var(--step-0);
     font-weight: 600;
-    color: var(--indigo);
+    color: var(--ink);
     cursor: pointer;
   }
   .segmented button:last-child {
     border-right: 0;
   }
   .segmented button[aria-pressed='true'] {
-    background: var(--indigo);
-    color: #f2efe6;
+    /* The chosen chunk is ink on surface, the same treatment the primary action
+       uses. The label was a warm paper tone from the previous world. */
+    background: var(--ink);
+    color: var(--surface);
   }
   .date-chip {
     border: 1px solid var(--rule-strong);
-    background: var(--paper-raised);
+    background: var(--surface);
     border-radius: var(--radius);
     padding: 6px 10px;
     font-size: var(--step-2);
@@ -1037,12 +1039,12 @@
   }
   .pager button {
     border: 1px solid var(--rule-strong);
-    background: var(--paper-raised);
+    background: var(--surface);
     border-radius: var(--radius);
     padding: 7px 11px;
     font-size: var(--step-0);
     font-weight: 600;
-    color: var(--indigo);
+    color: var(--ink);
     cursor: pointer;
   }
   .pager button:disabled {
@@ -1058,7 +1060,7 @@
     border: 1px solid var(--rule);
     border-bottom: 0;
     border-radius: 4px 4px 0 0;
-    background: var(--paper-raised);
+    background: var(--surface);
     font-size: var(--step-0);
     color: var(--ink-soft);
   }
@@ -1072,11 +1074,17 @@
     height: 10px;
     border-radius: 1px;
   }
+  /* `.c` is "Confirmada — el sello" and `.a` is "Anulada — tachada". They were
+     crimson and ink in the previous world; here the meaning is inverted, because
+     a confirmed document is the quiet standing state and the correction is the
+     one that wears the void tone. Under the alias bridge this legend painted
+     "confirmed" in the alarm colour and "annulled" in plain ink — a legend that
+     said the opposite of the rows it explains. */
   .legend .c {
-    background: var(--crimson);
+    background: var(--ink);
   }
   .legend .a {
-    background: var(--ink);
+    background: var(--state-void);
   }
   .legend .right {
     margin-left: auto;
@@ -1199,7 +1207,7 @@
     width: 100%;
     min-width: 640px;
     border-collapse: collapse;
-    background: var(--paper-raised);
+    background: var(--surface);
     border: 1px solid var(--rule);
     border-radius: 0 0 4px 4px;
   }
@@ -1209,7 +1217,7 @@
     font-weight: 600;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: var(--indigo-soft);
+    color: var(--ink-soft);
     text-align: left;
     padding: 10px 12px;
     border-bottom: 1px solid var(--rule-strong);
@@ -1310,7 +1318,7 @@
   .lines table {
     width: 100%;
     border-collapse: collapse;
-    background: var(--paper);
+    background: var(--ground);
     border: 1px solid var(--rule);
     border-radius: var(--radius);
   }
@@ -1322,7 +1330,7 @@
     font-weight: 600;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: var(--indigo-soft);
+    color: var(--ink-soft);
     padding: 0 0 5px;
   }
   .lines th {
@@ -1343,7 +1351,11 @@
     font-size: var(--step-0);
   }
   .gift {
-    color: var(--crimson);
+    /* A bonus line is a note, not an alarm. It wore the alarm colour because the
+       previous world spent crimson on "this is different"; here the accent is
+       reserved for the balance, so a gift takes the soft ink that secondary
+       prose already uses. */
+    color: var(--ink-soft);
     font-weight: 600;
   }
   .return-cell {
@@ -1356,7 +1368,10 @@
   .pick input {
     width: 1.05em;
     height: 1.05em;
-    accent-color: var(--indigo, var(--ink));
+    /* The fallback was doing the real work once the alias block was gone; it is
+       inlined so the checkbox tint no longer depends on a name that no longer
+       exists. */
+    accent-color: var(--ink);
     cursor: pointer;
   }
   .return-cell input {
@@ -1374,7 +1389,7 @@
   /* An excluded line is not gone, it is set aside: the cashier can change their
      mind, so the field stays readable while it stops being an input. */
   .return-cell input:disabled {
-    background: var(--paper);
+    background: var(--ground);
     border-style: dashed;
     color: var(--ink-soft);
     cursor: not-allowed;
@@ -1421,7 +1436,7 @@
   }
   .refund button {
     border: 1px solid var(--rule-strong);
-    background: var(--paper-raised);
+    background: var(--surface);
     color: var(--ink);
     border-radius: var(--radius);
     padding: 7px 11px;
@@ -1442,8 +1457,11 @@
     color: var(--ink);
   }
   .refund button.danger:hover:not(:disabled) {
-    border-color: var(--crimson);
-    color: var(--crimson);
+    /* Destructive, so it takes the void tone — the colour this system reserves
+       for a correction. Under the bridge it was the accent, which on this page
+       means the running balance. */
+    border-color: var(--state-void);
+    color: var(--state-void);
     background: rgb(168 27 42 / 0.08);
   }
   .refund button:disabled {
@@ -1452,7 +1470,7 @@
   }
   .refund [role='alert'] {
     flex-basis: 100%;
-    color: var(--crimson-deep);
+    color: var(--state-void);
     font-size: var(--step-0);
   }
   .note-block {
@@ -1478,7 +1496,7 @@
   .note-block table {
     width: 100%;
     border-collapse: collapse;
-    background: var(--paper);
+    background: var(--ground);
     border: 1px solid var(--rule);
   }
   .note-block th {
@@ -1504,13 +1522,13 @@
   }
   .alert strong {
     font-family: var(--font-figure);
-    color: var(--crimson-deep);
+    color: var(--state-void);
   }
   .alert button {
     margin-left: auto;
-    border: 1px solid var(--crimson-deep);
+    border: 1px solid var(--state-void);
     background: transparent;
-    color: var(--crimson-deep);
+    color: var(--state-void);
     font-weight: 600;
     font-size: var(--step-0);
     border-radius: var(--radius);
@@ -1522,7 +1540,7 @@
     display: grid;
     gap: 10px;
     padding: 18px 16px;
-    background: var(--paper-raised);
+    background: var(--surface);
     border: 1px solid var(--rule);
     border-radius: 0 0 4px 4px;
   }
@@ -1564,7 +1582,7 @@
     justify-items: center;
     gap: 14px;
     padding: 34px 18px;
-    background: var(--paper-raised);
+    background: var(--surface);
     border: 1px solid var(--rule);
     border-radius: 0 0 4px 4px;
     color: var(--ink-soft);
