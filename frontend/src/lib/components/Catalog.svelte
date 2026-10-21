@@ -126,6 +126,9 @@
   // reporting that as 0 puts "0 PRODUCTOS" on a page whose catalog could not be
   // fetched — the screen would be stating a fact about the shop that it derived
   // from its own error.
+  // How many columns the reader cannot see, measured by the `overflowsX` action.
+  let hiddenColumns = $state(0);
+
   const shown = $derived(
     pageError || (loading && rows.length === 0)
       ? null
@@ -210,7 +213,7 @@
            874, so everything past the first screenful was unreachable. The panel
            declared `overflow: hidden` and nothing scrolled: the redesign
            promised a scrolling catalog and shipped a truncated one. -->
-      <div class="table-frame" use:overflowsX>
+      <div class="table-frame" use:overflowsX={(n) => (hiddenColumns = n)}>
         <table class="catalog">
           <thead>
             <tr>
@@ -224,7 +227,7 @@
             {#each rows as product (product.id)}
               <tr>
                 <td class="pname">{product.name}</td>
-                <td>
+                <td class="unit-col">
                   <span class="unit-chip figures">{lang.fmt.unit(product.unit)}</span>
                 </td>
                 <td class="num">
@@ -246,6 +249,15 @@
           </tbody>
         </table>
       </div>
+      {#if hiddenColumns > 0}
+        <!-- The count, not only the fade: a gradient says "there is more" without
+             saying whether it is one column or five, and a reader cannot judge
+             whether the swipe is worth it without the number. -->
+        <p class="hint-more">
+          {hiddenColumns}
+          {hiddenColumns === 1 ? lang.t.more_column : lang.t.more_columns}
+        </p>
+      {/if}
       <!-- The count moved to the page header, beside the heading, where the other
          two surfaces carry the size of what is on screen. What stays here is the
          one thing a reader of the stock column must know: those numbers are
@@ -411,6 +423,16 @@
     pointer-events: none;
     background: linear-gradient(to right, transparent, var(--surface) 72%);
   }
+  .hint-more {
+    margin: 6px 0 0;
+    font-family: var(--font-figure);
+    font-size: var(--step--1);
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    text-align: right;
+  }
   .catalog thead th {
     position: sticky;
     top: 0;
@@ -439,6 +461,17 @@
   @media (max-width: 620px) {
     .unit-col {
       display: none;
+    }
+    /* The headers carried `nowrap` so the desktop columns stay on one line. At
+       390px that forced the table to 375px inside a 334px frame even after
+       `UNIDAD` was dropped — `STOCK` ended at 344 and nothing was actually
+       hidden, yet the frame still scrolled. Letting the two long labels wrap
+       ("Precio de lista", "Precio de
+lista") removes a scroll that revealed
+       nothing, which is worse than no scroll: it teaches a swipe that gains the
+       reader nothing. */
+    .catalog th {
+      white-space: normal;
     }
   }
   .head {

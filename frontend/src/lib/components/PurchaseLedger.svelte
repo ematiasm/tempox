@@ -52,6 +52,9 @@
   // the footer shows an em dash rather than a zero it has not earned.
   let summary = $state<PurchasesSummary | null>(null);
 
+  // How many columns the reader cannot see, measured by the `overflowsX` action.
+  let hiddenColumns = $state(0);
+
   // Tell the page how many documents the period holds, whenever that changes.
   const periodDocuments = $derived(summary?.documents ?? null);
   $effect(() => {
@@ -337,7 +340,7 @@
     </p>
 
     <div class="table-frame">
-      <div class="table-scroll" use:overflowsX>
+      <div class="table-scroll" use:overflowsX={(n) => (hiddenColumns = n)}>
         <table class="docs">
           <thead>
             <tr>
@@ -555,6 +558,15 @@
           </tbody>
         </table>
       </div>
+      {#if hiddenColumns > 0}
+        <!-- The count, not only the fade: a gradient says "there is more" without
+             saying whether it is one column or five, and a reader cannot judge
+             whether the swipe is worth it without the number. -->
+        <p class="hint-more">
+          {hiddenColumns}
+          {hiddenColumns === 1 ? lang.t.more_column : lang.t.more_columns}
+        </p>
+      {/if}
     </div>
   {/if}
 
@@ -686,6 +698,16 @@
     width: 28px;
     pointer-events: none;
     background: linear-gradient(to right, transparent, var(--surface) 72%);
+  }
+  .hint-more {
+    margin: 6px 0 0;
+    font-family: var(--font-figure);
+    font-size: var(--step--1);
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    text-align: right;
   }
   table.docs {
     width: 100%;

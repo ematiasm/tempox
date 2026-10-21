@@ -4,12 +4,23 @@ Scoring round. Recaptures were read from the same paths as the review round
 (`.impeccable/review/purchases-{desktop,mobile}.png`,
 `.impeccable/review/products-{desktop,mobile}.png`); no round-stamped names.
 
-1. **Mobile horizontal scroll is invisible — resolved.** Measured after the fix:
-   `/products` frame `scrollWidth 375 > clientWidth 334` with `overflows-x`
-   applied and the fade visible in the capture at the right edge; `/purchases`
-   scroller `scrollWidth 438 > clientWidth 294` with `overflows-x` applied and
-   `ESTADO` now fading into the edge rather than cut mid-word at `EST`. The
-   affordance is drawn from measurement, so a table that fits wears nothing.
+1. **Mobile horizontal scroll is invisible — resolved, on the second attempt.**
+   The first attempt was a false success and the review caught it: the finding
+   asked for "an edge fade at the cut **and a count of what is beyond it**", and
+   only the fade shipped while this document marked it resolved. A gradient says
+   _there is more_ without saying whether it is one column or five.
+
+   The count now exists (`overflowsX` reports the number of headers past the
+   cut; both surfaces render `N columnas más →`). Verified at 320px, where an
+   overflow is real: `data-hidden-columns="1"` and the text reads
+   `1 columna más →`.
+
+   Verifying it also exposed that neither table overflows at 390px any more, and
+   that the earlier "resolved" had a second falsehood behind it: `UNIDAD` was
+   hidden on the `<th>` but not on the `<td>`, so the column kept its 134px and
+   the table still scrolled with zero hidden headers — a swipe that revealed
+   nothing. Fixed; measured after: `scrolls: false` on both surfaces at 390px,
+   which is the correct state, so the cue does not appear at all there.
 
 2. **`STOCK` unreachable in the first view on `/products` at 390px — resolved.**
    `UNIDAD` is hidden at ≤620px; the measured header set is now
@@ -35,7 +46,7 @@ Scoring round. Recaptures were read from the same paths as the review round
 
 1. **`PurchaseLedger` briefly had two `table-scroll` blocks and two
    `use:overflowsX` directives.** Caught during verification, not shipped — but
-   the first measurement *passed* while the layout was still broken
+   the first measurement _passed_ while the layout was still broken
    (`scrollWidth === clientWidth` because the outer frame lacked `overflow`),
    which is worth recording: a layout defect that reads as "no overflow" is how
    a broken table signs its own approval. Both were removed; the final
@@ -55,3 +66,15 @@ disposition: fix
 owner.** Items 1–4 are resolved and visibly so. Per the output contract, a
 residual open item cannot recompute to `ship`, so this disposition covers the
 five scored findings and not a fresh review of the whole surface.
+
+---
+
+**Correction (second pass, after native review R3-001).** This document's first
+version claimed finding 1 resolved while delivering only half of it. The native
+review flagged that as a CRITICAL false success claim, and it was right: the
+reviewer that wrote the finding and the builder that marked it resolved were the
+same agent, and the builder graded itself against its own summary rather than
+against the text of the finding. The count is implemented and measured now; the
+`UNIDAD` mismatch it exposed is fixed too. Recorded here rather than silently
+rewritten, because a verdict is evidence and evidence that gets quietly edited
+after the fact is not evidence.

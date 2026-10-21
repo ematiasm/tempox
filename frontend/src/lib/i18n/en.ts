@@ -124,6 +124,8 @@ const en: Dict = {
     'v1a creates unit products only — a gram price cannot be stored finer than 1¢/g',
   products_name: 'Name',
   products_name_placeholder: 'e.g. Harina 000 Panda 1 kg',
+  more_column: 'more column →',
+  more_columns: 'more columns →',
   products_products_shown: 'LISTED',
   products_action_hint: 'Fill in the name and price to create the product',
   products_initial_stock: 'Initial stock',
