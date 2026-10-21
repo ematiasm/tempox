@@ -98,10 +98,10 @@
    * The sentence for one issue. Every message names its own field, which is what
    * a single shared "a number is invalid" sentence could not do.
    *
-   * The two shapes are disjoint by construction: a name can only be missing and
-   * a stock can only be invalid, because a blank stock is zero and a blank name
-   * has nothing to parse. So `missing` never reaches a field beyond name/price,
-   * and `invalid` never reaches the name.
+   * Exhaustive over `ProductFormIssue`, which is a union of two disjoint shapes:
+   * `missing` only reaches name/price and `invalid` only reaches price/stock. The
+   * type enforces that, so each branch below covers its whole variant and no
+   * issue can fall through to a message about a field it was not asked about.
    */
   function issueMessage(issue: ProductFormIssue) {
     if (issue.kind === 'missing') {

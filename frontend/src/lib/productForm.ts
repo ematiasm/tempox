@@ -21,11 +21,21 @@ export type ProductFormText = {
   readonly stockText: string;
 };
 
-/** One field-level reason the form cannot yet be submitted. */
-export type ProductFormIssue = {
-  readonly kind: 'missing' | 'invalid';
-  readonly field: 'name' | 'price' | 'stock';
-};
+/**
+ * One field-level reason the form cannot yet be submitted.
+ *
+ * The two variants carry different field sets, and that is not decoration: a
+ * blank stock is zero and a blank name has no text to parse, so `missing` never
+ * applies to the stock and `invalid` never applies to the name. Encoding that in
+ * the type is what lets `issueMessage` be exhaustive instead of falling back to
+ * a message for a field it was not asked about. Before this, the component's
+ * comment claimed the disjointness "by construction" while the type allowed all
+ * six combinations, so a `{kind:'missing', field:'stock'}` would have compiled and
+ * rendered the missing-price sentence.
+ */
+export type ProductFormIssue =
+  | { readonly kind: 'missing'; readonly field: 'name' | 'price' }
+  | { readonly kind: 'invalid'; readonly field: 'price' | 'stock' };
 
 /** Values ready for the product API, after every field has passed its rule. */
 type ParsedProductForm = {
@@ -48,8 +58,8 @@ export function parseProductForm(text: ProductFormText): {
   const name = text.nameText.trim();
   const priceText = text.priceText.trim();
   const stockText = text.stockText.trim();
-  const listPrice = parseAmount(text.priceText);
-  const initialStock = parseInitialStock(text.stockText);
+  const listPrice = parseAmount(priceText);
+  const initialStock = parseInitialStock(stockText);
 
   if (name === '') issues.push({ kind: 'missing', field: 'name' });
   if (priceText === '') issues.push({ kind: 'missing', field: 'price' });
