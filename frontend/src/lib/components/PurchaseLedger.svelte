@@ -689,6 +689,20 @@
      reason as the catalog's: measured at 390px this frame reports
      `scrollWidth 438 > clientWidth 294` while drawing no bar, and the capture
      showed `ESTADO` cut to `EST`. */
+  /* The mirror of the right fade: once the reader has scrolled, columns have
+     left the view on the left side and nothing said so. It is keyed to
+     `overflows-left`, not to `can-scroll`, so it appears only when something is
+     actually out of view in that direction. */
+  .table-scroll:global(.overflows-left)::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 28px;
+    pointer-events: none;
+    background: linear-gradient(to left, transparent, var(--surface) 72%);
+  }
   .table-scroll:global(.overflows-x)::after {
     content: '';
     position: absolute;

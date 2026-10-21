@@ -34,7 +34,10 @@ export function overflowsX(node: HTMLElement, onchange?: (hidden: number) => voi
 
   const measure = () => {
     const over = node.scrollWidth > node.clientWidth + 1;
-    if (!over) return set(false);
+    if (!over) {
+      node.classList.remove('can-scroll', 'overflows-left');
+      return set(false);
+    }
 
     // Count the headers whose right edge is past the visible cut. Both rects are
     // viewport-relative, so this stays honest at any scroll offset: scroll right
@@ -42,7 +45,17 @@ export function overflowsX(node: HTMLElement, onchange?: (hidden: number) => voi
     const edge = node.getBoundingClientRect().right;
     const headers = Array.from(node.querySelectorAll('th')) as HTMLElement[];
     const hidden = headers.filter((h) => h.getBoundingClientRect().right > edge + 1).length;
-    set(true, hidden);
+
+    // Two independent facts, and the first version conflated them. `can-scroll`
+    // says the content is wider than the box — that never changes. `overflows-x`
+    // says *something is still past the right edge* — that clears when the reader
+    // reaches the end, because the fade it drives must not sit on top of the last
+    // column at maximum scroll, covering content when nothing remains to its
+    // right. Meanwhile `overflows-left` marks the mirror case, so the left edge
+    // says a column has been scrolled out of view.
+    node.classList.toggle('can-scroll', true);
+    node.classList.toggle('overflows-left', node.scrollLeft > 1);
+    set(hidden > 0, hidden);
   };
 
   const observer = new ResizeObserver(measure);
