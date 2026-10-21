@@ -128,6 +128,24 @@
     justRecorded = null;
   }
 
+  /**
+   * Ctrl/Cmd+Enter records, so the keyboard flow never needs the mouse.
+   *
+   * This lives here rather than on the page because `record()` does: the page's
+   * F2 handler and this one are the same action reached two ways, and the sheet
+   * owning its own shortcut is what keeps them from drifting. It was missing —
+   * the page advertised `Control+Enter` in `aria-keyshortcuts` and nothing
+   * listened, so the shortcut the sales screen teaches silently did nothing
+   * here. The review caught it; the button had been promising it since the page
+   * was written.
+   */
+  function onsheetkeydown(e: KeyboardEvent) {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      e.preventDefault();
+      record();
+    }
+  }
+
   async function record() {
     if (!supplierId) {
       error = lang.t.purchases_supplier_required;
@@ -188,6 +206,8 @@
     void record();
   }
 </script>
+
+<svelte:window onkeydown={onsheetkeydown} />
 
 <section class="sheet" aria-labelledby="purchase-draft-title">
   <header class="sheet-head">

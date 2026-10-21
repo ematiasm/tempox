@@ -190,40 +190,47 @@
         {/if}
       </div>
     {:else}
-      <table class="catalog">
-        <thead>
-          <tr>
-            <th scope="col">{lang.t.sales_product}</th>
-            <th scope="col">{lang.t.products_unit}</th>
-            <th scope="col" class="num">{lang.t.products_list_price}</th>
-            <th scope="col" class="num">{lang.t.products_stock}</th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each rows as product (product.id)}
+      <!-- The rows scroll inside the panel. Without this frame the table grew to
+           its content's height — 2,611px of it — inside a panel that clips at
+           874, so everything past the first screenful was unreachable. The panel
+           declared `overflow: hidden` and nothing scrolled: the redesign
+           promised a scrolling catalog and shipped a truncated one. -->
+      <div class="table-frame">
+        <table class="catalog">
+          <thead>
             <tr>
-              <td class="pname">{product.name}</td>
-              <td>
-                <span class="unit-chip figures">{lang.fmt.unit(product.unit)}</span>
-              </td>
-              <td class="num">
-                <span class="faces figures">{formatMoney(product.list_price)}</span>
-                <span class="per">{priceLabel(product.unit)}</span>
-              </td>
-              <td class="num">
-                <!-- Zero is not "no data": an empty shelf is a fact the shop needs. -->
-                <span
-                  class="stock figures"
-                  class:low={product.stock > 0 && product.stock < 10}
-                  class:out={product.stock === 0}
-                >
-                  {formatQuantity(product.stock, product.unit)}
-                </span>
-              </td>
+              <th scope="col">{lang.t.sales_product}</th>
+              <th scope="col">{lang.t.products_unit}</th>
+              <th scope="col" class="num">{lang.t.products_list_price}</th>
+              <th scope="col" class="num">{lang.t.products_stock}</th>
             </tr>
-          {/each}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {#each rows as product (product.id)}
+              <tr>
+                <td class="pname">{product.name}</td>
+                <td>
+                  <span class="unit-chip figures">{lang.fmt.unit(product.unit)}</span>
+                </td>
+                <td class="num">
+                  <span class="faces figures">{formatMoney(product.list_price)}</span>
+                  <span class="per">{priceLabel(product.unit)}</span>
+                </td>
+                <td class="num">
+                  <!-- Zero is not "no data": an empty shelf is a fact the shop needs. -->
+                  <span
+                    class="stock figures"
+                    class:low={product.stock > 0 && product.stock < 10}
+                    class:out={product.stock === 0}
+                  >
+                    {formatQuantity(product.stock, product.unit)}
+                  </span>
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
       <!-- The count moved to the page header, beside the heading, where the other
          two surfaces carry the size of what is on screen. What stays here is the
          one thing a reader of the stock column must know: those numbers are
@@ -364,6 +371,20 @@
      page itself never scrolls and the panels divide a known height. */
   .panel-catalog {
     min-height: 480px;
+  }
+  .table-frame {
+    overflow: auto;
+    flex: 1 1 auto;
+    min-height: 0;
+    scrollbar-gutter: stable;
+    scrollbar-width: auto;
+    scrollbar-color: var(--ink-soft) var(--rule);
+  }
+  .catalog thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--surface);
   }
   .panel-new {
     overflow: visible;
