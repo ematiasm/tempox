@@ -22,6 +22,7 @@ export interface Dict {
   sales_title: string;
   sales_tagline: string;
   sales_action: string;
+  sales_action_hint: string;
   sales_draft_title: string;
   sales_ledger_title: string;
   sales_ledger_sub: string;
@@ -54,8 +55,14 @@ export interface Dict {
   sales_draft_hint: string;
   sales_price_unit: string;
   sales_scope: string;
+  sales_scope_day: string;
+  sales_scope_week: string;
+  sales_scope_month: string;
   sales_today: string;
   sales_yesterday: string;
+  sales_more_one: string;
+  sales_more_many: string;
+  sales_scope_now: string;
   sales_older: string;
   sales_newer: string;
   sales_legend_confirmed: string;
@@ -69,6 +76,9 @@ export interface Dict {
   sales_no_sales_today: string;
   sales_no_sales_day: string;
   sales_time: string;
+  sales_open_document: string;
+  sales_refunded_state: string;
+  sales_running_balance: string;
   sales_sale: string;
   sales_items: string;
   sales_status: string;
@@ -81,6 +91,7 @@ export interface Dict {
   sales_cash_note: string;
   sales_shown_sales: string;
   sales_shown_note: string;
+  sales_shown_note_partial: (shown: number, total: number) => string;
   sales_bonus_lines: string;
   /** Receives the already-formatted amount, so the locale owns the figure (S12). */
   sales_bonus_lines_note: (amount: string) => string;
@@ -117,6 +128,10 @@ export interface Dict {
   products_new_sub: string;
   products_name: string;
   products_name_placeholder: string;
+  more_column: string;
+  more_columns: string;
+  products_products_shown: string;
+  products_action_hint: string;
   products_initial_stock: string;
   products_create: string;
   products_creating: string;
@@ -143,10 +158,21 @@ export interface Dict {
   purchases_title: string;
   purchases_tagline: string;
   purchases_action: string;
+  purchases_document: string;
+  purchases_supplier: string;
+  purchases_confirmed_state: string;
+  purchases_returned_state: string;
+  purchases_lines_of: string;
+  purchases_footing_gross: string;
+  purchases_footing_gross_note: string;
+  purchases_footing_returned: string;
+  purchases_footing_returned_note: string;
+  purchases_footing_net: string;
+  purchases_footing_net_note: string;
+  purchases_action_hint: string;
   purchases_draft_title: string;
   purchases_ledger_title: string;
   purchases_ledger_sub: string;
-  purchases_supplier: string;
   /** The seeded supplier that a purchase falls back to. Stored as `one-off-supplier`. */
   purchases_one_off_supplier: string;
   purchases_new_supplier: string;

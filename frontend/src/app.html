@@ -10,7 +10,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     %sveltekit.head%
   </head>
-  <body data-sveltekit-preload-data="hover" class="bg-slate-950 text-slate-100 min-h-screen">
+  <!-- The body carries no Tailwind colour utilities. `app.css` owns the ground
+       and the ink, and a utility class here would be a second, invisible
+       authority over both: `bg-slate-950` survived v1a's dark theme long after
+       the paper world replaced it, and it painted the page before the
+       stylesheet loaded. One owner, or the two drift. -->
+  <body data-sveltekit-preload-data="hover" class="min-h-screen">
     <div style="display: contents">%sveltekit.body%</div>
   </body>
 </html>

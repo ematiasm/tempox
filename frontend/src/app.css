@@ -1,70 +1,105 @@
-/* Tempox — the stamps token layer.
+/* Tempox — the statement token layer.
  *
- * Direction contract: .impeccable/surfaces/sales.md
- * Composition: "the ledger document" (surface seed 17aa8db8).
+ * Direction contract: .impeccable/surfaces/sales.md (v2, 2026-10-20)
+ * World: the printed account statement — the only money document the shop
+ * already trusts — with containment by surface taken from the category round.
  *
  * The world lends four things and only four: type, palette, density, and one
- * signature move. Layout, navigation and controls stay the standard ones a
- * web app already uses, which is why nothing here renames a button.
+ * signature move. Layout, navigation and controls stay the standard ones a web
+ * app already uses, which is why nothing here renames a button.
  *
- * The paper rules ARE the ledger's grid, never a texture behind a table: there
- * is exactly one line system in this file (--rule / --rule-strong) and both the
- * sheet's rules and the table's borders consume it.
+ * The one line system: a hairline appears ONLY where something is calculated.
+ * A rule is never decoration, which is why --rule exists once and is used for
+ * table borders, the draft's line separators and the panel footers alike.
  */
 
 @import 'tailwindcss';
 
-/* Fira Sans Condensed, served from the project's own files: a shop PC on a bad
- * connection should not wait on a third-party host, and a font fetched from
- * someone else's server is a dependency nobody declared. Latin subset only. */
+/* IBM Plex, served from the project's own files through @fontsource: a shop PC
+ * on a bad connection should not wait on a third-party host, and a font
+ * fetched from someone else's server is a dependency nobody declared. Latin
+ * subset only — the app has no non-latin text. */
 @font-face {
-  font-family: 'Fira Sans Condensed';
+  font-family: 'Plex Condensed';
   font-style: normal;
   font-weight: 400;
   font-display: swap;
-  src: url('/fonts/fira-sans-condensed-400.woff2') format('woff2');
+  src: url('@fontsource/ibm-plex-sans-condensed/files/ibm-plex-sans-condensed-latin-400-normal.woff2')
+    format('woff2');
 }
 @font-face {
-  font-family: 'Fira Sans Condensed';
+  font-family: 'Plex Condensed';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('@fontsource/ibm-plex-sans-condensed/files/ibm-plex-sans-condensed-latin-500-normal.woff2')
+    format('woff2');
+}
+@font-face {
+  font-family: 'Plex Condensed';
   font-style: normal;
   font-weight: 600;
   font-display: swap;
-  src: url('/fonts/fira-sans-condensed-600.woff2') format('woff2');
+  src: url('@fontsource/ibm-plex-sans-condensed/files/ibm-plex-sans-condensed-latin-600-normal.woff2')
+    format('woff2');
 }
 @font-face {
-  font-family: 'Fira Sans Condensed';
+  font-family: 'Plex Condensed';
   font-style: normal;
   font-weight: 700;
   font-display: swap;
-  src: url('/fonts/fira-sans-condensed-700.woff2') format('woff2');
+  src: url('@fontsource/ibm-plex-sans-condensed/files/ibm-plex-sans-condensed-latin-700-normal.woff2')
+    format('woff2');
+}
+@font-face {
+  font-family: 'Plex Text';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-400-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Plex Text';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-500-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Plex Text';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-600-normal.woff2') format('woff2');
 }
 
 :root {
-  /* The shop PC sits in a lit back office; the ground is paper, not a dark
-   * theme chosen because the category likes dark. */
+  /* The shop PC sits in a lit back office at midday; the ground is cold paper,
+   * not a dark theme chosen because the category likes dark. */
   color-scheme: light;
 
-  --paper: #f6f2e9;
-  --paper-raised: #fbf9f3;
-  --paper-sunk: #efeade;
-  --ink: #15161c;
-  --ink-soft: #5b5e6e;
-  --indigo: #2b3162;
-  --indigo-soft: #4b5182;
-  --crimson: #a81b2a;
-  --crimson-deep: #7e1420;
+  /* Palette. Exactly one accent, reserved to the running balance and the live
+   * destination. Everything else is ink, grey, or the ground. */
+  --ground: #fbfcfd;
+  --surface: #ffffff;
+  --rule: #e8ecf1;
+  --rule-strong: #c3ccd6;
+  --ink: #12212e;
+  --ink-soft: #5f6f7d; /* 5.04:1 on --ground; #6b7c8a was 4.19:1 and failed AA */
+  --accent: #0b5f8a;
 
-  /* The single line system. Both spellings exist because a hairline over paper
-   * and a hairline under a header do different jobs at the same weight. */
-  --rule: rgb(32 36 66 / 0.16);
-  --rule-strong: rgb(32 36 66 / 0.32);
+  /* Semantic state. Each carries meaning and never decorates: a confirmed
+   * document is ink (nothing is wrong), a cancellation is red, a pending one is
+   * amber. They are text and a tick, never filled pills on the light ground. */
+  --state-void: #a33227;
+  --state-pending: #8a6410;
 
-  /* Type: the condensed humanist carries figures and headings; the system sans
-   * carries text. Amounts are tabular so a total never reflows while typing. */
-  --font-figure: 'Fira Sans Condensed', ui-sans-serif, system-ui, sans-serif;
-  --font-text: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  /* Type: condensed figures carry every amount; the text face carries prose.
+   * Amounts are tabular so a total never reflows while typing. */
+  --font-figure: 'Plex Condensed', ui-sans-serif, system-ui, sans-serif;
+  --font-text: 'Plex Text', ui-sans-serif, system-ui, -apple-system, sans-serif;
 
-  --step--1: 0.6875rem;
+  --step--1: 0.75rem;
   --step-0: 0.8125rem;
   --step-1: 0.875rem;
   --step-2: 1rem;
@@ -72,14 +107,17 @@
   --step-4: 1.75rem;
   --step-5: 2.375rem;
 
-  --radius: 3px;
-  --rail-w: 92px;
-  --tab-overhang: 12px;
+  --radius: 2px;
+  /* Containment by surface: the separation between two work areas is this
+   * border, not a gap of air. Sourced from the category round's mechanism. */
+  --panel-radius: 8px;
+  --panel-gap: 24px;
+  --rail-w: 88px;
 }
 
 html,
 body {
-  background: var(--paper);
+  background: var(--ground);
   color: var(--ink);
   font-family: var(--font-text);
   font-size: var(--step-1);
@@ -90,34 +128,44 @@ body {
 /* Browser surfaces are part of the design and ship with defaults belonging to
  * nobody: theme the ones this world can reach. */
 ::selection {
-  background: rgb(168 27 42 / 0.18);
+  background: rgb(11 95 138 / 0.16);
   color: var(--ink);
 }
 input,
 select,
 button,
 textarea {
-  caret-color: var(--crimson);
+  caret-color: var(--accent);
   font: inherit;
   color: inherit;
 }
 :focus-visible {
-  outline: 2px solid var(--crimson);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
   border-radius: 2px;
 }
+/* Scrollbars are visible, not hidden until hover. The day's ledger scrolls
+ * inside its panel, and a scroll region the user cannot see is a scroll region
+ * they do not know exists: rows simply appear to stop. `thin` keeps it out of
+ * the way while `rule-strong` gives it enough contrast to be found. */
 * {
-  scrollbar-color: var(--indigo-soft) transparent;
+  scrollbar-color: var(--rule-strong) var(--rule);
   scrollbar-width: thin;
 }
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
+::-webkit-scrollbar-track {
+  background: var(--rule);
+}
 ::-webkit-scrollbar-thumb {
-  background: rgb(43 49 98 / 0.35);
-  border: 3px solid var(--paper);
+  background: var(--rule-strong);
+  border: 2px solid var(--rule);
   border-radius: 99px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-soft);
 }
 
 /* Reusable world primitives */
@@ -129,25 +177,36 @@ textarea {
 
 .label {
   font-family: var(--font-figure);
-  font-size: var(--step-1);
+  font-size: var(--step-0);
   font-weight: 600;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--indigo-soft);
+  color: var(--ink-soft);
 }
 
 .control {
   width: 100%;
   border: 1px solid var(--rule-strong);
-  background: #fff;
+  background: var(--surface);
   border-radius: var(--radius);
   padding: 10px 11px;
   font-size: var(--step-2);
 }
 .control::placeholder {
-  color: #6c6f7e;
+  /* #5f6f7d, not a lighter grey: a placeholder is text the cashier reads. */
+  color: var(--ink-soft);
 }
 .control:disabled {
-  background: var(--paper-sunk);
+  background: var(--ground);
   color: var(--ink-soft);
+}
+
+/* Containment by surface. Every work area on the page starts and stops here;
+ * the difference between two areas is this edge, never air alone. */
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--panel-radius);
+  overflow: hidden;
+  min-width: 0;
 }

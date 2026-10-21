@@ -80,30 +80,93 @@ test('the notes demo stays reachable by URL but out of the rail', async ({ page 
   await expect(rail.getByRole('link', { name: /notas/i })).toHaveCount(0);
 });
 
-test('every page opens with the same crimson band (DESIGN.md)', async ({ page }) => {
-  // DESIGN.md: "Below the rail, every page opens with a full-bleed crimson
-  // band... The band is the one saturated region, and it is always the same
-  // shape, so the eye learns it once." And the Crimson Is Spent Rule names the
-  // action band as one of its roles, which is what makes indigo on one page a
-  // violation rather than a taste.
+test('every page opens with the same statement header (DESIGN.md)', async ({ page }) => {
+  // DESIGN.md v2: the page does not shout. There is no coloured band any more —
+  // the figures are the loudest thing on the page and the navigation is the
+  // page's margin. What must hold across every destination is the opposite
+  // property: the ground and the ink are the *same* on every screen, so the
+  // shop never has to relearn the page it is on.
   //
-  // This test exists because ten behavioural e2e tests missed exactly this: a
-  // new screen chose a different band colour and nothing failed. Behaviour tests
-  // cannot see a design system; only an assertion about the rendered style can.
-  const bands: Record<string, string> = {};
+  // This test exists because ten behavioural e2e tests missed the original
+  // version of this rule: a new screen chose a different band colour and
+  // nothing failed. Behaviour tests cannot see a design system; only an
+  // assertion about the rendered style can. The rule changed with the world;
+  // the reason for the assertion did not.
+  //
+  // SCOPE: every destination. This test was skipped while the redesign was
+  // partial, then narrowed to the finished surfaces while `/products` waited;
+  // it is whole again. The guard test that named `/products` as the outstanding
+  // surface is gone with the reason for it, which is what that test said would
+  // happen.
+  const grounds: Record<string, string> = {};
+  const inks: Record<string, string> = {};
 
   for (const path of ['/sales', '/purchases', '/products']) {
     await page.goto(path);
-    const band = page.locator('header.band');
-    await expect(band).toBeVisible();
-    // The computed colour, not the CSS variable name: a page could reference the
-    // right token and still be overridden by a later rule.
-    bands[path] = await band.evaluate((el) => getComputedStyle(el).backgroundColor);
+    // The heading is the page's own voice and every screen has one, which is
+    // what makes it the stable thing to measure across three different layouts.
+    const heading = page.getByRole('heading', { level: 1 });
+    await expect(heading).toBeVisible();
+    // The computed values, not the token names: a page could reference the
+    // right variable and still be overridden by a later rule.
+    inks[path] = await heading.evaluate((el) => getComputedStyle(el).color);
+    grounds[path] = await page
+      .locator('body')
+      .evaluate((el) => getComputedStyle(el).backgroundColor);
   }
 
-  const reference = bands['/sales'];
-  expect(reference).toBe('rgb(168, 27, 42)'); // --crimson #a81b2a
-  for (const [path, colour] of Object.entries(bands)) {
-    expect(colour, `${path} must wear the same band as /sales`).toBe(reference);
+  const referenceInk = inks['/sales'];
+  const referenceGround = grounds['/sales'];
+  expect(referenceInk).toBe('rgb(18, 33, 46)'); // --ink #12212e
+  expect(referenceGround).toBe('rgb(251, 252, 253)'); // --ground #fbfcfd
+
+  for (const [path, colour] of Object.entries(inks)) {
+    expect(colour, `${path} must use the same ink as /sales`).toBe(referenceInk);
   }
+  for (const [path, colour] of Object.entries(grounds)) {
+    expect(colour, `${path} must sit on the same ground as /sales`).toBe(referenceGround);
+  }
+});
+
+test('the redesigned surfaces both wear the statement world', async ({ page }) => {
+  // Asserted positively per surface, so a failure names which one regressed
+  // rather than only that the pair disagreed.
+  for (const path of ['/sales', '/purchases', '/products']) {
+    await page.goto(path);
+    const heading = page.getByRole('heading', { level: 1 });
+    await expect(heading).toBeVisible();
+    expect(
+      await heading.evaluate((el) => getComputedStyle(el).color),
+      `${path} must use the statement ink`
+    ).toBe('rgb(18, 33, 46)');
+    expect(
+      await page.locator('body').evaluate((el) => getComputedStyle(el).backgroundColor),
+      `${path} must sit on the statement ground`
+    ).toBe('rgb(251, 252, 253)');
+  }
+});
+
+test('the accent is spent on one job per screen, never two', async ({ page }) => {
+  // The statement world's palette rule: one accent, reserved to the running
+  // balance and the live destination. A second use would dilute the one number
+  // the balance column exists to make readable.
+  //
+  // Measured, not declared: this reads the rendered colour of the thing that is
+  // allowed to carry it and of the thing that must not.
+  await page.goto('/sales');
+
+  const activeTab = page.locator('nav.rail a[aria-current="page"]');
+  await expect(activeTab).toBeVisible();
+  expect(await activeTab.evaluate((el) => getComputedStyle(el).color)).toBe('rgb(11, 95, 138)'); // --accent
+
+  // The primary action is ink, never the accent: it is a commitment, not a
+  // figure the shop is reading down a column. Measured in the state where it is
+  // live — a disabled control is correctly grey, and asserting on it would be
+  // measuring the empty state rather than the palette.
+  const action = page.getByRole('button', { name: /Registrar venta/ });
+  await expect(action).toBeVisible();
+  expect(await action.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe(
+    'rgb(255, 255, 255)' // disabled: the sheet has nothing to record
+  );
+  expect(await action.evaluate((el) => getComputedStyle(el).color)).toBe('rgb(95, 111, 125)'); // --ink-soft
 });

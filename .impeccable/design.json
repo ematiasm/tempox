@@ -1,343 +1,162 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-10-14T20:32:00Z",
+  "generatedAt": "2026-10-20T23:01:25Z",
   "title": "Design System: Tempox",
   "extensions": {
     "colorMeta": {
-      "crimson": {
-        "role": "primary",
-        "displayName": "Stamp Crimson",
-        "canonical": "#a81b2a",
-        "tonalRamp": [
-          "#3d0a10",
-          "#6b121c",
-          "#8f1724",
-          "#a81b2a",
-          "#c04a56",
-          "#d47d86",
-          "#e7b1b7",
-          "#f6dde0"
-        ]
-      },
-      "crimson-deep": {
-        "role": "primary",
-        "displayName": "Crimson Deep",
-        "canonical": "#7e1420",
-        "tonalRamp": [
-          "#2e070c",
-          "#4f0d14",
-          "#68111a",
-          "#7e1420",
-          "#9c3d47",
-          "#ba6c74",
-          "#d7a3a8",
-          "#efd6d8"
-        ]
-      },
-      "indigo": {
-        "role": "secondary",
-        "displayName": "Ledger Indigo",
-        "canonical": "#2b3162",
-        "tonalRamp": [
-          "#101228",
-          "#1b1f40",
-          "#232853",
-          "#2b3162",
-          "#545a8a",
-          "#8185ad",
-          "#b1b4cf",
-          "#dde0ec"
-        ]
-      },
-      "indigo-soft": {
-        "role": "secondary",
-        "displayName": "Indigo Soft",
-        "canonical": "#4b5182",
-        "tonalRamp": [
-          "#181b2e",
-          "#282c4a",
-          "#3a3f66",
-          "#4b5182",
-          "#6f74a0",
-          "#989cc0",
-          "#c2c5da",
-          "#e7e8f0"
-        ]
-      },
-      "paper": {
+      "ground": {
         "role": "neutral",
-        "displayName": "Notebook Paper",
-        "canonical": "#f6f2e9",
-        "tonalRamp": [
-          "#4b463c",
-          "#6f695b",
-          "#948d7f",
-          "#b8b2a6",
-          "#d5d0c6",
-          "#e6e2d8",
-          "#f0ece1",
-          "#f9f7f0"
-        ]
+        "displayName": "Cold Ground",
+        "canonical": "#fbfcfd",
+        "tonalRamp": ["#0b0b0c", "#212222", "#3a3b3b", "#545556", "#717272", "#8e8f90", "#adaeaf", "#edeeef"]
       },
-      "paper-raised": {
+      "surface": {
         "role": "neutral",
-        "displayName": "Raised Paper",
-        "canonical": "#fbf9f3",
-        "tonalRamp": [
-          "#514c42",
-          "#756f61",
-          "#999285",
-          "#bdb6aa",
-          "#d9d4c9",
-          "#e9e5dc",
-          "#f3f0e8",
-          "#fdfbf6"
-        ]
+        "displayName": "White Surface",
+        "canonical": "#ffffff",
+        "tonalRamp": ["#0b0b0b", "#222222", "#3a3a3a", "#555555", "#717171", "#8f8f8f", "#aeaeae", "#eeeeee"]
       },
-      "paper-sunk": {
+      "rule": {
         "role": "neutral",
-        "displayName": "Sunk Paper",
-        "canonical": "#efeade",
-        "tonalRamp": [
-          "#464236",
-          "#6a6553",
-          "#8e8876",
-          "#b2ac9b",
-          "#cfc9b9",
-          "#e0dbcd",
-          "#eae6da",
-          "#f6f2e9"
-        ]
+        "displayName": "Fine Rule",
+        "canonical": "#e8ecf1",
+        "tonalRamp": ["#090b0f", "#1f2225", "#383b3f", "#52565a", "#6e7276", "#8c8f94", "#aaaeb3", "#ebeff4"]
+      },
+      "rule-strong": {
+        "role": "neutral",
+        "displayName": "Strong Rule",
+        "canonical": "#c3ccd6",
+        "tonalRamp": ["#060c12", "#1c222a", "#343b43", "#4e565f", "#6a737b", "#88909a", "#a6afb9", "#e6f0fa"]
       },
       "ink": {
         "role": "neutral",
-        "displayName": "Ink",
-        "canonical": "#15161c",
-        "tonalRamp": [
-          "#0b0c0f",
-          "#15161c",
-          "#23252f",
-          "#3a3d4a",
-          "#5f6272",
-          "#8c8f9c",
-          "#bcbec7",
-          "#e3e4e8"
-        ]
+        "displayName": "Ledger Ink",
+        "canonical": "#12212e",
+        "tonalRamp": ["#010c18", "#142330", "#2c3c4b", "#475767", "#627484", "#7f92a2", "#9eb1c2", "#e1f1ff"]
       },
       "ink-soft": {
         "role": "neutral",
         "displayName": "Soft Ink",
-        "canonical": "#5b5e6e",
-        "tonalRamp": [
-          "#1c1d24",
-          "#2c2e37",
-          "#424450",
-          "#5b5e6e",
-          "#7f8291",
-          "#a4a7b3",
-          "#c9cbd3",
-          "#e8e9ed"
-        ]
+        "canonical": "#5f6f7d",
+        "tonalRamp": ["#020c17", "#15232f", "#2e3c49", "#485765", "#647482", "#8192a0", "#9fb0c0", "#e1f1ff"]
+      },
+      "accent": {
+        "role": "primary",
+        "displayName": "Statement Blue",
+        "canonical": "#0b5f8a",
+        "tonalRamp": ["#000d17", "#022538", "#023f5e", "#035b86", "#2f79a5", "#4f97c5", "#6fb7e6", "#dff1ff"]
+      },
+      "state-void": {
+        "role": "semantic",
+        "displayName": "Void Red",
+        "canonical": "#a33227",
+        "tonalRamp": ["#1e0000", "#460201", "#730100", "#97261d", "#b9473a", "#dc6657", "#ff8575", "#ffe7e2"]
+      },
+      "state-pending": {
+        "role": "semantic",
+        "displayName": "Pending Amber",
+        "canonical": "#8a6410",
+        "tonalRamp": ["#120a00", "#2e1f01", "#4d3605", "#6e4f09", "#906a1a", "#b0883d", "#d0a75d", "#ffeccd"]
       }
     },
     "typographyMeta": {
       "figure": {
-        "displayName": "Figure",
-        "purpose": "Every amount, quantity, time and count. Tabular numerals are mandatory: a total that reflows while typing is untrustworthy."
-      },
-      "display": {
-        "displayName": "Display",
-        "purpose": "Page headings inside the action band and the ledger heading. Never larger than 1.75rem."
+        "displayName": "Plex Condensed",
+        "purpose": "Condensed headings, labels and figures; money values use tabular numerals."
       },
       "body": {
-        "displayName": "Body",
-        "purpose": "Prose, table cells and hints. The system sans, deliberately invisible."
-      },
-      "label": {
-        "displayName": "Label",
-        "purpose": "Field labels and table headers: uppercase, tracked 0.1em, so they read as a printed form's captions."
+        "displayName": "Plex Text",
+        "purpose": "Prose, hints and general text."
       }
     },
-    "shadows": [
-      {
-        "name": "action-lift",
-        "value": "0 2px 0 rgb(0 0 0 / 0.18), 0 8px 18px -10px rgb(0 0 0 / 0.55)",
-        "purpose": "The band's action button only: a real offset plus a soft blur, so it reads as a physical key."
-      },
-      {
-        "name": "floating-list",
-        "value": "0 14px 30px -14px rgb(21 22 28 / 0.45)",
-        "purpose": "The product picker's match list, and nothing else. It floats over content."
-      },
-      {
-        "name": "record-key",
-        "value": "0 2px 0 #7e1420",
-        "purpose": "The record button's own crimson shadow; it disappears when the button is disabled."
-      }
-    ],
-    "motion": [
-      {
-        "name": "stamp-land",
-        "value": "420ms cubic-bezier(0.16, 1, 0.3, 1)",
-        "purpose": "The system's only authored motion. Runs only on the document just recorded, never on a list of documents at once. Disabled under prefers-reduced-motion."
-      },
-      {
-        "name": "chevron-turn",
-        "value": "120ms ease-out",
-        "purpose": "The ledger row's disclosure chevron."
-      },
-      {
-        "name": "skeleton-sweep",
-        "value": "1.4s linear infinite",
-        "purpose": "Loading bars. Bars rather than a spinner, so the header and scope controls do not jump."
-      }
-    ],
+    "shadows": [],
+    "motion": [],
     "breakpoints": [
-      {
-        "name": "stack",
-        "value": "1180px"
-      },
-      {
-        "name": "rail-horizontal",
-        "value": "860px"
-      }
+      {"name": "sales-stack", "value": "1080px"},
+      {"name": "rail-horizontal", "value": "860px"}
     ]
   },
   "components": [
     {
-      "name": "Band",
-      "kind": "nav",
-      "refersTo": "band",
-      "description": "The page's opening region: its heading and its single next action, on the one saturated field.",
-      "html": "<header class=\"ds-band\"><div><h1>Record a sale</h1><p>Stock and cash update together, from the one entry</p></div><button class=\"ds-band-action\">Record sale <kbd>F2</kbd></button></header>",
-      "css": ".ds-band { background: var(--crimson, #a81b2a); color: #fff; display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 14px 26px 14px 28px; min-height: 78px; } .ds-band h1 { font-family: 'Fira Sans Condensed', ui-sans-serif, system-ui, sans-serif; font-size: 1.75rem; font-weight: 600; line-height: 1.1; margin: 0; } .ds-band p { color: rgb(255 255 255 / 0.94); font-size: 0.8125rem; margin: 2px 0 0; } .ds-band-action { display: inline-flex; align-items: center; gap: 10px; background: var(--paper-raised, #fbf9f3); color: var(--ink, #15161c); border: 0; border-radius: 3px; padding: 12px 18px; font-family: 'Fira Sans Condensed', ui-sans-serif, system-ui, sans-serif; font-size: 1.25rem; font-weight: 600; box-shadow: 0 2px 0 rgb(0 0 0 / 0.18), 0 8px 18px -10px rgb(0 0 0 / 0.55); cursor: pointer; } .ds-band-action:hover:not(:disabled) { background: #fff; } .ds-band-action:disabled { opacity: 0.55; cursor: default; } .ds-band-action kbd { font-family: ui-sans-serif, system-ui, sans-serif; font-size: 0.6875rem; font-weight: 600; color: var(--ink-soft, #5b5e6e); border: 1px solid rgb(32 36 66 / 0.32); border-radius: 2px; padding: 2px 5px; background: var(--paper, #f6f2e9); }"
-    },
-    {
-      "name": "Record Button",
+      "name": "Primary Action",
       "kind": "button",
-      "refersTo": "record",
-      "description": "Commits the sale. The one crimson control on a paper ground.",
-      "html": "<button class=\"ds-record\">Record sale <kbd>Ctrl ↵</kbd></button>",
-      "css": ".ds-record { display: inline-flex; align-items: center; gap: 10px; background: var(--crimson, #a81b2a); color: #fff; border: 0; border-radius: 3px; padding: 11px 18px; font-family: 'Fira Sans Condensed', ui-sans-serif, system-ui, sans-serif; font-size: 1.25rem; font-weight: 600; box-shadow: 0 2px 0 var(--crimson-deep, #7e1420); cursor: pointer; } .ds-record:hover:not(:disabled) { background: #b81e2e; } .ds-record:active:not(:disabled) { transform: translateY(1px); box-shadow: none; } .ds-record:disabled { background: var(--paper-sunk, #efeade); color: var(--ink-soft, #5b5e6e); box-shadow: none; cursor: default; } .ds-record:focus-visible { outline: 2px solid var(--crimson, #a81b2a); outline-offset: 2px; } .ds-record kbd { border: 1px solid currentColor; border-radius: 2px; padding: 1px 4px; font-size: 0.6875rem; opacity: 0.8; }"
+      "refersTo": "primary-action",
+      "description": "The sale's single primary action, a full-width solid ink bar at the foot of its draft panel.",
+      "html": "<button class=\"ds-primary-action\">Record sale <kbd>F2</kbd></button>",
+      "css": ".ds-primary-action { width: 100%; display: inline-flex; align-items: center; justify-content: center; gap: 10px; background: #12212e; color: #ffffff; border: 1px solid #12212e; border-radius: 2px; padding: 12px 18px; font-family: 'Plex Condensed', ui-sans-serif, system-ui, sans-serif; font-size: 1rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; cursor: pointer; } .ds-primary-action:hover:not(:disabled) { background: #0a1622; } .ds-primary-action:focus-visible { outline: 2px solid #0b5f8a; outline-offset: 2px; } .ds-primary-action:disabled { background: #ffffff; color: #5f6f7d; border: 1px dashed #c3ccd6; cursor: default; } .ds-primary-action kbd { font-family: 'Plex Text', ui-sans-serif, system-ui, sans-serif; font-size: 0.75rem; font-weight: 600; border: 1px solid currentColor; border-radius: 2px; padding: 1px 5px; opacity: 0.75; }"
     },
     {
       "name": "Text Field",
       "kind": "input",
-      "refersTo": "input",
-      "description": "The system's field: white on paper, hairline border, crimson focus and caret.",
-      "html": "<input class=\"ds-input\" placeholder=\"Search by name…\" />",
-      "css": ".ds-input { width: 100%; background: #fff; color: var(--ink, #15161c); border: 1px solid rgb(32 36 66 / 0.32); border-radius: 3px; padding: 10px 11px; font-size: 1rem; font-family: inherit; caret-color: var(--crimson, #a81b2a); } .ds-input::placeholder { color: #6c6f7e; } .ds-input:focus-visible { outline: 2px solid var(--crimson, #a81b2a); outline-offset: 2px; } .ds-input:disabled { background: var(--paper-sunk, #efeade); color: var(--ink-soft, #5b5e6e); }"
+      "refersTo": "text-field",
+      "description": "A white field with a strong-rule outline and visible accent focus.",
+      "html": "<input class=\"ds-text-field\" placeholder=\"Search\" />",
+      "css": ".ds-text-field { width: 100%; border: 1px solid #c3ccd6; background: #ffffff; border-radius: 2px; padding: 10px 11px; font-family: 'Plex Text', ui-sans-serif, system-ui, sans-serif; font-size: 1rem; color: #12212e; caret-color: #0b5f8a; } .ds-text-field::placeholder { color: #5f6f7d; } .ds-text-field:focus-visible { outline: 2px solid #0b5f8a; outline-offset: 2px; } .ds-text-field:disabled { background: #fbfcfd; color: #5f6f7d; }"
     },
     {
-      "name": "Figure Field",
-      "kind": "input",
-      "refersTo": "input",
-      "description": "A quantity or a price: condensed, right-aligned, tabular, so what is typed looks like what will be read.",
-      "html": "<div class=\"ds-money\"><span class=\"ds-cur\">$</span><input class=\"ds-input ds-fig\" value=\"25.00\" /><span class=\"ds-per\">/unit</span></div>",
-      "css": ".ds-money { display: inline-flex; align-items: baseline; gap: 3px; } .ds-cur, .ds-per { font-family: 'Fira Sans Condensed', ui-sans-serif, system-ui, sans-serif; color: var(--ink-soft, #5b5e6e); font-size: 0.875rem; } .ds-input.ds-fig { width: 92px; padding: 6px 8px; font-family: 'Fira Sans Condensed', ui-sans-serif, system-ui, sans-serif; font-size: 1rem; font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }"
-    },
-    {
-      "name": "Ledger Row",
+      "name": "Work Panel",
       "kind": "card",
-      "refersTo": "ledger-row",
-      "description": "A sale as a document: time, id, customer, lines, its stamp, its total. The stamp is the only thing carrying state.",
-      "html": "<table class=\"ds-ledger\"><tbody><tr class=\"ds-doc\"><td class=\"ds-time\">18:42</td><td class=\"ds-id\">#37b4aeef</td><td class=\"ds-cust\">Walk-in — Consumidor Final</td><td class=\"ds-num\">6</td><td><span class=\"ds-stamp\">Confirmed</span></td><td class=\"ds-num ds-total\">$1,315.40</td></tr></tbody></table>",
-      "css": ".ds-ledger { width: 100%; border-collapse: collapse; background: var(--paper-raised, #fbf9f3); border: 1px solid rgb(32 36 66 / 0.16); } .ds-doc td { padding: 10px 12px; border-bottom: 1px solid rgb(32 36 66 / 0.16); vertical-align: middle; } .ds-doc td:first-child { border-left: 1px solid rgb(168 27 42 / 0.5); } .ds-time { font-family: 'Fira Sans Condensed', ui-sans-serif, system-ui, sans-serif; font-size: 1rem; font-variant-numeric: tabular-nums; } .ds-id { font-family: 'Fira Sans Condensed', ui-sans-serif, system-ui, sans-serif; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--indigo, #2b3162); } .ds-cust { font-style: italic; color: var(--ink-soft, #5b5e6e); } .ds-num { text-align: right; } .ds-total { font-family: 'Fira Sans Condensed', ui-sans-serif, system-ui, sans-serif; font-size: 1.25rem; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; } .ds-stamp { display: inline-block; font-family: 'Fira Sans Condensed', ui-sans-serif, system-ui, sans-serif; font-weight: 700; text-transform: uppercase; letter-spacing: 0.13em; font-size: 0.875rem; color: var(--crimson, #a81b2a); border: 2px solid currentColor; border-radius: 2px; padding: 3px 8px 2px; transform: rotate(-6.5deg); mix-blend-mode: multiply; }"
-    },
-    {
-      "name": "Annulled Stamp",
-      "kind": "custom",
-      "refersTo": "ledger-row",
-      "description": "A cancelled document: ink and struck through, never crimson. An annulment is a correction, not an alarm.",
-      "html": "<span class=\"ds-stamp ds-annulled\">Anulado</span>",
-      "css": ".ds-stamp.ds-annulled { color: var(--ink, #15161c); position: relative; } .ds-stamp.ds-annulled::before { content: ''; position: absolute; left: -4px; right: -4px; top: 50%; height: 2px; background: currentColor; transform: rotate(-1.5deg) translateY(-1px); opacity: 0.85; }"
+      "refersTo": "work-panel",
+      "description": "A closed white work area, separated from its neighbor by a 24px gap and its own rule.",
+      "html": "<section class=\"ds-panel\"><h2>Draft sale</h2><p>Work area</p></section>",
+      "css": ".ds-panel { background: #ffffff; border: 1px solid #e8ecf1; border-radius: 8px; overflow: hidden; padding: 18px; min-width: 0; } .ds-panel h2 { margin: 0 0 8px; color: #12212e; font-family: 'Plex Condensed', ui-sans-serif, system-ui, sans-serif; font-size: 1.25rem; font-weight: 600; } .ds-panel p { margin: 0; color: #5f6f7d; font-family: 'Plex Text', ui-sans-serif, system-ui, sans-serif; font-size: 0.875rem; }"
     },
     {
       "name": "Rail Navigation",
       "kind": "nav",
-      "refersTo": "nav-tab-active",
-      "description": "The shop's two destinations as vertical tabs; the active one extends past the rail into the work area.",
-      "html": "<nav class=\"ds-rail\"><span class=\"ds-brand\">Tempox</span><ul class=\"ds-tabs\"><li><a class=\"ds-tab ds-on\">Sales</a></li><li><a class=\"ds-tab\">Products</a></li></ul></nav>",
-      "css": ".ds-rail { background: var(--indigo, #2b3162); color: #e8e6df; display: flex; flex-direction: column; width: 92px; } .ds-brand { font-family: 'Fira Sans Condensed', ui-sans-serif, system-ui, sans-serif; font-weight: 700; font-size: 15px; letter-spacing: 0.22em; text-transform: uppercase; text-align: center; padding: 18px 0 22px; color: #f2efe6; border-bottom: 1px solid rgb(255 255 255 / 0.18); } .ds-tabs { list-style: none; margin: 14px 0 0; padding: 0; } .ds-tab { display: block; width: 92px; writing-mode: vertical-rl; font-family: 'Fira Sans Condensed', ui-sans-serif, system-ui, sans-serif; font-size: 1rem; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; padding: 20px 0 26px; margin: 0 auto; color: rgb(232 230 223 / 0.8); text-decoration: none; } .ds-tab:hover { color: #fff; } .ds-tab.ds-on { background: var(--crimson, #a81b2a); color: #fff; width: 104px; }"
+      "refersTo": "nav-active",
+      "description": "A quiet 88px rail with the current destination marked by accent text and a left rule.",
+      "html": "<nav class=\"ds-rail\"><a class=\"ds-tab ds-active\">Sales</a><a class=\"ds-tab\">Purchases</a><a class=\"ds-tab\">Products</a></nav>",
+      "css": ".ds-rail { width: 88px; display: flex; flex-direction: column; background: transparent; border-right: 1px solid #e8ecf1; color: #5f6f7d; } .ds-tab { display: block; padding: 12px 0; border-left: 3px solid transparent; color: #5f6f7d; text-align: center; text-decoration: none; font-family: 'Plex Condensed', ui-sans-serif, system-ui, sans-serif; font-size: 0.75rem; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; } .ds-tab:hover { color: #12212e; } .ds-tab.ds-active { border-left-color: #0b5f8a; color: #0b5f8a; }"
     },
     {
-      "name": "Ghost Button",
-      "kind": "button",
-      "refersTo": "input",
-      "description": "A secondary action that must not compete with the one crimson control on the page.",
-      "html": "<button class=\"ds-ghost\">+ New customer</button>",
-      "css": ".ds-ghost { background: none; border: 1px dashed rgb(32 36 66 / 0.32); color: var(--indigo, #2b3162); border-radius: 3px; padding: 9px 12px; font-size: 0.875rem; font-weight: 600; cursor: pointer; } .ds-ghost:hover:not(:disabled) { border-color: var(--indigo, #2b3162); background: rgb(43 49 98 / 0.05); } .ds-ghost:focus-visible { outline: 2px solid var(--crimson, #a81b2a); outline-offset: 2px; } .ds-ghost:disabled { opacity: 0.5; cursor: default; }"
-    },
-    {
-      "name": "Footing",
-      "kind": "card",
-      "refersTo": "ledger-row",
-      "description": "The cash figures closing the page, like the footings closing a column. Figures lead, the label is a caption.",
-      "html": "<div class=\"ds-footings\"><div class=\"ds-fig\"><span class=\"ds-flabel\">Cash on hand</span><span class=\"ds-fvalue\">$53,529.50</span><span class=\"ds-note\">Every confirmed sale, all time</span></div><div class=\"ds-fig\"><span class=\"ds-flabel\">On this page</span><span class=\"ds-fvalue\">$7,561.50</span><span class=\"ds-note\">The documents shown above</span></div></div>",
-      "css": ".ds-footings { display: grid; grid-template-columns: 1.2fr 1fr; border-top: 1px solid rgb(32 36 66 / 0.32); } .ds-fig { display: grid; gap: 3px; padding: 14px 16px 0 0; border-right: 1px solid rgb(32 36 66 / 0.16); } .ds-fig:last-child { border-right: 0; } .ds-flabel { font-family: 'Fira Sans Condensed', ui-sans-serif, system-ui, sans-serif; font-size: 0.875rem; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--indigo-soft, #4b5182); } .ds-fvalue { font-family: 'Fira Sans Condensed', ui-sans-serif, system-ui, sans-serif; font-size: 1.75rem; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; } .ds-note { color: var(--ink-soft, #5b5e6e); font-size: 0.6875rem; line-height: 1.35; max-width: 30ch; }"
+      "name": "Ledger Balance Row",
+      "kind": "custom",
+      "refersTo": "ledger-balance",
+      "description": "A document row with its computed running balance in the left margin as one continuous column.",
+      "html": "<table class=\"ds-ledger\"><thead><tr><th>Balance</th><th>Document</th><th>Status</th><th>Total</th></tr></thead><tbody><tr><td class=\"ds-balance\">$ 1.234,56</td><td>#37b4aeef</td><td><span class=\"ds-state\"><i></i>Confirmed</span></td><td class=\"ds-total\">$ 1.234,56</td></tr></tbody></table>",
+      "css": ".ds-ledger { width: 100%; border-collapse: collapse; color: #12212e; font-family: 'Plex Text', ui-sans-serif, system-ui, sans-serif; font-size: 0.875rem; } .ds-ledger th { padding: 10px 12px; border-bottom: 1px solid #c3ccd6; color: #5f6f7d; text-align: left; font-family: 'Plex Condensed', ui-sans-serif, system-ui, sans-serif; font-size: 0.875rem; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; } .ds-ledger td { padding: 10px 12px; border-bottom: 1px solid #e8ecf1; } .ds-ledger .ds-balance { padding-right: 16px; border-right: 1px solid #e8ecf1; color: #0b5f8a; text-align: right; white-space: nowrap; font-family: 'Plex Condensed', ui-sans-serif, system-ui, sans-serif; font-weight: 600; font-variant-numeric: tabular-nums; } .ds-ledger .ds-total { text-align: right; white-space: nowrap; font-family: 'Plex Condensed', ui-sans-serif, system-ui, sans-serif; font-weight: 700; font-variant-numeric: tabular-nums; } .ds-state { display: inline-flex; align-items: center; gap: 6px; color: #12212e; font-family: 'Plex Condensed', ui-sans-serif, system-ui, sans-serif; font-size: 0.75rem; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; } .ds-state i { width: 2px; height: 12px; background: currentColor; } .ds-state.ds-void { color: #a33227; } .ds-state.ds-pending { color: #8a6410; } .ds-ledger tr:hover td { background: #f2f6fa; } .ds-ledger tr:focus-visible { outline: 2px solid #0b5f8a; outline-offset: -2px; }"
     }
   ],
   "narrative": {
-    "northStar": "The Stamped Ledger",
-    "overview": "Tempox is a shop's sales book, and the world is the one a bookkeeper already knows: paper, hairline rules, and ink. The organising idea is that every event wears its state on its face — a sale is a document that has been stamped, not a row carrying a status badge. That is the whole thesis, and it refuses the category default it was built against: the generic admin CRUD where state is a coloured pill nobody reads.\n\nThe world lends exactly four things and refuses to lend a fifth: type, palette, density, and one signature move. It never supplies the layout, the navigation model, or the controls. Every control here is the ordinary thing a web application already uses — a text field, a select, a table, a button — because the person behind the counter needs to know where everything is before they notice the world.\n\nDensity is high and quiet. This is a working surface seen all day under office light at a fixed PC in a shop, so the ground is paper, not a dark theme chosen because the category likes dark. Expression is spent in one place: the stamp. Everything else is clean, aligned, and deliberately unremarkable, because a screen with one strong idea needs the rest of itself to stay out of the way.",
+    "northStar": "The Computed Account Statement",
+    "overview": "The printed account statement is the money document the shop already trusts. The day reads as one: every row is a computed figure and every balance is recomputed. This refuses the category default of a CRUD screen where state is a coloured pill nobody reads.\n\nThe signature is a running-balance column in the ledger's left margin, recomputed per row so it reads as one continuous number down the page. Work areas are contained in closed, bordered panels: their own edges establish separation, rather than whitespace alone. The sales surface and shell are documented here; `/products` and `/purchases` have not yet been redesigned and remain outside this system's implemented scope.",
     "keyCharacteristics": [
-      "Paper ground, hairline rules, ink — no second layer, no texture behind content",
-      "One saturated accent (crimson) spent on one action band and the stamp",
-      "Condensed humanist for every figure and heading; tabular numerals everywhere",
-      "One authored motion: the stamp landing",
-      "Standard web controls; the world never re-skins a familiar affordance"
+      "A cold near-white ground, dark ink, quiet grey and a restrained blue accent.",
+      "Computed money figures, with a continuous running balance as the ledger's signature.",
+      "Closed, white work panels separated by their own border and a 24px gap.",
+      "State is readable text with a small colour tick, not a filled badge."
     ],
     "rules": [
       {
-        "name": "The One Line System Rule",
-        "body": "--rule and --rule-strong are the only line values in the system. The sheet's rules and the table's borders consume the same two tokens, because the paper's rules are the table's grid — never a texture painted behind a table. Two line systems would turn the world into a costume.",
+        "name": "The Balance Owns the Accent Rule",
+        "body": "Keep the blue accent for the running-balance column and active navigation. Focus and caret affordances also use the accent in the shared stylesheet; do not turn it into a general-purpose section colour or filled action colour.",
         "section": "colors"
       },
       {
-        "name": "The Crimson Is Spent Rule",
-        "body": "Crimson is the system's only accent and it does one kind of work: it marks what the shop should look at. Commitment — the stamp, the action band, the record button, the active destination, the focus ring. Attention — an error, an invalid field, a low shelf, a giveaway. Nothing else: it is never a background wash, never a decorative rule, never a section marker. A page that adds crimson in a third role has spent it.",
+        "name": "The State Is Readable Rule",
+        "body": "State is text plus a 2px tick. Confirmed stays in ink; annulled or refunded uses the void state colour; pending uses the pending state colour. Never encode a state only by colour.",
         "section": "colors"
       },
       {
-        "name": "The Annulled Is Ink Rule",
-        "body": "A cancelled document is indigo-black and struck through, never crimson. An annulment is a correction, not an alarm; colouring it crimson would make a cancelled sale look like the worst thing on the page and would spend the accent that belongs to the confirmed stamp.",
-        "section": "colors"
-      },
-      {
-        "name": "The Tabular Rule",
-        "body": "Every number a user reads or types — money, quantities, times, dates, counts — is set in the figure face with tabular numerals. No exceptions, including inside inputs.",
+        "name": "The Tabular Figures Rule",
+        "body": "Set money figures in Plex Condensed with tabular numerals; their aligned columns are part of how the statement is read.",
         "section": "typography"
-      },
-      {
-        "name": "The Label Is Uppercase Rule",
-        "body": "A field label is uppercase and tracked, and therefore its accessible name is compared case-insensitively; a test that demands one case is asserting the stylesheet, not the design.",
-        "section": "typography"
-      },
-      {
-        "name": "The Flat-By-Default Rule",
-        "body": "Surfaces are flat at rest. Nothing in this system carries a decorative shadow; the three documented shadows are the complete vocabulary, and each one encodes a physical relationship (a key, a floating sheet, a pressed button).",
-        "section": "elevation"
       }
     ],
     "dos": [
-      "Do set every number in the figure face with tabular numerals.",
-      "Do reserve crimson for attention: commitment (stamp, action, focus) and alert (error, invalid field, low stock, regalo). Never a wash, a rule, or a section marker.",
-      "Do render a g or ml product's unit verbatim: 1,500 g at $0.01/g, never converted to kilograms or litres.",
-      "Do strike through an annulled document in ink, and its total with it.",
-      "Do show honest empty states that name the next action, and never invent sample rows.",
-      "Do keep the single line system: the paper's rules and the table's grid are the same two tokens.",
-      "Do wire every shortcut you print on a control.",
-      "Do theme the browser's own surfaces (selection, caret, scrollbar, focus) from the palette."
+      "Do recompute and show a running balance beside each ledger row.",
+      "Do use the blue accent for the balance and active destination, and preserve its observed use for focus and caret affordances.",
+      "Do keep work areas closed by their own white surface, fine-rule border and 8px radius, with the observed 24px gap between sales panels.",
+      "Do render document state as legible text plus a 2px tick; keep confirmed state quiet in ink.",
+      "Do use the solid ink bar for the primary action.",
+      "Do strike through a cancelled or fully refunded row's amount and inherited balance."
     ],
     "donts": [
-      "Don't put a texture, gradient, or second rule layer behind content.",
-      "Don't use a coloured border-left or border-right above 1px as a card or row accent.",
-      "Don't use a hard offset shadow outside the documented vocabulary.",
-      "Don't use glyphs or emoji as icons, and don't set the system sans as a display voice.",
-      "Don't use gradient text, glass, blur, or a coloured halo for emphasis.",
-      "Don't add a kicker or eyebrow above a heading.",
-      "Don't animate anything but the stamp landing.",
-      "Don't let a destination the shop does not sell appear in the rail."
+      "Don't use a filled state pill or a rotated rubber stamp.",
+      "Don't make the primary action a full-bleed accent band or an accent-filled button.",
+      "Don't replace the panel's separating border with whitespace alone.",
+      "Don't use a name from the transitional token alias block for a new component; those aliases are migration debt, not system tokens."
     ]
   }
 }

@@ -14,9 +14,11 @@
     ApiError,
     createSupplierReturn,
     fetchDay,
+    getPurchasesSummary,
     listPurchases,
     listSuppliers,
     type DayRange,
+    type PurchasesSummary,
     type PurchaseListItem,
     type Supplier
   } from '#lib/api.js';
@@ -31,17 +33,33 @@
   } from '#lib/supplierReturns.js';
   import { lang } from '#lib/i18n/index.svelte.js';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
+  import Stamp from './Stamp.svelte';
+  import { overflowsX } from '#lib/overflowsX.js';
 
   interface Props {
     /** Changes whenever a purchase is recorded, so the day reloads. */
     refreshToken?: number;
+    /** Reports the period's document count to the page header. */
+    oncount?: (count: number | null) => void;
   }
 
-  let { refreshToken = 0 }: Props = $props();
+  let { refreshToken = 0, oncount }: Props = $props();
 
   let scopeInstant = $state(new Date());
   let range = $state<DayRange | null>(null);
   let rows = $state<PurchaseListItem[]>([]);
+  // The period's totals, from the database. Null until the first read lands, so
+  // the footer shows an em dash rather than a zero it has not earned.
+  let summary = $state<PurchasesSummary | null>(null);
+
+  // How many columns the reader cannot see, measured by the `overflowsX` action.
+  let hiddenColumns = $state(0);
+
+  // Tell the page how many documents the period holds, whenever that changes.
+  const periodDocuments = $derived(summary?.documents ?? null);
+  $effect(() => {
+    oncount?.(periodDocuments);
+  });
   let loading = $state(true);
   let error = $state<string | null>(null);
   let open = new SvelteSet<string>();
@@ -107,14 +125,19 @@
    */
   async function loadDay(at: Date, isStale: () => boolean): Promise<boolean> {
     const day = await fetchDay(at);
-    const [list, supplierList] = await Promise.all([
+    // The totals come from the database, not from the rows this page happens to
+    // hold: `listPurchases` caps at its own page size, so anything summed here
+    // omits the rest of the period. One request covers the whole day.
+    const [list, supplierList, totals] = await Promise.all([
       listPurchases({ from: day.from, to: day.to, limit: 200 }),
-      listSuppliers()
+      listSuppliers(),
+      getPurchasesSummary(day.from, day.to)
     ]);
     if (isStale()) return false;
     range = day;
     rows = list;
     suppliers = supplierList;
+    summary = totals;
     // The figures are current again, so nothing on this screen is stale. The
     // first version only ever retired a notice on a click that happened to touch
     // that same row, so a warning survived every successful reload.
@@ -316,174 +339,272 @@
       {rows.length === 1 ? lang.t.purchases_document_one : lang.t.purchases_documents}
     </p>
 
-    <ol class="documents">
-      {#each rows as row (row.purchase.id)}
-        {@const isOpen = open.has(row.purchase.id)}
-        <li class="document" data-purchase-id={row.purchase.id}>
-          <button
-            type="button"
-            class="head"
-            aria-expanded={isOpen}
-            aria-controls="purchase-lines-{row.purchase.id}"
-            onclick={() => toggle(row.purchase.id)}
-          >
-            <span class="time figure">{formatTime(new Date(row.purchase.created_at), zone)}</span>
-            <span class="supplier">
-              {#if supplierNames.get(row.purchase.supplier_id) === 'one-off-supplier'}
-                {lang.t.purchases_one_off_supplier}
-              {:else}
-                {supplierNames.get(row.purchase.supplier_id) ?? lang.t.purchases_one_off_supplier}
-              {/if}
-            </span>
-            <span class="amount figure">{formatMoney(row.purchase.total)}</span>
-            <span class="chevron" aria-hidden="true">{isOpen ? '−' : '+'}</span>
-          </button>
-
-          {#if isOpen}
-            {@const returned = returnedByLine(row.supplier_returns)}
-            <table class="lines" id="purchase-lines-{row.purchase.id}">
-              <thead>
-                <tr>
-                  <th scope="col">{lang.t.sales_product}</th>
-                  <th scope="col" class="num">{lang.t.sales_qty}</th>
-                  <th scope="col" class="num">{lang.t.purchases_price_unit}</th>
-                  <th scope="col" class="num">{lang.t.sales_line}</th>
-                  <th scope="col" class="num">{lang.t.purchases_return_qty}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {#each row.items as item (item.id)}
-                  {@const remaining = returnableOf(item.id, item.quantity, returned)}
-                  <tr>
-                    <td>{item.product_name}</td>
-                    <td class="num figure">
-                      {formatQuantity(item.quantity, item.unit)}
-                    </td>
-                    <td class="num figure">{formatMoney(item.unit_price)}</td>
-                    <td class="num figure">{formatMoney(item.line_total)}</td>
-                    <td class="num return-cell">
-                      {#if remaining > 0}
-                        <input
-                          type="text"
-                          inputmode="numeric"
-                          aria-label={lang.t.purchases_return_line(item.product_name)}
-                          value={returnText(row.purchase.id, item.id, remaining)}
-                          oninput={(event) =>
-                            setReturnText(row.purchase.id, item.id, event.currentTarget.value)}
-                        />
-                      {:else}
-                        <span class="returned">{lang.t.purchases_return_none}</span>
-                      {/if}
-                      <span class="left">
-                        {lang.t.purchases_return_left(remaining, item.quantity)}
-                      </span>
-                    </td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
-
-            <!-- The returns this purchase produced, oldest first, each with its
-                 own total and lines. They sit UNDER the purchase and never
-                 replace it: the purchase keeps every figure it was recorded
-                 with, and whether it is fully returned is derived from these. -->
-            {#each row.supplier_returns as supplierReturn (supplierReturn.return.id)}
-              <section
-                class="return-block"
-                aria-label="{lang.t.purchases_supplier_return} DR-#{supplierReturn.return.id.slice(
-                  0,
-                  8
-                )}"
+    <div class="table-frame">
+      <div class="table-scroll" use:overflowsX={(n) => (hiddenColumns = n)}>
+        <table class="docs">
+          <thead>
+            <tr>
+              <th scope="col">{lang.t.sales_time}</th>
+              <th scope="col">{lang.t.purchases_document}</th>
+              <th scope="col">{lang.t.purchases_supplier}</th>
+              <th scope="col">{lang.t.sales_status}</th>
+              <th scope="col" class="num">{lang.t.sales_total}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each rows as row (row.purchase.id)}
+              {@const isOpen = open.has(row.purchase.id)}
+              {@const returned = isFullyReturned(row.items, row.supplier_returns)}
+              {@const refunded = returnedByLine(row.supplier_returns)}
+              <tr
+                class="doc"
+                class:open={isOpen}
+                role="button"
+                tabindex="0"
+                aria-expanded={isOpen}
+                aria-controls="purchase-lines-{row.purchase.id}"
+                data-purchase-id={row.purchase.id}
+                onclick={() => toggle(row.purchase.id)}
+                onkeydown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    toggle(row.purchase.id);
+                  }
+                }}
               >
-                <div class="return-head">
-                  <span>
-                    {lang.t.purchases_supplier_return} DR-#{supplierReturn.return.id.slice(0, 8)}
+                <td class="figures time">{formatTime(new Date(row.purchase.created_at), zone)}</td>
+                <td>
+                  <span class="doc-id">
+                    <svg
+                      class="chev"
+                      class:open={isOpen}
+                      viewBox="0 0 12 12"
+                      aria-hidden="true"
+                      focusable="false"
+                    >
+                      <path
+                        d="M4.5 2.5 8 6l-3.5 3.5"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.8"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      />
+                    </svg>
+                    <span class="figures">#{row.purchase.id.slice(0, 8)}</span>
                   </span>
-                  <span class="return-total figure"
-                    >+{formatMoney(supplierReturn.return.total)}</span
+                </td>
+                <td class="supplier">
+                  {#if supplierNames.get(row.purchase.supplier_id) === 'one-off-supplier'}
+                    {lang.t.purchases_one_off_supplier}
+                  {:else}
+                    {supplierNames.get(row.purchase.supplier_id) ??
+                      lang.t.purchases_one_off_supplier}
+                  {/if}
+                </td>
+                <td>
+                  {#if returned}
+                    <Stamp label={lang.t.purchases_returned_state} tone="annulled" />
+                  {:else}
+                    <Stamp label={lang.t.purchases_confirmed_state} />
+                  {/if}
+                </td>
+                <td class="num">
+                  <span class="total figures" class:void={returned}
+                    >{formatMoney(row.purchase.total)}</span
                   >
-                  <time>{formatTime(new Date(supplierReturn.return.created_at), zone)}</time>
-                </div>
-                <table>
-                  <thead>
-                    <tr>
-                      <th scope="col">{lang.t.sales_product}</th>
-                      <th scope="col" class="num">{lang.t.sales_qty}</th>
-                      <th scope="col" class="num">{lang.t.sales_unit_price}</th>
-                      <th scope="col" class="num">{lang.t.sales_line}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {#each supplierReturn.items as item (item.id)}
-                      <tr>
-                        <td>{item.product_name}</td>
-                        <td class="num figure">{formatQuantity(item.quantity, item.unit)}</td>
-                        <td class="num figure">{formatMoney(item.unit_price)}</td>
-                        <td class="num figure">{formatMoney(item.line_total)}</td>
-                      </tr>
-                    {/each}
-                  </tbody>
-                </table>
-              </section>
-            {/each}
+                </td>
+              </tr>
+              {#if isOpen}
+                <tr class="lines-row">
+                  <td colspan="5">
+                    <div class="lines" id="purchase-lines-{row.purchase.id}">
+                      <table>
+                        <caption>{lang.t.purchases_lines_of} #{row.purchase.id.slice(0, 8)}</caption
+                        >
+                        <thead>
+                          <tr>
+                            <th scope="col">{lang.t.sales_product}</th>
+                            <th scope="col" class="num">{lang.t.sales_qty}</th>
+                            <th scope="col" class="num">{lang.t.purchases_price_unit}</th>
+                            <th scope="col" class="num">{lang.t.sales_line}</th>
+                            <th scope="col" class="num">{lang.t.purchases_return_qty}</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {#each row.items as item (item.id)}
+                            {@const remaining = returnableOf(item.id, item.quantity, refunded)}
+                            <tr>
+                              <td>{item.product_name}</td>
+                              <td class="num figure">{formatQuantity(item.quantity, item.unit)}</td>
+                              <td class="num figure">{formatMoney(item.unit_price)}</td>
+                              <td class="num figure">{formatMoney(item.line_total)}</td>
+                              <td class="num return-cell">
+                                {#if remaining > 0}
+                                  <input
+                                    type="text"
+                                    inputmode="numeric"
+                                    aria-label={lang.t.purchases_return_line(item.product_name)}
+                                    value={returnText(row.purchase.id, item.id, remaining)}
+                                    oninput={(event) =>
+                                      setReturnText(
+                                        row.purchase.id,
+                                        item.id,
+                                        event.currentTarget.value
+                                      )}
+                                  />
+                                {:else}
+                                  <span class="returned">{lang.t.purchases_return_none}</span>
+                                {/if}
+                                <span class="left">
+                                  {lang.t.purchases_return_left(remaining, item.quantity)}
+                                </span>
+                              </td>
+                            </tr>
+                          {/each}
+                        </tbody>
+                      </table>
 
-            <div class="refund">
-              {#if isFullyReturned(row.items, row.supplier_returns)}
-                <p>{lang.t.purchases_return_none}</p>
-              {:else if confirming.has(row.purchase.id)}
-                <p class="refund-warn">{lang.t.purchases_return_confirm}</p>
-                <button
-                  type="button"
-                  class="danger"
-                  disabled={returning.has(row.purchase.id)}
-                  onclick={() => submitReturn(row)}
-                >
-                  {returning.has(row.purchase.id) ? '…' : lang.t.purchases_return_yes}
-                </button>
-                <button type="button" onclick={() => confirming.delete(row.purchase.id)}>
-                  {lang.t.purchases_return_no}
-                </button>
-              {:else}
-                <button
-                  type="button"
-                  class="danger"
-                  onclick={() => {
-                    confirming.add(row.purchase.id);
-                    returnError.delete(row.purchase.id);
-                    // Not "the operator dealt with this document": they may cancel.
-                    // Dropping the stale notice here left the figures stale with no
-                    // warning and no retry. Only a reload that succeeds retires it.
-                  }}
-                >
-                  {lang.t.purchases_return_action}
-                </button>
+                      <!-- The returns this purchase produced, oldest first. They sit
+                           under the purchase and never replace it: the purchase keeps
+                           every figure it was recorded with. -->
+                      {#each row.supplier_returns as supplierReturn (supplierReturn.return.id)}
+                        <section
+                          class="return-block"
+                          aria-label="{lang.t
+                            .purchases_supplier_return} DR-#{supplierReturn.return.id.slice(0, 8)}"
+                        >
+                          <div class="return-head">
+                            <span>
+                              {lang.t.purchases_supplier_return} DR-#{supplierReturn.return.id.slice(
+                                0,
+                                8
+                              )}
+                            </span>
+                            <span class="return-total figure"
+                              >+{formatMoney(supplierReturn.return.total)}</span
+                            >
+                            <time
+                              >{formatTime(new Date(supplierReturn.return.created_at), zone)}</time
+                            >
+                          </div>
+                          <table>
+                            <thead>
+                              <tr>
+                                <th scope="col">{lang.t.sales_product}</th>
+                                <th scope="col" class="num">{lang.t.sales_qty}</th>
+                                <th scope="col" class="num">{lang.t.sales_unit_price}</th>
+                                <th scope="col" class="num">{lang.t.sales_line}</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {#each supplierReturn.items as item (item.id)}
+                                <tr>
+                                  <td>{item.product_name}</td>
+                                  <td class="num figure"
+                                    >{formatQuantity(item.quantity, item.unit)}</td
+                                  >
+                                  <td class="num figure">{formatMoney(item.unit_price)}</td>
+                                  <td class="num figure">{formatMoney(item.line_total)}</td>
+                                </tr>
+                              {/each}
+                            </tbody>
+                          </table>
+                        </section>
+                      {/each}
+
+                      <div class="refund">
+                        {#if isFullyReturned(row.items, row.supplier_returns)}
+                          <p>{lang.t.purchases_return_none}</p>
+                        {:else if confirming.has(row.purchase.id)}
+                          <p class="refund-warn">{lang.t.purchases_return_confirm}</p>
+                          <button
+                            type="button"
+                            class="danger"
+                            disabled={returning.has(row.purchase.id)}
+                            onclick={() => submitReturn(row)}
+                          >
+                            {returning.has(row.purchase.id) ? '…' : lang.t.purchases_return_yes}
+                          </button>
+                          <button type="button" onclick={() => confirming.delete(row.purchase.id)}>
+                            {lang.t.purchases_return_no}
+                          </button>
+                        {:else}
+                          <button
+                            type="button"
+                            class="danger"
+                            onclick={() => {
+                              confirming.add(row.purchase.id);
+                              returnError.delete(row.purchase.id);
+                            }}
+                          >
+                            {lang.t.purchases_return_action}
+                          </button>
+                        {/if}
+                        {#if returnError.get(row.purchase.id)}
+                          <p role="alert">
+                            {lang.t.purchases_return_error}{returnError.get(row.purchase.id)}
+                          </p>
+                        {/if}
+                        {#if reloadNotice.get(row.purchase.id)}
+                          <p role="status">{reloadNotice.get(row.purchase.id)}</p>
+                        {/if}
+                      </div>
+                    </div>
+                  </td>
+                </tr>
               {/if}
-              {#if returnError.get(row.purchase.id)}
-                <p role="alert">
-                  {lang.t.purchases_return_error}{returnError.get(row.purchase.id)}
-                </p>
-              {/if}
-              {#if reloadNotice.get(row.purchase.id)}
-                <!-- Not a failure of the return: the server has it. The screen just
-                     could not re-read the day, so what is left below may be stale. -->
-                <p role="status">
-                  {reloadNotice.get(row.purchase.id)}
-                </p>
-              {/if}
-            </div>
-          {/if}
-        </li>
-      {/each}
-    </ol>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+      {#if hiddenColumns > 0}
+        <!-- The count, not only the fade: a gradient says "there is more" without
+             saying whether it is one column or five, and a reader cannot judge
+             whether the swipe is worth it without the number. -->
+        <p class="hint-more">
+          {hiddenColumns}
+          {hiddenColumns === 1 ? lang.t.more_column : lang.t.more_columns}
+        </p>
+      {/if}
+    </div>
   {/if}
+
+  <!-- The period's totals, from the server. Purchases and returns are separate
+       facts: what the shop spent, and what suppliers gave back. A footer derived
+       from the loaded page would stop at its own page size and call itself the
+       period — the defect the sales ledger shipped once. -->
+  <div class="footings">
+    <div class="fig">
+      <span class="label">{lang.t.purchases_footing_gross}</span>
+      <span class="value figures">{summary === null ? '—' : formatMoney(summary.gross)}</span>
+      <span class="note">{lang.t.purchases_footing_gross_note}</span>
+    </div>
+    <div class="fig">
+      <span class="label">{lang.t.purchases_footing_returned}</span>
+      <span class="value figures">{summary === null ? '—' : formatMoney(summary.returned)}</span>
+      <span class="note">{lang.t.purchases_footing_returned_note}</span>
+    </div>
+    <div class="fig">
+      <span class="label">{lang.t.purchases_footing_net}</span>
+      <span class="value figures">{summary === null ? '—' : formatMoney(summary.net)}</span>
+      <span class="note">{lang.t.purchases_footing_net_note}</span>
+    </div>
+  </div>
 </section>
 
 <style>
+  /* A column, like the sales ledger: the header, the count and the footings are
+     fixed, the table scrolls between them. Without the column and its
+     `min-height: 0`, the table grew to its content's height and pushed the
+     footings 3,291px down the page — measured, not guessed: the totals existed
+     and no one could see them. */
   .ledger {
-    background: var(--paper-raised);
-    border: 1px solid var(--rule);
-    border-radius: var(--radius);
     padding: 18px 20px 20px;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
   }
   .ledger-head {
     display: flex;
@@ -537,37 +658,136 @@
     padding: 16px 0 4px;
   }
   .error {
-    color: var(--crimson);
+    color: var(--state-void);
     padding: 14px 0;
     display: flex;
     align-items: center;
     gap: 10px;
   }
-  .documents {
-    list-style: none;
-    margin: 8px 0 0;
-    padding: 0;
-    border-top: 1px solid var(--rule-strong);
+  /* The table frame scrolls its own rows and draws the affordance itself, the
+     same mechanism the sales ledger uses: a fade at the cut edge and a count of
+     what is below it, both of which survive a screenshot. */
+  .table-frame {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+    margin-top: 10px;
   }
-  .document {
+  .table-scroll {
+    position: relative;
+    overflow: auto;
+    min-width: 0;
+    flex: 1 1 auto;
+    min-height: 0;
+    scrollbar-gutter: stable;
+    scrollbar-width: auto;
+    scrollbar-color: var(--ink-soft) var(--rule);
+  }
+  /* The sideways cut, made visible without a gesture — the same rule and the same
+     reason as the catalog's: measured at 390px this frame reports
+     `scrollWidth 438 > clientWidth 294` while drawing no bar, and the capture
+     showed `ESTADO` cut to `EST`. */
+  /* The mirror of the right fade: once the reader has scrolled, columns have
+     left the view on the left side and nothing said so. It is keyed to
+     `overflows-left`, not to `can-scroll`, so it appears only when something is
+     actually out of view in that direction. */
+  .table-scroll:global(.overflows-left)::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 28px;
+    pointer-events: none;
+    background: linear-gradient(to left, transparent, var(--surface) 72%);
+  }
+  .table-scroll:global(.overflows-x)::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 28px;
+    pointer-events: none;
+    background: linear-gradient(to right, transparent, var(--surface) 72%);
+  }
+  .hint-more {
+    margin: 6px 0 0;
+    font-family: var(--font-figure);
+    font-size: var(--step--1);
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    text-align: right;
+  }
+  table.docs {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  .docs th {
+    font-family: var(--font-figure);
+    font-size: var(--step--1);
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    text-align: left;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--rule-strong);
+    white-space: nowrap;
+  }
+  .docs th:first-child,
+  .docs > tbody > tr > td:first-child {
+    padding-left: 16px;
+  }
+  .docs th:last-child,
+  .docs > tbody > tr > td:last-child {
+    padding-right: 16px;
+  }
+  .docs td {
+    padding: 10px 12px;
     border-bottom: 1px solid var(--rule);
   }
-  .head {
-    display: grid;
-    grid-template-columns: 64px minmax(0, 1fr) auto 20px;
-    align-items: center;
-    gap: 12px;
-    width: 100%;
-    background: none;
-    border: 0;
-    padding: 10px 4px;
-    font: inherit;
-    color: var(--ink);
-    text-align: left;
+  .docs th:first-child,
+  .docs > tbody > tr > td:first-child {
+    padding-left: 16px;
+  }
+  tr.doc {
     cursor: pointer;
   }
-  .head:hover {
-    background: var(--paper);
+  tr.doc > td {
+    transition: background-color 100ms ease-out;
+  }
+  tr.doc:hover > td,
+  tr.doc:focus-visible > td,
+  tr.doc.open > td {
+    background: #f2f6fa;
+  }
+  tr.doc:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  .doc-id {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-figure);
+    font-size: var(--step-2);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--ink);
+  }
+  .chev {
+    width: 12px;
+    height: 12px;
+    color: var(--ink-soft);
+    transition: transform 120ms ease-out;
+  }
+  .chev.open {
+    transform: rotate(90deg);
   }
   .time {
     color: var(--ink-soft);
@@ -576,13 +796,56 @@
   .supplier {
     font-weight: 500;
   }
-  .amount {
-    font-weight: 600;
+  .total {
+    font-family: var(--font-figure);
     font-size: var(--step-2);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
   }
-  .chevron {
+  .total.void {
     color: var(--ink-soft);
-    text-align: center;
+    text-decoration: line-through;
+  }
+  .footings {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1.2fr;
+    gap: 0 20px;
+    border-top: 1px solid var(--rule-strong);
+    margin-top: 18px;
+    padding: 14px 18px 0 0;
+  }
+  .fig {
+    display: grid;
+    gap: 3px;
+    align-content: start;
+    padding-left: 20px;
+    border-left: 1px solid var(--rule);
+    min-width: 0;
+  }
+  .fig:first-child {
+    padding-left: 0;
+    border-left: 0;
+  }
+  .footings .label {
+    font-family: var(--font-figure);
+    font-size: var(--step--1);
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+  }
+  .footings .value {
+    font-size: var(--step-4);
+    font-weight: 700;
+    line-height: 1.1;
+  }
+  .footings .note {
+    font-size: var(--step--1);
+    color: var(--ink-soft);
+  }
+  .lines-row > td {
+    padding: 0 !important;
+    background: var(--ground);
   }
   .figure {
     font-variant-numeric: tabular-nums;
@@ -643,7 +906,7 @@
   .return-block {
     border: 1px solid var(--rule-strong);
     border-radius: var(--radius);
-    background: var(--paper);
+    background: var(--ground);
     padding: 10px 12px;
     margin: 0 0 10px;
   }
@@ -705,7 +968,7 @@
   }
   .refund button {
     border: 1px solid var(--rule-strong);
-    background: var(--paper-raised);
+    background: var(--surface);
     color: var(--ink);
     border-radius: var(--radius);
     padding: 7px 11px;
@@ -719,8 +982,8 @@
     color: var(--ink);
   }
   .refund button.danger:hover:not(:disabled) {
-    border-color: var(--crimson);
-    color: var(--crimson);
+    border-color: var(--state-void);
+    color: var(--state-void);
     background: rgb(168 27 42 / 0.08);
   }
   .refund button:disabled {
@@ -729,7 +992,7 @@
   }
   .refund [role='alert'] {
     flex-basis: 100%;
-    color: var(--crimson-deep);
+    color: var(--state-void);
     font-size: var(--step-0);
   }
   /*

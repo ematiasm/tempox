@@ -69,14 +69,17 @@ test('a purchase is recorded and raises the stock it brought in', async ({ page 
   // 5. It is in the day's ledger with its lines behind it. Selected by the id the
   //    draft reported: position is a lie in a shared ledger and a total is not
   //    unique (#52).
-  const doc = page.locator(`.ledger .document:has([aria-controls="purchase-lines-${purchaseId}"])`);
+  const doc = page.locator(`.ledger tr.doc[aria-controls="purchase-lines-${purchaseId}"]`);
   await expect(doc).toHaveCount(1);
   await expect(doc).toContainText('Proveedor ocasional');
   await expect(doc).toContainText(money(sevenTotal));
 
-  await doc.locator('.head').click();
-  await expect(doc.locator('table.lines')).toContainText(name);
-  await expect(doc.locator('table.lines')).toContainText(money(sevenTotal));
+  await doc.click();
+  // The expanded lines live in a sibling row, the way the sales ledger does it:
+  // a `<tr>` cannot contain the regions a document opens onto.
+  const lines = page.locator(`#purchase-lines-${purchaseId}`);
+  await expect(lines).toContainText(name);
+  await expect(lines).toContainText(money(sevenTotal));
 
   // 6. The point of the slice, measured where the operator reads it: the stock
   //    went UP by what arrived. This is the assertion that would fail if the

@@ -27,6 +27,12 @@ pub struct DayQuery {
     /// The instant to scope. Absent means now, which is what the ledger asks for
     /// when it opens on the current day.
     pub at: Option<String>,
+    /// Which span to answer with: `day` (the default), `week` or `month`.
+    ///
+    /// The span is computed here for the same reason the day is: a client that
+    /// could name its own boundaries could scope itself to a week the shop never
+    /// worked. The wire carries a word, never two instants.
+    pub scope: Option<String>,
 }
 
 async fn get_day(
@@ -40,5 +46,8 @@ async fn get_day(
         Some(raw) => day::parse_instant(raw).ok_or(StatusCode::BAD_REQUEST)?,
         None => Utc::now(),
     };
-    Ok(Json(day::day_range(state.shop_timezone, at)))
+    // An unknown scope is refused for the same reason: answering with a day
+    // would show the shop a page that does not match the button that was pressed.
+    let scope = day::Scope::parse(params.scope.as_deref()).ok_or(StatusCode::BAD_REQUEST)?;
+    Ok(Json(day::range_for(state.shop_timezone, at, scope)))
 }

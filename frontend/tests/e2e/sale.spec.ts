@@ -62,13 +62,13 @@ test('a sale is recorded from the draft sheet and wears its stamp', async ({ pag
   const saleId = await recordedDocumentId(page);
   // The row's toggle carries the full document id in `aria-controls`, which is the
   // only place the full id appears in the ledger.
-  const doc = page.locator(`table.docs tbody tr.doc:has([aria-controls="lines-${saleId}"])`);
+  const doc = page.locator(`table.docs tbody tr.doc[aria-controls="lines-${saleId}"]`);
   await expect(doc).toHaveCount(1);
   await expect(doc).toContainText('Consumidor Final');
   await expect(doc).toContainText(money(total));
-  await expect(doc.locator('.stamp')).toContainText('Confirmada');
+  await expect(doc.locator('.state')).toContainText('Confirmada');
 
-  await doc.locator('.doc-id').click();
+  await doc.click();
   await expect(page.locator('.lines table')).toContainText(name);
   await expect(page.locator('.lines table')).toContainText(money(total));
 });
@@ -95,10 +95,10 @@ test('a sale can be returned in parts with credit notes', async ({ page }) => {
 
   // This sale, by the id the draft reported (#52).
   const saleId = await recordedDocumentId(page);
-  const doc = page.locator(`table.docs tbody tr.doc:has([aria-controls="lines-${saleId}"])`);
+  const doc = page.locator(`table.docs tbody tr.doc[aria-controls="lines-${saleId}"]`);
   await expect(doc).toHaveCount(1);
-  await expect(doc.locator('.stamp')).toContainText('Confirmada');
-  await doc.locator('.doc-id').click();
+  await expect(doc.locator('.state')).toContainText('Confirmada');
+  await doc.click();
   const document = page.locator('.lines');
   await expect(document.locator('.note-block')).toHaveCount(0);
 
@@ -108,12 +108,12 @@ test('a sale can be returned in parts with credit notes', async ({ page }) => {
   await expect(document.locator('.note-block')).toHaveCount(0);
   await page.getByRole('button', { name: 'Sí, anular' }).click();
   await expect(document.locator('.note-block')).toContainText(`−${money(price)}`);
-  await expect(doc.locator('.stamp')).toContainText('Confirmada');
+  await expect(doc.locator('.state')).toContainText('Confirmada');
 
   await page.getByRole('textbox', { name: `Devolver ${name}` }).fill('3');
   await page.getByRole('button', { name: 'Anular venta…' }).click();
   await page.getByRole('button', { name: 'Sí, anular' }).click();
-  await expect(doc.locator('.stamp')).toContainText('Anulada');
+  await expect(doc.locator('.state')).toContainText('Devuelta');
 });
 
 /**
@@ -165,10 +165,10 @@ test('a refund of one line leaves the other lines untouched', async ({ page }) =
   // Select this sale by the id the draft reported. Position is a lie in a shared
   // ledger and a total is not unique (#52).
   const saleId = await recordedDocumentId(page);
-  const doc = page.locator(`table.docs tbody tr.doc:has([aria-controls="lines-${saleId}"])`);
+  const doc = page.locator(`table.docs tbody tr.doc[aria-controls="lines-${saleId}"]`);
   await expect(doc).toHaveCount(1);
-  await expect(doc.locator('.stamp')).toContainText('Confirmada');
-  await doc.locator('.doc-id').click();
+  await expect(doc.locator('.state')).toContainText('Confirmada');
+  await doc.click();
   const document = page.locator('.lines');
   await expect(document.locator('.note-block')).toHaveCount(0);
 
@@ -216,9 +216,9 @@ test('a refund with every line excluded is refused before sending', async ({ pag
 
   // Same reason as above: selected by the id the draft reported (#52).
   const saleId = await recordedDocumentId(page);
-  const doc = page.locator(`table.docs tbody tr.doc:has([aria-controls="lines-${saleId}"])`);
+  const doc = page.locator(`table.docs tbody tr.doc[aria-controls="lines-${saleId}"]`);
   await expect(doc).toHaveCount(1);
-  await doc.locator('.doc-id').click();
+  await doc.click();
   const document = page.locator('.lines');
 
   await page.getByRole('checkbox', { name: `Devolver ${name}` }).uncheck();

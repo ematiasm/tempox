@@ -128,6 +128,24 @@
     justRecorded = null;
   }
 
+  /**
+   * Ctrl/Cmd+Enter records, so the keyboard flow never needs the mouse.
+   *
+   * This lives here rather than on the page because `record()` does: the page's
+   * F2 handler and this one are the same action reached two ways, and the sheet
+   * owning its own shortcut is what keeps them from drifting. It was missing —
+   * the page advertised `Control+Enter` in `aria-keyshortcuts` and nothing
+   * listened, so the shortcut the sales screen teaches silently did nothing
+   * here. The review caught it; the button had been promising it since the page
+   * was written.
+   */
+  function onsheetkeydown(e: KeyboardEvent) {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      e.preventDefault();
+      record();
+    }
+  }
+
   async function record() {
     if (!supplierId) {
       error = lang.t.purchases_supplier_required;
@@ -188,6 +206,8 @@
     void record();
   }
 </script>
+
+<svelte:window onkeydown={onsheetkeydown} />
 
 <section class="sheet" aria-labelledby="purchase-draft-title">
   <header class="sheet-head">
@@ -317,7 +337,7 @@
 
 <style>
   .sheet {
-    background: var(--paper-raised);
+    background: var(--surface);
     border: 1px solid var(--rule);
     border-radius: var(--radius);
     padding: 18px 20px 0;
@@ -334,7 +354,7 @@
     font-weight: 600;
   }
   .done {
-    color: var(--indigo);
+    color: var(--ink);
     font-size: var(--step--1);
   }
   .supplier-row {
@@ -355,7 +375,7 @@
     padding: 7px 9px;
     border: 1px solid var(--rule-strong);
     border-radius: 2px;
-    background: var(--paper);
+    background: var(--ground);
     color: var(--ink);
   }
   .supplier-new {
@@ -402,7 +422,7 @@
     padding: 5px 7px;
     border: 1px solid var(--rule-strong);
     border-radius: 2px;
-    background: var(--paper);
+    background: var(--ground);
     width: 100%;
     font-variant-numeric: tabular-nums;
   }
@@ -428,12 +448,12 @@
     border-color: var(--ink-soft);
   }
   .notice {
-    color: var(--indigo);
+    color: var(--ink);
     font-size: var(--step--1);
     margin-top: 8px;
   }
   .error {
-    color: var(--crimson);
+    color: var(--state-void);
     font-size: var(--step-0);
     padding: 10px 0;
   }

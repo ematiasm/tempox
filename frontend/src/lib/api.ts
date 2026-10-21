@@ -235,6 +235,28 @@ export async function getCash(): Promise<Cash> {
   return request<Cash>(new URL('/api/cash', BASE));
 }
 
+/**
+ * The period's totals, computed by the database over every document it holds.
+ *
+ * Not the page's totals. The ledger loads 50 documents at a time, so anything
+ * the screen derives from its own rows silently omits the rest of the period —
+ * which is exactly what the native review found: a "period sum" that stopped at
+ * the page boundary, and a running balance that started at zero in the middle.
+ */
+export type PeriodSummary = {
+  gross: string;
+  refunded: string;
+  net: string;
+  documents: number;
+};
+
+export async function getSalesSummary(from: string, to: string): Promise<PeriodSummary> {
+  const url = new URL('/api/sales/summary', BASE);
+  url.searchParams.set('from', from);
+  url.searchParams.set('to', to);
+  return request<PeriodSummary>(url);
+}
+
 /** One line of a refund: which sale line, and how many units come back. */
 export type NewCreditNoteLine = {
   sale_item_id: string;
@@ -367,6 +389,27 @@ export async function listPurchases(params: ListPurchasesParams = {}): Promise<P
   setIfPresent(url, 'limit', params.limit);
   setIfPresent(url, 'offset', params.offset);
   return request<PurchaseListItem[]>(url);
+}
+
+/**
+ * The period's purchase totals, computed by the database.
+ *
+ * Not the page's. `listPurchases` loads at most a page, so a footer derived here
+ * would stop at row fifty and call itself the period — the defect the sales
+ * ledger shipped once and this surface does not repeat.
+ */
+export type PurchasesSummary = {
+  gross: string;
+  returned: string;
+  net: string;
+  documents: number;
+};
+
+export async function getPurchasesSummary(from: string, to: string): Promise<PurchasesSummary> {
+  const url = new URL('/api/purchases/summary', BASE);
+  url.searchParams.set('from', from);
+  url.searchParams.set('to', to);
+  return request<PurchasesSummary>(url);
 }
 
 /**
@@ -542,9 +585,23 @@ export function dayRange(at: Date = new Date()): DayRange {
 }
 
 /** The shop-local day containing `at`, as determined by the server. */
-export async function fetchDay(at: Date): Promise<DayRange> {
+/** Which span of the shop's calendar a ledger page is scoped to. */
+export type Scope = 'day' | 'week' | 'month';
+
+/**
+ * Asks the server which instants make up the span containing `at`.
+ *
+ * The span is never computed here. `scope` is a word, the boundaries come back
+ * as instants: a client that chose its own boundaries could scope itself to a
+ * week the shop never worked, which is the same reason the day is computed
+ * server-side (S7).
+ */
+export async function fetchDay(at: Date, scope: Scope = 'day'): Promise<DayRange> {
   const url = new URL('/api/day', BASE);
   url.searchParams.set('at', at.toISOString());
+  // Sent only when it is not the default, so an older server that does not know
+  // the parameter keeps answering exactly as before.
+  if (scope !== 'day') url.searchParams.set('scope', scope);
   return request<DayRange>(url);
 }
 

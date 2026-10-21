@@ -2217,6 +2217,224 @@ async fn v1_5_a_malformed_day_is_a_refusal_not_a_guess(pool: sqlx::PgPool) {
     );
 }
 
+// ── v2 redesign: the ledger can be scoped to a week or a month ──────────────
+//
+// Same contract as the day: the server names the boundaries, the client sends a
+// word. These pin the three things that would be silent if wrong — the default
+// stays exactly as it was, an unknown scope is refused rather than guessed, and
+// every scope actually contains the instant it was asked about.
+
+async fn scoped(pool: sqlx::PgPool, at: &str, scope: &str) -> serde_json::Value {
+    let client = common::client(pool);
+    let at_q = common::encode_query(at);
+    let resp = client
+        .get(&format!("/api/day?at={at_q}&scope={scope}"))
+        .await;
+    assert_eq!(resp.status(), 200, "{scope} answers for {at}");
+    resp.json().clone()
+}
+
+// ── The redesign fix: the period's totals, not the page's ───────────────────
+//
+// The ledger showed a period total built from the rows it had loaded — a page of
+// at most 50 — and a running balance that therefore started at zero in the
+// middle of the period. These pin the summary the screen now reads instead,
+// including the case the native review found: a partly refunded sale counts its
+// net, never its gross.
+
+async fn summary(client: &common::Client, from: &str, to: &str) -> serde_json::Value {
+    let f = common::encode_query(from);
+    let t = common::encode_query(to);
+    let resp = client
+        .get(&format!("/api/sales/summary?from={f}&to={t}"))
+        .await;
+    assert_eq!(resp.status(), 200, "the summary answers for {from}..{to}");
+    resp.json().clone()
+}
+
+/// Creates a product and records one sale of `quantity` at `price`.
+async fn sell(client: &common::Client, price: &str, quantity: i64) -> serde_json::Value {
+    let name = common::unique("summary-product");
+    let created = client
+        .post(
+            "/api/products",
+            serde_json::json!({
+                "name": name, "list_price": price, "unit": "unit", "initial_stock": 500
+            }),
+        )
+        .await;
+    created.expect_status(axum::http::StatusCode::CREATED);
+    let product = created.json().clone();
+
+    let sale = client
+        .post(
+            "/api/sales",
+            serde_json::json!({
+                "items": [{ "product_id": product["id"], "quantity": quantity }]
+            }),
+        )
+        .await;
+    sale.expect_status(axum::http::StatusCode::CREATED);
+    sale.json().clone()
+}
+
+#[sqlx::test]
+async fn v2_the_period_summary_is_empty_for_a_period_with_no_sales(pool: sqlx::PgPool) {
+    let client = common::client(pool);
+    let body = summary(&client, "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z").await;
+
+    assert_eq!(body["gross"], "0.00");
+    assert_eq!(body["refunded"], "0.00");
+    assert_eq!(body["net"], "0.00");
+    assert_eq!(body["documents"], 0);
+}
+
+#[sqlx::test]
+async fn v2_a_partly_refunded_sale_counts_its_net_not_its_gross(pool: sqlx::PgPool) {
+    // The defect the native review found. A 100.00 sale with a 30.00 credit note
+    // put 70.00 in the till; a total built from gross figures says 100.00 and
+    // overstates the shop's money by exactly what it gave back.
+    // Four units at 25.00 = a 100.00 sale; one unit comes back for 25.00. The
+    // refund's price is read from the sale line, never sent by the client — that
+    // rule is `plan-v2.5`'s and it is what makes "a 30.00 credit note" a
+    // quantity story, not an amount one.
+    let client = common::client(pool);
+    let sale = sell(&client, "25.00", 4).await;
+    assert_eq!(sale["total"], "100.00");
+    let sale_id = sale["id"].as_str().unwrap();
+    let item_id = sale["items"][0]["id"].as_str().unwrap();
+
+    client
+        .post(
+            &format!("/api/sales/{sale_id}/credit-notes"),
+            serde_json::json!({
+                "items": [{ "sale_item_id": item_id, "quantity": 1 }]
+            }),
+        )
+        .await
+        .expect_status(axum::http::StatusCode::CREATED);
+
+    let body = summary(&client, "2000-01-01T00:00:00Z", "2100-01-01T00:00:00Z").await;
+    assert_eq!(
+        body["gross"], "100.00",
+        "the document's own figure is unchanged"
+    );
+    assert_eq!(body["refunded"], "25.00");
+    assert_eq!(body["net"], "75.00", "what the till actually kept");
+    assert_eq!(body["documents"], 1);
+}
+
+#[sqlx::test]
+async fn v2_a_fully_refunded_sale_contributes_nothing_to_the_net(pool: sqlx::PgPool) {
+    let client = common::client(pool);
+    let sale = sell(&client, "100.00", 1).await;
+    let sale_id = sale["id"].as_str().unwrap();
+    let item_id = sale["items"][0]["id"].as_str().unwrap();
+
+    client
+        .post(
+            &format!("/api/sales/{sale_id}/credit-notes"),
+            serde_json::json!({
+                "items": [{ "sale_item_id": item_id, "quantity": 1 }]
+            }),
+        )
+        .await
+        .expect_status(axum::http::StatusCode::CREATED);
+
+    let body = summary(&client, "2000-01-01T00:00:00Z", "2100-01-01T00:00:00Z").await;
+    assert_eq!(
+        body["net"], "0.00",
+        "money that came straight back is not money kept"
+    );
+    // It still counts as a document: the shop worked it, and the ledger shows it.
+    assert_eq!(body["documents"], 1);
+}
+
+#[sqlx::test]
+async fn v2_the_summary_covers_the_whole_period_not_a_page_of_it(pool: sqlx::PgPool) {
+    // More documents than one page holds. The page-based total this endpoint
+    // replaced stopped at the limit and quietly undercounted.
+    let client = common::client(pool);
+    for _ in 0..60 {
+        sell(&client, "10.00", 1).await;
+    }
+
+    let body = summary(&client, "2000-01-01T00:00:00Z", "2100-01-01T00:00:00Z").await;
+    assert_eq!(body["documents"], 60);
+    assert_eq!(
+        body["net"], "600.00",
+        "sixty tens, not the fifty a page shows"
+    );
+}
+
+#[sqlx::test]
+async fn v2_the_default_scope_is_still_exactly_one_day(pool: sqlx::PgPool) {
+    // The selector is new and every existing caller sends no `scope`. If the
+    // default moved, every older client would silently start showing a week.
+    let at = "2026-10-16T04:00:00Z";
+    let client = common::client(pool);
+    let at_q = common::encode_query(at);
+
+    let bare = client
+        .get(&format!("/api/day?at={at_q}"))
+        .await
+        .json()
+        .clone();
+    let explicit = client
+        .get(&format!("/api/day?at={at_q}&scope=day"))
+        .await
+        .json()
+        .clone();
+    assert_eq!(
+        bare, explicit,
+        "an absent scope and `day` are the same answer"
+    );
+
+    // And it really is one day, not a week that happens to match itself.
+    let from: chrono::DateTime<chrono::Utc> = bare["from"].as_str().unwrap().parse().unwrap();
+    let to: chrono::DateTime<chrono::Utc> = bare["to"].as_str().unwrap().parse().unwrap();
+    assert_eq!((to - from).num_days(), 1, "the default is one shop day");
+}
+
+#[sqlx::test]
+async fn v2_a_week_scope_spans_seven_shop_days_and_contains_the_instant(pool: sqlx::PgPool) {
+    let body = scoped(pool, "2026-10-16T04:00:00Z", "week").await;
+    let from: chrono::DateTime<chrono::Utc> = body["from"].as_str().unwrap().parse().unwrap();
+    let to: chrono::DateTime<chrono::Utc> = body["to"].as_str().unwrap().parse().unwrap();
+    let at: chrono::DateTime<chrono::Utc> = "2026-10-16T04:00:00Z".parse().unwrap();
+
+    assert!(
+        from <= at && at < to,
+        "the week must contain the instant asked about"
+    );
+    assert_eq!((to - from).num_days(), 7, "an Argentine week is seven days");
+}
+
+#[sqlx::test]
+async fn v2_a_month_scope_spans_the_calendar_month(pool: sqlx::PgPool) {
+    let body = scoped(pool, "2026-10-16T04:00:00Z", "month").await;
+    let from: chrono::DateTime<chrono::Utc> = body["from"].as_str().unwrap().parse().unwrap();
+    let to: chrono::DateTime<chrono::Utc> = body["to"].as_str().unwrap().parse().unwrap();
+
+    assert_eq!((to - from).num_days(), 31, "October is 31 days");
+}
+
+#[sqlx::test]
+async fn v2_an_unknown_scope_is_refused_rather_than_answered_with_a_day(pool: sqlx::PgPool) {
+    // Answering a `year` request with a day would show a page whose button and
+    // whose numbers disagree, which is worse than an error the client can show.
+    let client = common::client(pool);
+    let at = common::encode_query("2026-10-16T04:00:00Z");
+    for scope in ["year", "WEEK", "weeks", "7"] {
+        let resp = client.get(&format!("/api/day?at={at}&scope={scope}")).await;
+        assert_eq!(
+            resp.status(),
+            400,
+            "{scope:?} is not a scope this endpoint knows"
+        );
+    }
+}
+
 // ── v2 (T1): the purchases schema ──────────────────────────────────────────
 //
 // plan-v2.md, "Data model" and the `0008` lesson: the tables exist, the seeded
@@ -2769,6 +2987,109 @@ async fn v2_a_rejected_purchase_writes_nothing(pool: sqlx::PgPool) {
 // uses, the same clamped paging, and each purchase returned with its lines.
 // The contract is shared with sales on purpose — a day filter that means one
 // thing on one screen and another on the next is a bug that reads as a UI fault.
+
+// ── Purchases: the period's totals, not the page's ─────────────────────────
+//
+// Same finding the sales ledger produced, applied before this surface ships it:
+// a footer built from the loaded page stops at row fifty and calls itself a
+// period. Purchases and returns are counted separately because a return is its
+// own document correcting a purchase, not a negative purchase.
+
+async fn purchases_summary(client: &common::Client, from: &str, to: &str) -> serde_json::Value {
+    let f = common::encode_query(from);
+    let t = common::encode_query(to);
+    let resp = client
+        .get(&format!("/api/purchases/summary?from={f}&to={t}"))
+        .await;
+    assert_eq!(resp.status(), 200, "the summary answers for {from}..{to}");
+    resp.json().clone()
+}
+
+/// One product and one purchase of `quantity` at `price`.
+async fn buy(
+    pool: &sqlx::PgPool,
+    client: &common::Client,
+    price: &str,
+    quantity: i64,
+) -> serde_json::Value {
+    let stamp = uuid::Uuid::new_v4();
+    let product: (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO products (name, list_price) VALUES ($1, $2::numeric) RETURNING id",
+    )
+    .bind(format!("summary-buy-{stamp}"))
+    .bind(price)
+    .fetch_one(pool)
+    .await
+    .expect("insert product");
+
+    let resp = client
+        .post(
+            "/api/purchases",
+            serde_json::json!({
+                "items": [{ "product_id": product.0, "quantity": quantity, "unit_price": price }]
+            }),
+        )
+        .await;
+    resp.expect_status(axum::http::StatusCode::CREATED);
+    resp.json().clone()
+}
+
+#[sqlx::test]
+async fn v2_purchases_summary_is_empty_for_a_period_with_no_documents(pool: sqlx::PgPool) {
+    let client = common::client(pool);
+    let body = purchases_summary(&client, "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z").await;
+
+    assert_eq!(body["gross"], "0.00");
+    assert_eq!(body["returned"], "0.00");
+    assert_eq!(body["net"], "0.00");
+    assert_eq!(body["documents"], 0);
+}
+
+#[sqlx::test]
+async fn v2_purchases_summary_covers_the_whole_period_not_a_page_of_it(pool: sqlx::PgPool) {
+    // Sixty purchases is more than one page holds. A footer derived from the
+    // loaded page would stop at fifty and undercount by a fifth.
+    let client = common::client(pool.clone());
+    for _ in 0..60 {
+        buy(&pool, &client, "10.00", 1).await;
+    }
+
+    let body = purchases_summary(&client, "2000-01-01T00:00:00Z", "2100-01-01T00:00:00Z").await;
+    assert_eq!(body["documents"], 60);
+    assert_eq!(
+        body["gross"], "600.00",
+        "sixty tens, not the fifty a page shows"
+    );
+}
+
+#[sqlx::test]
+async fn v2_a_supplier_return_reduces_the_net_but_not_the_gross(pool: sqlx::PgPool) {
+    // The shop reads two facts: what it spent, and what the supplier gave back.
+    // A return is not a negative purchase — the purchase keeps its own figure.
+    let client = common::client(pool.clone());
+    let created = buy(&pool, &client, "100.00", 2).await;
+    let purchase_id = created["purchase"]["id"].as_str().unwrap();
+    let item_id = created["items"][0]["id"].as_str().unwrap();
+
+    client
+        .post(
+            &format!("/api/purchases/{purchase_id}/supplier-returns"),
+            serde_json::json!({
+                "items": [{ "purchase_item_id": item_id, "quantity": 1 }]
+            }),
+        )
+        .await
+        .expect_status(axum::http::StatusCode::CREATED);
+
+    let body = purchases_summary(&client, "2000-01-01T00:00:00Z", "2100-01-01T00:00:00Z").await;
+    assert_eq!(
+        body["gross"], "200.00",
+        "the purchase keeps the figure it was recorded with"
+    );
+    assert_eq!(body["returned"], "100.00", "one of two units came back");
+    assert_eq!(body["net"], "100.00", "what the period actually cost");
+    assert_eq!(body["documents"], 1);
+}
 
 #[sqlx::test]
 async fn v2_purchases_list_carries_its_lines_and_is_scoped_by_day(pool: sqlx::PgPool) {

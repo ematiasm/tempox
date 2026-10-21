@@ -26,6 +26,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/sales", post(create_sale).get(list_sales))
         .route("/sales/{id}/credit-notes", post(create_credit_note))
+        .route("/sales/summary", get(sales_summary))
         .route("/cash", get(cash_total))
 }
 
@@ -588,6 +589,104 @@ async fn list_sales(
     }
 
     Ok(Json(sales))
+}
+
+/// What a scoped period of the ledger is worth, computed by the database.
+///
+/// The screen used to derive this from the rows it had loaded, which is a page of
+/// at most 50 documents — so a period longer than one page showed a total that
+/// was missing its oldest documents, and a running balance that started at zero
+/// in the middle of the period. The figure the shop reads must be the period's,
+/// not the page's, and only the database can answer that.
+#[derive(Debug, serde::Serialize)]
+pub struct PeriodSummary {
+    /// Gross of every sale that counts (not cancelled, not given back in full).
+    #[serde(serialize_with = "crate::money::serialize_amount")]
+    pub gross: Decimal,
+    /// What went back to customers on those same sales.
+    #[serde(serialize_with = "crate::money::serialize_amount")]
+    pub refunded: Decimal,
+    /// Gross less refunded: what the period put in the till.
+    #[serde(serialize_with = "crate::money::serialize_amount")]
+    pub net: Decimal,
+    /// How many documents the period holds, so the screen can say "50 of 312".
+    pub documents: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SummaryQuery {
+    #[serde(default)]
+    pub from: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub to: Option<DateTime<Utc>>,
+}
+
+/// `GET /api/sales/summary` — the period's totals, not the page's.
+///
+/// A document counts when it is `confirmed` **and** still has money in it: a sale
+/// whose credit notes equal its total was given back in full and contributes
+/// nothing, exactly as the ledger's own column treats it. The distinction is the
+/// review's finding — a partially refunded sale contributes its net, not its
+/// gross, and a fully refunded one contributes nothing at all.
+async fn sales_summary(
+    State(state): State<AppState>,
+    Query(params): Query<SummaryQuery>,
+) -> Result<Json<PeriodSummary>, StatusCode> {
+    // The bounds default to unbounded in SQL, not to sentinel instants. A
+    // `DateTime::<Utc>::MIN_UTC` as a bound overflows Postgres's timestamp range
+    // ("time zone displacement out of range") and the whole period reads as
+    // empty — which is a silent zero, the worst shape for this bug.
+    let from: Option<DateTime<Utc>> = params.from;
+    let to: Option<DateTime<Utc>> = params.to;
+
+    let row = sqlx::query!(
+        // One statement, one shape. `counted` is the same predicate the screen
+        // applies per row, expressed once so the total and the column cannot
+        // drift: confirmed, and gross greater than what came back.
+        r#"
+        -- Two different questions, two different sets.
+        --
+        -- `gross` and `refunded` describe the documents the shop wrote: every
+        -- confirmed sale in the period, whether or not money came back. Summing
+        -- them over the "still has money in it" set would make a fully refunded
+        -- sale vanish from both figures instead of cancelling out.
+        --
+        -- `net` is what the till kept, and that is the same number whether a row
+        -- contributes `total - refunded` or contributes nothing because the
+        -- subtraction already reached zero.
+        WITH counted AS (
+            SELECT s.total,
+                   COALESCE((SELECT SUM(cn.total) FROM credit_notes cn WHERE cn.sale_id = s.id), 0) AS refunded
+              FROM sales s
+             WHERE s.status = 'confirmed'
+               -- Absent bound means unbounded, the same contract `list_sales`
+               -- has. A sentinel instant cannot be used here: MIN_UTC is outside
+               -- Postgres's timestamp range and the whole period reads as empty.
+               AND ($1::timestamptz IS NULL OR s.created_at >= $1)
+               AND ($2::timestamptz IS NULL OR s.created_at < $2)
+        )
+        SELECT COALESCE(SUM(total), 0)::numeric           AS "gross!",
+               COALESCE(SUM(refunded), 0)::numeric        AS "refunded!",
+               COALESCE(SUM(GREATEST(total - refunded, 0)), 0)::numeric AS "net!",
+               (SELECT COUNT(*) FROM counted)::bigint      AS "documents!"
+          FROM counted
+        "#,
+        from,
+        to
+    )
+    .fetch_one(&state.db)
+    .await
+    .map_err(|e| {
+        tracing::error!(?e, "sales summary failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(Json(PeriodSummary {
+        gross: row.gross,
+        refunded: row.refunded,
+        net: row.net,
+        documents: row.documents,
+    }))
 }
 
 async fn cash_total(State(state): State<AppState>) -> Result<Json<Cash>, StatusCode> {

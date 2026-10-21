@@ -66,14 +66,19 @@
     grid-template-columns: var(--rail-w) minmax(0, 1fr);
     min-height: 100vh;
     /* Without this the grid stretches an auto row to fill the leftover height,
-       so the rail grows into a tall navy block instead of a bar once it becomes
+       so the rail grows into a tall block instead of a bar once it becomes
        horizontal. The rail is chrome: it should be exactly as tall as it is. */
     align-content: start;
   }
 
+  /* The rail is the page's margin, not a coloured slab. In the statement world
+     the ground is the same on both sides and the only separation is a hairline:
+     a filled block would make the navigation louder than the figures, which is
+     the opposite of what this world weights. */
   .rail {
-    background: var(--indigo);
-    color: #e8e6df;
+    background: transparent;
+    border-right: 1px solid var(--rule);
+    color: var(--ink-soft);
     display: flex;
     flex-direction: column;
     z-index: 2;
@@ -83,68 +88,61 @@
   .brand {
     font-family: var(--font-figure);
     font-weight: 700;
-    font-size: 15px;
-    letter-spacing: 0.22em;
+    font-size: 14px;
+    letter-spacing: 0.18em;
     text-transform: uppercase;
+    padding: 22px 0 24px;
+    color: var(--ink);
     text-align: center;
-    padding: 18px 0 22px;
-    color: #f2efe6;
-    border-bottom: 1px solid rgb(255 255 255 / 0.18);
     text-decoration: none;
   }
 
   .tabs {
     list-style: none;
-    margin: 14px 0 0;
+    margin: 0;
     padding: 0;
-    /* Wider than the rail: the active tab overhangs into the work area. Only
-       the active one does, which is what makes it read as extended rather than
-       as a second column. */
-    width: calc(var(--rail-w) + var(--tab-overhang));
   }
 
+  /* The active destination is marked by the accent as a left rule and accent
+     text — never a filled block. A block would compete with the day's figures
+     for the eye, and the figures are what the shop is looking at. */
   .tab {
     display: block;
-    width: var(--rail-w);
-    writing-mode: vertical-rl;
-    text-orientation: mixed;
     font-family: var(--font-figure);
-    font-size: var(--step-2);
+    font-size: var(--step--1);
     font-weight: 600;
-    letter-spacing: 0.1em;
+    letter-spacing: 0.14em;
     text-transform: uppercase;
-    padding: 20px 0 26px;
-    margin: 0 auto;
-    color: rgb(232 230 223 / 0.8);
+    text-align: center;
+    padding: 12px 0;
+    color: var(--ink-soft);
     text-decoration: none;
-    position: relative;
+    border-left: 3px solid transparent;
   }
 
   .tab:hover {
-    color: #fff;
+    color: var(--ink);
   }
 
   .tab.is-active {
-    background: var(--crimson);
-    color: #fff;
-    width: calc(var(--rail-w) + var(--tab-overhang));
+    color: var(--accent);
+    border-left-color: var(--accent);
   }
 
   .rail-foot {
     margin-top: auto;
-    padding-top: 16px;
-    border-top: 1px solid rgb(255 255 255 / 0.18);
+    padding: 16px 0 18px;
+    border-top: 1px solid var(--rule);
     text-align: center;
     display: grid;
-    gap: 6px;
-    padding-bottom: 18px;
+    gap: 8px;
   }
 
   .lang {
     background: none;
-    border: 1px solid rgb(255 255 255 / 0.28);
-    border-radius: 2px;
-    color: inherit;
+    border: 1px solid var(--rule-strong);
+    border-radius: var(--radius);
+    color: var(--ink-soft);
     font-family: var(--font-figure);
     font-size: var(--step--1);
     font-weight: 600;
@@ -152,13 +150,13 @@
     text-transform: uppercase;
     padding: 5px 0;
     margin: 0 auto;
-    width: 62px;
+    width: 58px;
     cursor: pointer;
   }
 
   .lang:hover {
-    border-color: rgb(255 255 255 / 0.6);
-    color: #fff;
+    border-color: var(--ink-soft);
+    color: var(--ink);
   }
 
   .version {
@@ -166,7 +164,7 @@
     font-size: var(--step--1);
     letter-spacing: 0.12em;
     text-transform: uppercase;
-    color: rgb(232 230 223 / 0.82);
+    color: var(--ink-soft);
   }
 
   .content {
@@ -189,24 +187,27 @@
       align-items: center;
       padding: 0 14px;
       align-self: start;
+      border-right: 0;
+      border-bottom: 1px solid var(--rule);
     }
     .brand {
-      border-bottom: 0;
-      border-right: 1px solid rgb(255 255 255 / 0.18);
       padding: 14px 16px 14px 0;
+      border-right: 1px solid var(--rule);
     }
     .tabs {
       display: flex;
       flex-direction: row;
-      width: auto;
       margin: 0 0 0 10px;
-      gap: 6px;
+      gap: 4px;
     }
-    .tab,
+    .tab {
+      padding: 8px 10px;
+      border-left: 0;
+      border-bottom: 2px solid transparent;
+    }
     .tab.is-active {
-      writing-mode: horizontal-tb;
-      width: auto;
-      padding: 8px 12px;
+      border-left-color: transparent;
+      border-bottom-color: var(--accent);
     }
     .rail-foot {
       margin: 0 0 0 auto;
@@ -215,7 +216,7 @@
       display: flex;
       align-items: center;
       gap: 10px;
-      /* The nav bar holds a brand, two destinations and a language toggle.
+      /* The nav bar holds a brand, three destinations and a language toggle.
          On a phone the version chip is decoration and the toggle can be its
          own width: without both, the bar is wider than the screen and the
          whole page pans sideways under a thumb. */
