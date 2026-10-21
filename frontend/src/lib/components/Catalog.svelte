@@ -116,6 +116,15 @@
   }
 
   async function create() {
+    // `canCreate`, not `formResult.parsed !== null`. `canCreate` carries
+    // `&& !creating`, and that half is the guard against a second submission
+    // landing while the first is still in flight. Dropping it looked equivalent
+    // because the button also disables itself — but the button is only one
+    // caller of this handler, and the form's own submit event is another. The
+    // other draft screens guard the same way (`SaleDraft` opens with
+    // `if (!canRecord) return`, and `canRecord` takes `submitting` for exactly
+    // this reason); this one had lost the symmetry.
+    if (!canCreate) return;
     const parsed = formResult.parsed;
     if (parsed === null) return;
     creating = true;

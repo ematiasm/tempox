@@ -99,3 +99,54 @@ test('the create form exposes every field issue to assistive technology', async 
   await expect(page.locator('.warn')).toHaveCount(0);
   await expect(create).toBeEnabled();
 });
+
+test('a form submitted twice while a create is in flight sends one request', async ({ page }) => {
+  const name = `e2e-catalog-dup-${Date.now().toString(36)}`;
+
+  // The button disables itself while `creating`, and that is not what this test
+  // measures. It measures the guard inside `create()`: the button is one caller,
+  // and the form's submit event is another — Enter, a held key, an assistive
+  // technology invoking submit, or a second event queued before the first render
+  // lands. Only the guard covers all of them.
+  //
+  // Measured before this was written: with the guard reading only the parse
+  // result, two dispatched submits produced TWO `POST /api/products` and two
+  // products. The obvious click-based test passes anyway, because the disabled
+  // button blocks the second click — the defect hides behind the very UI it
+  // should not depend on.
+  let posts = 0;
+  await page.route('**/api/products', async (route) => {
+    if (route.request().method() !== 'POST') return route.continue();
+    posts += 1;
+    // Hold the response so the second submit lands while the first is in flight.
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    await route.continue();
+  });
+
+  await page.goto('/products');
+  await page.locator('#new-name').fill(name);
+  await page.locator('#new-price').fill('25,00');
+  await page.locator('#new-stock').fill('1');
+  await expect(page.getByRole('button', { name: /Crear producto/ })).toBeEnabled();
+
+  // Dispatch on the form itself, bypassing the disabled button on purpose: the
+  // assertion is about the guard, and a test that can only fire through the
+  // button cannot tell a guarded handler from an unguarded one.
+  const submit = () =>
+    page.evaluate(() => {
+      document
+        .getElementById('new-product')
+        ?.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
+    });
+
+  await submit();
+  await submit();
+
+  await expect(page.getByRole('status')).toContainText(name);
+  expect(posts).toBe(1);
+
+  // And the catalog holds one row, not two: the second POST would have made a
+  // duplicate the operator has no way to delete — the ledger is append-only.
+  await page.locator('#catalog-search').fill(name);
+  await expect(page.locator('table.catalog tbody tr', { hasText: name })).toHaveCount(1);
+});
