@@ -27,6 +27,11 @@ What this surface resolves on its own, decided 2026-10-20 by the owner:
 - **The footer reports the period, from the server.** Same rule the sales fix established: a total derived from the loaded page undercounts. `GET /api/purchases` gains a summary the way `GET /api/sales` did, or the footer says plainly what set it covers.
 - **Supplier returns stay where they are**: inside the expanded document, under the purchase they correct, as a second row rather than an edit.
 
-Not this surface's work: `/products`, which remains the last un-redesigned screen.
+Not this surface's work: `/products`.
+
+*Amended 2026-10-20:* `/products` has since been redesigned
+(`.impeccable/surfaces/products.md`) and this note is historical, not a
+statement about the current tree. Annotated rather than rewritten: a brief is a
+record of what was decided, not a live view of the code.
 
 FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and the shell test that measures ink and ground across all three destinations un-skipped.

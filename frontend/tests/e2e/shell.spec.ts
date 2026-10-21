@@ -93,17 +93,15 @@ test('every page opens with the same statement header (DESIGN.md)', async ({ pag
   // assertion about the rendered style can. The rule changed with the world;
   // the reason for the assertion did not.
   //
-  // SCOPE: `/products` is the one surface the redesign has not reached. It still
-  // carries v1a's crimson band. Rather than skip the whole assertion — which
-  // would stop measuring the two surfaces that ARE redesigned — this test covers
-  // what holds today and a companion test below names the outstanding one. A red
-  // suite the team learns to ignore is worse than a suite that says which
-  // surface is missing; a skip that also stops checking the finished ones is
-  // worse than both.
+  // SCOPE: every destination. This test was skipped while the redesign was
+  // partial, then narrowed to the finished surfaces while `/products` waited;
+  // it is whole again. The guard test that named `/products` as the outstanding
+  // surface is gone with the reason for it, which is what that test said would
+  // happen.
   const grounds: Record<string, string> = {};
   const inks: Record<string, string> = {};
 
-  for (const path of ['/sales', '/purchases']) {
+  for (const path of ['/sales', '/purchases', '/products']) {
     await page.goto(path);
     // The heading is the page's own voice and every screen has one, which is
     // what makes it the stable thing to measure across three different layouts.
@@ -133,7 +131,7 @@ test('every page opens with the same statement header (DESIGN.md)', async ({ pag
 test('the redesigned surfaces both wear the statement world', async ({ page }) => {
   // Asserted positively per surface, so a failure names which one regressed
   // rather than only that the pair disagreed.
-  for (const path of ['/sales', '/purchases']) {
+  for (const path of ['/sales', '/purchases', '/products']) {
     await page.goto(path);
     const heading = page.getByRole('heading', { level: 1 });
     await expect(heading).toBeVisible();
@@ -146,19 +144,6 @@ test('the redesigned surfaces both wear the statement world', async ({ page }) =
       `${path} must sit on the statement ground`
     ).toBe('rgb(251, 252, 253)');
   }
-});
-
-test('/products is the last surface still on the previous world', async ({ page }) => {
-  // Not a pass and not a silent skip: the outstanding surface, named. When
-  // `/products` is redesigned this test fails, and deleting it is the signal
-  // that the work is done rather than a chore nobody remembers.
-  await page.goto('/products');
-  const heading = page.getByRole('heading', { level: 1 });
-  await expect(heading).toBeVisible();
-  expect(
-    await heading.evaluate((el) => getComputedStyle(el).color),
-    '/products still renders the previous world; if this now matches the statement ink, delete this test and add /products to the loop above'
-  ).not.toBe('rgb(18, 33, 46)');
 });
 
 test('the accent is spent on one job per screen, never two', async ({ page }) => {

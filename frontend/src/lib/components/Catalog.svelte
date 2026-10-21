@@ -11,6 +11,13 @@
   import { formatMoney, formatQuantity, parseAmount, parseQuantity } from '#lib/money.js';
   import { lang } from '#lib/i18n/index.svelte.js';
 
+  interface Props {
+    /** Reports how many products the current search matched, to the page header. */
+    oncount?: (count: number | null) => void;
+  }
+
+  let { oncount }: Props = $props();
+
   const PAGE = 50;
 
   let rows = $state<Product[]>([]);
@@ -100,221 +107,275 @@
 
   const hasFilters = $derived(query.trim() !== '');
 
-  /**
-   * F2 focuses the create form's first field.
-   *
-   * The band button announces F2, so the key has to do something: a shortcut
-   * printed on a control and wired to nothing is worse than no label, because
-   * the cashier tries it and concludes the app is broken.
-   */
-  function onkeydown(e: KeyboardEvent) {
-    if (e.key === 'F2') {
-      e.preventDefault();
-      document.getElementById('new-name')?.focus();
-    }
-  }
+  // The register's size, whenever a read lands. `null` when the header must stay
+  // silent rather than claim a number it has not earned: while the first read is
+  // in flight, and when the read FAILED. A failed read leaves `rows` empty, and
+  // reporting that as 0 puts "0 PRODUCTOS" on a page whose catalog could not be
+  // fetched — the screen would be stating a fact about the shop that it derived
+  // from its own error.
+  const registerSize = $derived(
+    pageError ? null : loading && rows.length === 0 ? null : rows.length
+  );
+  $effect(() => {
+    oncount?.(registerSize);
+  });
 </script>
 
 <!-- The band belongs to the route, not to this component: two regions rendering
      their own copy of the page's heading puts two <h1>Products</h1> on one page
      and leaves a screen reader with two rival titles. -->
-<svelte:window {onkeydown} />
+<div class="workspace">
+  <section class="panel panel-catalog" aria-labelledby="catalog-h">
+    <div class="head">
+      <div>
+        <h2 id="catalog-h">{lang.t.products_catalog_title}</h2>
+        <div class="sub">{lang.t.products_catalog_sub}</div>
+      </div>
+      <div class="controls">
+        <input
+          class="control search"
+          id="catalog-search"
+          value={query}
+          oninput={(e) => onSearch(e.currentTarget.value)}
+          placeholder={lang.t.products_search}
+          aria-label={lang.t.products_search}
+          type="search"
+        />
+        <span class="pager">
+          <button
+            type="button"
+            onclick={() => (offset = Math.max(0, offset - PAGE))}
+            disabled={offset === 0 || loading}
+          >
+            ← {lang.t.sales_older}
+          </button>
+          <button
+            type="button"
+            onclick={() => (offset = offset + PAGE)}
+            disabled={rows.length < PAGE || loading}
+          >
+            {lang.t.sales_newer} →
+          </button>
+        </span>
+      </div>
+    </div>
 
-<section class="body" aria-labelledby="catalog-h">
-  <div class="head">
-    <div>
-      <h2 id="catalog-h">{lang.t.products_catalog_title}</h2>
-      <div class="sub">{lang.t.products_catalog_sub}</div>
-    </div>
-    <div class="controls">
-      <input
-        class="control search"
-        id="catalog-search"
-        value={query}
-        oninput={(e) => onSearch(e.currentTarget.value)}
-        placeholder={lang.t.products_search}
-        aria-label={lang.t.products_search}
-        type="search"
-      />
-      <span class="pager">
-        <button
-          type="button"
-          onclick={() => (offset = Math.max(0, offset - PAGE))}
-          disabled={offset === 0 || loading}
-        >
-          ← {lang.t.sales_older}
-        </button>
-        <button
-          type="button"
-          onclick={() => (offset = offset + PAGE)}
-          disabled={rows.length < PAGE || loading}
-        >
-          {lang.t.sales_newer} →
-        </button>
-      </span>
-    </div>
-  </div>
-
-  {#if pageError}
-    <div class="alert" role="alert">
-      <strong>{lang.t.products_error}</strong>
-      <span>{pageError}</span>
-    </div>
-  {:else if loading && rows.length === 0}
-    <div class="skeleton" aria-hidden="true">
-      <div class="bar"></div>
-      <div class="bar"></div>
-      <div class="bar"></div>
-    </div>
-  {:else if rows.length === 0}
-    <div class="empty">
-      {#if hasFilters}
-        <p>{lang.t.products_no_match}</p>
-        <button type="button" class="ghost" onclick={() => onSearch('')}>
-          {lang.t.products_clear_search}
-        </button>
-      {:else}
-        <p>{lang.t.products_empty}</p>
-        <button
-          type="button"
-          class="ghost"
-          onclick={() => document.getElementById('new-name')?.focus()}
-        >
-          {lang.t.products_create_first}
-        </button>
-      {/if}
-    </div>
-  {:else}
-    <table class="catalog">
-      <thead>
-        <tr>
-          <th scope="col">{lang.t.sales_product}</th>
-          <th scope="col">{lang.t.products_unit}</th>
-          <th scope="col" class="num">{lang.t.products_list_price}</th>
-          <th scope="col" class="num">{lang.t.products_stock}</th>
-        </tr>
-      </thead>
-      <tbody>
-        {#each rows as product (product.id)}
+    {#if pageError}
+      <div class="alert" role="alert">
+        <strong>{lang.t.products_error}</strong>
+        <span>{pageError}</span>
+      </div>
+    {:else if loading && rows.length === 0}
+      <div class="skeleton" aria-hidden="true">
+        <div class="bar"></div>
+        <div class="bar"></div>
+        <div class="bar"></div>
+      </div>
+    {:else if rows.length === 0}
+      <div class="empty">
+        {#if hasFilters}
+          <p>{lang.t.products_no_match}</p>
+          <button type="button" class="ghost" onclick={() => onSearch('')}>
+            {lang.t.products_clear_search}
+          </button>
+        {:else}
+          <p>{lang.t.products_empty}</p>
+          <button
+            type="button"
+            class="ghost"
+            onclick={() => document.getElementById('new-name')?.focus()}
+          >
+            {lang.t.products_create_first}
+          </button>
+        {/if}
+      </div>
+    {:else}
+      <table class="catalog">
+        <thead>
           <tr>
-            <td class="pname">{product.name}</td>
-            <td>
-              <span class="unit-chip figures">{lang.fmt.unit(product.unit)}</span>
-            </td>
-            <td class="num">
-              <span class="faces figures">{formatMoney(product.list_price)}</span>
-              <span class="per">{priceLabel(product.unit)}</span>
-            </td>
-            <td class="num">
-              <!-- Zero is not "no data": an empty shelf is a fact the shop needs. -->
-              <span
-                class="stock figures"
-                class:low={product.stock > 0 && product.stock < 10}
-                class:out={product.stock === 0}
-              >
-                {formatQuantity(product.stock, product.unit)}
-              </span>
-            </td>
+            <th scope="col">{lang.t.sales_product}</th>
+            <th scope="col">{lang.t.products_unit}</th>
+            <th scope="col" class="num">{lang.t.products_list_price}</th>
+            <th scope="col" class="num">{lang.t.products_stock}</th>
           </tr>
-        {/each}
-      </tbody>
-    </table>
-    <div class="row-foot">
-      <span>
-        {rows.length}
-        {rows.length === 1 ? lang.t.products_product_one : lang.t.products_products}
-        {#if hasFilters}· “{query.trim()}”{/if}
-      </span>
-      <span class="derived">
-        <span class="stamp-mini figures">{lang.t.products_derived}</span>
-        {lang.t.products_derived_note}
-      </span>
-    </div>
-  {/if}
-</section>
+        </thead>
+        <tbody>
+          {#each rows as product (product.id)}
+            <tr>
+              <td class="pname">{product.name}</td>
+              <td>
+                <span class="unit-chip figures">{lang.fmt.unit(product.unit)}</span>
+              </td>
+              <td class="num">
+                <span class="faces figures">{formatMoney(product.list_price)}</span>
+                <span class="per">{priceLabel(product.unit)}</span>
+              </td>
+              <td class="num">
+                <!-- Zero is not "no data": an empty shelf is a fact the shop needs. -->
+                <span
+                  class="stock figures"
+                  class:low={product.stock > 0 && product.stock < 10}
+                  class:out={product.stock === 0}
+                >
+                  {formatQuantity(product.stock, product.unit)}
+                </span>
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+      <!-- The count moved to the page header, beside the heading, where the other
+         two surfaces carry the size of what is on screen. What stays here is the
+         one thing a reader of the stock column must know: those numbers are
+         derived, never typed. It used to be a rotated stamp; DESIGN.md's Don't
+         list names that shape, and a stamp is not how a computed column
+         explains itself. -->
+      <div class="row-foot">
+        <span class="derived">
+          <span class="derived-mark">{lang.t.products_derived}</span>
+          {lang.t.products_derived_note}
+        </span>
+      </div>
+    {/if}
+  </section>
 
-<section class="body new" aria-labelledby="new-h">
-  <div class="head">
-    <div>
-      <h2 id="new-h">{lang.t.products_new_title}</h2>
-      <div class="sub">{lang.t.products_new_sub}</div>
+  <section class="panel panel-new" aria-labelledby="new-h">
+    <div class="head">
+      <div>
+        <h2 id="new-h">{lang.t.products_new_title}</h2>
+        <div class="sub">{lang.t.products_new_sub}</div>
+      </div>
     </div>
-  </div>
 
-  <form
-    class="form"
-    onsubmit={(e) => {
-      e.preventDefault();
-      create();
-    }}
-  >
-    <div class="field wide">
-      <label class="label" for="new-name">{lang.t.products_name}</label>
-      <input
-        class="control"
-        id="new-name"
-        bind:value={name}
-        placeholder={lang.t.products_name_placeholder}
-        autocomplete="off"
-      />
-    </div>
-    <div class="field">
-      <label class="label" for="new-unit">{lang.t.products_unit}</label>
-      <!-- One option, deliberately: see the note above the script. -->
-      <select class="control" id="new-unit">
-        <option value="unit">{lang.fmt.unit('unit')}</option>
-      </select>
-    </div>
-    <div class="field">
-      <label class="label" for="new-price">{lang.fmt.priceUnit('unit')}</label>
-      <input
-        class="control figures"
-        id="new-price"
-        bind:value={priceText}
-        class:bad={priceBad}
-        inputmode="decimal"
-        placeholder={lang.fmt.amountHint()}
-      />
-    </div>
-    <div class="field">
-      <label class="label" for="new-stock">{lang.t.products_initial_stock}</label>
-      <input
-        class="control figures"
-        id="new-stock"
-        bind:value={stockText}
-        class:bad={stockBad}
-        inputmode="numeric"
-        placeholder="0"
-      />
-    </div>
-    <button type="submit" class="create" disabled={!canCreate}>
-      {creating ? lang.t.products_creating : lang.t.products_create}
-    </button>
-  </form>
+    <form
+      id="new-product"
+      class="form"
+      onsubmit={(e) => {
+        e.preventDefault();
+        create();
+      }}
+    >
+      <div class="field wide">
+        <label class="label" for="new-name">{lang.t.products_name}</label>
+        <input
+          class="control"
+          id="new-name"
+          bind:value={name}
+          placeholder={lang.t.products_name_placeholder}
+          autocomplete="off"
+        />
+      </div>
+      <div class="field">
+        <label class="label" for="new-unit">{lang.t.products_unit}</label>
+        <!-- One option, deliberately: see the note above the script. -->
+        <select class="control" id="new-unit">
+          <option value="unit">{lang.fmt.unit('unit')}</option>
+        </select>
+      </div>
+      <div class="field">
+        <label class="label" for="new-price">{lang.fmt.priceUnit('unit')}</label>
+        <input
+          class="control figures"
+          id="new-price"
+          bind:value={priceText}
+          class:bad={priceBad}
+          inputmode="decimal"
+          placeholder={lang.fmt.amountHint()}
+        />
+      </div>
+      <div class="field">
+        <label class="label" for="new-stock">{lang.t.products_initial_stock}</label>
+        <input
+          class="control figures"
+          id="new-stock"
+          bind:value={stockText}
+          class:bad={stockBad}
+          inputmode="numeric"
+          placeholder="0"
+        />
+      </div>
+    </form>
 
-  {#if created}
-    <p class="ok" role="status">{lang.t.products_created(created)}</p>
-  {/if}
-  {#if error}
-    <p class="error" role="alert">
-      <strong>{lang.t.products_create_error}</strong>
-      {error}
-    </p>
-  {/if}
-  {#if priceBad}
-    <p class="warn">{lang.t.products_invalid}</p>
-  {/if}
-</section>
+    {#if created}
+      <p class="ok" role="status">{lang.t.products_created(created)}</p>
+    {/if}
+    {#if error}
+      <p class="error" role="alert">
+        <strong>{lang.t.products_create_error}</strong>
+        {error}
+      </p>
+    {/if}
+    {#if priceBad}
+      <p class="warn">{lang.t.products_invalid}</p>
+    {/if}
+
+    <!-- The page's single action, at the foot of the form it closes and always on
+       screen. It used to sit inline in the form's grid, which put it after the
+       fields on a wide page and below a paginated table on a narrow one — an
+       action you have to scroll to find is one the shop will not use. The
+       disabled state carries a hint for the same reason it does on /sales: a
+       greyed control with no explanation is a control nobody learns exists. -->
+    <div class="action-foot">
+      {#if !canCreate && !creating}
+        <span class="why">{lang.t.products_action_hint}</span>
+      {/if}
+      <button
+        type="submit"
+        class="do"
+        form="new-product"
+        disabled={!canCreate}
+        aria-keyshortcuts="F2"
+      >
+        {creating ? lang.t.products_creating : lang.t.products_create} <kbd>F2</kbd>
+      </button>
+    </div>
+  </section>
+</div>
 
 <style>
-  .body {
-    margin: 22px 26px 0 28px;
-    background: var(--paper-raised);
-    border: 1px solid var(--rule);
-    border-radius: 4px;
+  /* Two closed panels, separated by a 24px gap AND their own edges, exactly as
+     /sales and /purchases do it. The border is what separates them; the gap only
+     keeps the rules from touching. The catalog is the wide column because it is
+     what the screen is for — 500+ rows of it. */
+  .workspace {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(360px, 460px);
+    gap: var(--panel-gap);
+    align-items: stretch;
+    padding: 0 26px 26px 28px;
+    min-height: 0;
   }
-  .new {
-    margin-bottom: 30px;
+  /* Grid items default to `min-height: auto`, which refuses to shrink below
+     their content. Without this the panels keep their natural height, the grid
+     track keeps theirs, and the action lands below the fold. */
+  .workspace > .panel {
+    min-height: 0;
+  }
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: var(--panel-radius);
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    overflow: hidden;
+  }
+  /* The catalog scrolls its rows between a fixed head and a fixed foot, so the
+     page itself never scrolls and the panels divide a known height. */
+  .panel-catalog {
+    min-height: 480px;
+  }
+  .panel-new {
+    overflow: visible;
+  }
+
+  @media (max-width: 1080px) {
+    .workspace {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .panel-catalog {
+      max-height: 70vh;
+    }
   }
   .head {
     display: flex;
@@ -349,12 +410,12 @@
   }
   .pager button {
     border: 1px solid var(--rule-strong);
-    background: var(--paper-raised);
+    background: var(--surface);
     border-radius: var(--radius);
     padding: 7px 11px;
     font-size: var(--step-0);
     font-weight: 600;
-    color: var(--indigo);
+    color: var(--ink);
     cursor: pointer;
     white-space: nowrap;
   }
@@ -373,7 +434,7 @@
     font-weight: 600;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: var(--indigo-soft);
+    color: var(--ink-soft);
     text-align: left;
     padding: 10px 12px;
     border-bottom: 1px solid var(--rule-strong);
@@ -408,7 +469,7 @@
     border-radius: 2px;
     padding: 1px 6px;
     font-size: var(--step-1);
-    color: var(--indigo);
+    color: var(--ink);
   }
   .faces {
     font-size: var(--step-2);
@@ -424,8 +485,16 @@
     font-size: var(--step-3);
     font-weight: 700;
   }
+  /* Stock is a state, so it uses the state colours and never the accent: the
+     accent belongs to the balance on /sales and to the active destination, and a
+     third job would dilute it.
+     An empty shelf is soft ink, not the void red. Void is for a document that
+     was annulled or refunded — something that went wrong. Zero stock is a fact
+     the shop already knows about a product it just created, and painting every
+     new row red teaches the operator to ignore the colour that matters. The
+     number is printed either way, so nothing depends on the tone alone. */
   .stock.low {
-    color: var(--crimson);
+    color: var(--state-pending);
   }
   .stock.out {
     color: var(--ink-soft);
@@ -445,26 +514,40 @@
     align-items: center;
     gap: 8px;
   }
-  .stamp-mini {
+  /* A label, not a stamp: `DESIGN.md`'s Don't list names the rotated rubber
+     stamp, and a computed column does not need one to say it is computed. */
+  .derived-mark {
     font-family: var(--font-figure);
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.13em;
     font-size: var(--step--1);
-    color: var(--crimson);
-    border: 2px solid currentColor;
+    font-weight: 700;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    border: 1px solid var(--rule-strong);
     border-radius: 2px;
-    padding: 2px 7px 1px;
-    transform: rotate(-6.5deg);
-    mix-blend-mode: multiply;
+    padding: 1px 6px;
   }
 
+  /* The narrow column is a single stack: five fields squeezed side by side in
+     460px is what put two labels on top of each other and pressed the action
+     into the hint's line. The wide row keeps its two-up pairing. */
   .form {
     display: grid;
-    grid-template-columns: minmax(0, 1.6fr) 120px 150px 130px auto;
-    gap: 12px;
-    align-items: end;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+    align-content: start;
     padding: 16px 18px;
+  }
+  .form .wide {
+    grid-column: auto;
+  }
+  .label {
+    font-family: var(--font-figure);
+    font-size: var(--step--1);
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
   }
   .field {
     display: grid;
@@ -478,27 +561,8 @@
     padding: 9px 11px;
   }
   .form .control.bad {
-    border-color: var(--crimson);
+    border-color: var(--accent);
     background: rgb(168 27 42 / 0.05);
-  }
-  .create {
-    background: var(--crimson);
-    color: #fff;
-    border: 0;
-    border-radius: var(--radius);
-    padding: 11px 16px;
-    font-family: var(--font-figure);
-    font-size: var(--step-2);
-    font-weight: 600;
-    cursor: pointer;
-    box-shadow: 0 2px 0 var(--crimson-deep);
-    white-space: nowrap;
-  }
-  .create:disabled {
-    background: var(--paper-sunk);
-    color: var(--ink-soft);
-    box-shadow: none;
-    cursor: default;
   }
 
   .ok {
@@ -517,20 +581,20 @@
   }
   .error strong {
     font-family: var(--font-figure);
-    color: var(--crimson-deep);
+    color: #084a6c;
     margin-right: 6px;
   }
   .warn {
     margin: 0;
     padding: 0 18px 12px;
-    color: var(--crimson-deep);
+    color: #084a6c;
     font-size: var(--step-0);
   }
 
   .ghost {
     background: none;
     border: 1px dashed var(--rule-strong);
-    color: var(--indigo);
+    color: var(--ink);
     border-radius: var(--radius);
     padding: 9px 12px;
     font-size: var(--step-1);
@@ -593,7 +657,7 @@
   }
   .alert strong {
     font-family: var(--font-figure);
-    color: var(--crimson-deep);
+    color: #084a6c;
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -613,8 +677,62 @@
     .form .wide {
       grid-column: 1 / -1;
     }
-    .create {
-      grid-column: 1 / -1;
-    }
+  }
+
+  /* The page's single action, pinned at the foot of the form it closes. Same
+     component as /sales and /purchases: a solid ink bar, never the accent, and
+     a dashed outline with a stated reason when it cannot fire yet. */
+  .action-foot {
+    flex-shrink: 0;
+    margin-top: auto;
+    padding: 16px 18px 18px;
+    border-top: 1px solid var(--rule);
+    background: var(--surface);
+  }
+  .action-foot .why {
+    display: block;
+    margin: 0 0 8px;
+    font-size: var(--step--1);
+    color: var(--ink-soft);
+    text-align: center;
+  }
+  .do {
+    width: 100%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    background: var(--ink);
+    color: var(--surface);
+    border: 1px solid var(--ink);
+    border-radius: var(--radius);
+    padding: 12px 18px;
+    font-family: var(--font-figure);
+    font-size: var(--step-2);
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+  .do:hover:not(:disabled) {
+    background: #0a1622;
+  }
+  .do:disabled {
+    background: var(--surface);
+    color: var(--ink-soft);
+    border: 1px dashed var(--rule-strong);
+    cursor: default;
+  }
+  .do kbd {
+    font-family: var(--font-text);
+    font-size: var(--step--1);
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: none;
+    color: inherit;
+    border: 1px solid currentColor;
+    border-radius: 2px;
+    padding: 1px 5px;
+    opacity: 0.75;
   }
 </style>

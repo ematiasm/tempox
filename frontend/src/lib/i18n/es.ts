@@ -135,6 +135,7 @@ const es: Dict = {
     'Por ahora se crean productos por unidad — un precio por gramo no se puede guardar más fino que 1 ¢/g',
   products_name: 'Nombre',
   products_name_placeholder: 'ej. Harina 000 Panda 1 kg',
+  products_action_hint: 'Completá el nombre y el precio para crear el producto',
   products_initial_stock: 'Stock inicial',
   products_create: 'Crear producto',
   products_creating: 'Creando…',
