@@ -2315,7 +2315,10 @@ async fn v2_a_partly_refunded_sale_counts_its_net_not_its_gross(pool: sqlx::PgPo
         .expect_status(axum::http::StatusCode::CREATED);
 
     let body = summary(&client, "2000-01-01T00:00:00Z", "2100-01-01T00:00:00Z").await;
-    assert_eq!(body["gross"], "100.00", "the document's own figure is unchanged");
+    assert_eq!(
+        body["gross"], "100.00",
+        "the document's own figure is unchanged"
+    );
     assert_eq!(body["refunded"], "25.00");
     assert_eq!(body["net"], "75.00", "what the till actually kept");
     assert_eq!(body["documents"], 1);
@@ -2339,7 +2342,10 @@ async fn v2_a_fully_refunded_sale_contributes_nothing_to_the_net(pool: sqlx::PgP
         .expect_status(axum::http::StatusCode::CREATED);
 
     let body = summary(&client, "2000-01-01T00:00:00Z", "2100-01-01T00:00:00Z").await;
-    assert_eq!(body["net"], "0.00", "money that came straight back is not money kept");
+    assert_eq!(
+        body["net"], "0.00",
+        "money that came straight back is not money kept"
+    );
     // It still counts as a document: the shop worked it, and the ledger shows it.
     assert_eq!(body["documents"], 1);
 }
@@ -2355,7 +2361,10 @@ async fn v2_the_summary_covers_the_whole_period_not_a_page_of_it(pool: sqlx::PgP
 
     let body = summary(&client, "2000-01-01T00:00:00Z", "2100-01-01T00:00:00Z").await;
     assert_eq!(body["documents"], 60);
-    assert_eq!(body["net"], "600.00", "sixty tens, not the fifty a page shows");
+    assert_eq!(
+        body["net"], "600.00",
+        "sixty tens, not the fifty a page shows"
+    );
 }
 
 #[sqlx::test]
@@ -2366,13 +2375,20 @@ async fn v2_the_default_scope_is_still_exactly_one_day(pool: sqlx::PgPool) {
     let client = common::client(pool);
     let at_q = common::encode_query(at);
 
-    let bare = client.get(&format!("/api/day?at={at_q}")).await.json().clone();
+    let bare = client
+        .get(&format!("/api/day?at={at_q}"))
+        .await
+        .json()
+        .clone();
     let explicit = client
         .get(&format!("/api/day?at={at_q}&scope=day"))
         .await
         .json()
         .clone();
-    assert_eq!(bare, explicit, "an absent scope and `day` are the same answer");
+    assert_eq!(
+        bare, explicit,
+        "an absent scope and `day` are the same answer"
+    );
 
     // And it really is one day, not a week that happens to match itself.
     let from: chrono::DateTime<chrono::Utc> = bare["from"].as_str().unwrap().parse().unwrap();
@@ -2387,7 +2403,10 @@ async fn v2_a_week_scope_spans_seven_shop_days_and_contains_the_instant(pool: sq
     let to: chrono::DateTime<chrono::Utc> = body["to"].as_str().unwrap().parse().unwrap();
     let at: chrono::DateTime<chrono::Utc> = "2026-10-16T04:00:00Z".parse().unwrap();
 
-    assert!(from <= at && at < to, "the week must contain the instant asked about");
+    assert!(
+        from <= at && at < to,
+        "the week must contain the instant asked about"
+    );
     assert_eq!((to - from).num_days(), 7, "an Argentine week is seven days");
 }
 
@@ -2407,10 +2426,12 @@ async fn v2_an_unknown_scope_is_refused_rather_than_answered_with_a_day(pool: sq
     let client = common::client(pool);
     let at = common::encode_query("2026-10-16T04:00:00Z");
     for scope in ["year", "WEEK", "weeks", "7"] {
-        let resp = client
-            .get(&format!("/api/day?at={at}&scope={scope}"))
-            .await;
-        assert_eq!(resp.status(), 400, "{scope:?} is not a scope this endpoint knows");
+        let resp = client.get(&format!("/api/day?at={at}&scope={scope}")).await;
+        assert_eq!(
+            resp.status(),
+            400,
+            "{scope:?} is not a scope this endpoint knows"
+        );
     }
 }
 
@@ -2974,11 +2995,7 @@ async fn v2_a_rejected_purchase_writes_nothing(pool: sqlx::PgPool) {
 // period. Purchases and returns are counted separately because a return is its
 // own document correcting a purchase, not a negative purchase.
 
-async fn purchases_summary(
-    client: &common::Client,
-    from: &str,
-    to: &str,
-) -> serde_json::Value {
+async fn purchases_summary(client: &common::Client, from: &str, to: &str) -> serde_json::Value {
     let f = common::encode_query(from);
     let t = common::encode_query(to);
     let resp = client
@@ -3039,7 +3056,10 @@ async fn v2_purchases_summary_covers_the_whole_period_not_a_page_of_it(pool: sql
 
     let body = purchases_summary(&client, "2000-01-01T00:00:00Z", "2100-01-01T00:00:00Z").await;
     assert_eq!(body["documents"], 60);
-    assert_eq!(body["gross"], "600.00", "sixty tens, not the fifty a page shows");
+    assert_eq!(
+        body["gross"], "600.00",
+        "sixty tens, not the fifty a page shows"
+    );
 }
 
 #[sqlx::test]
@@ -3062,7 +3082,10 @@ async fn v2_a_supplier_return_reduces_the_net_but_not_the_gross(pool: sqlx::PgPo
         .expect_status(axum::http::StatusCode::CREATED);
 
     let body = purchases_summary(&client, "2000-01-01T00:00:00Z", "2100-01-01T00:00:00Z").await;
-    assert_eq!(body["gross"], "200.00", "the purchase keeps the figure it was recorded with");
+    assert_eq!(
+        body["gross"], "200.00",
+        "the purchase keeps the figure it was recorded with"
+    );
     assert_eq!(body["returned"], "100.00", "one of two units came back");
     assert_eq!(body["net"], "100.00", "what the period actually cost");
     assert_eq!(body["documents"], 1);

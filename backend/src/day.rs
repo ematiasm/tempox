@@ -136,15 +136,15 @@ pub fn month_range(zone: Tz, at: DateTime<Utc>) -> DayRange {
     } else {
         (today.year(), today.month() + 1)
     };
-    let next_first = NaiveDate::from_ymd_opt(next_year, next_month, 1)
-        .expect("day 1 exists in every month");
+    let next_first =
+        NaiveDate::from_ymd_opt(next_year, next_month, 1).expect("day 1 exists in every month");
     let (prev_year, prev_month) = if today.month() == 1 {
         (today.year() - 1, 12)
     } else {
         (today.year(), today.month() - 1)
     };
-    let prev_first = NaiveDate::from_ymd_opt(prev_year, prev_month, 1)
-        .expect("day 1 exists in every month");
+    let prev_first =
+        NaiveDate::from_ymd_opt(prev_year, prev_month, 1).expect("day 1 exists in every month");
     DayRange {
         from: first_instant_of(first, zone),
         to: first_instant_of(next_first, zone),
