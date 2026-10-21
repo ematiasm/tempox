@@ -27,6 +27,8 @@ What it shares with the other two surfaces is everything that made them one worl
 
 Inherited from `/sales` (`.impeccable/surfaces/sales.md`) and ratified by `/purchases`. Not restated here: a copy would drift.
 
+**FORM: inherited by reference from `/sales`'s direction roll (seed `1bde3384`)**, the same way `/purchases` inherits it. This surface ran no direction roll and no concept tournament — it is an extension, and the world was chosen before it existed. Recorded explicitly because the finish review (check 4) reads a brief with no FORM and no seed as a skipped roll, which is a material finding ahead of any craft point. It was missing here and present in both sibling briefs; the omission was mine, not the roll's.
+
 What this surface resolves on its own, decided 2026-10-20 by the owner:
 
 - **Two panels, side by side, mirroring the other two surfaces.** The catalog is the wide left column — it is the work. The create form is the narrow right column. The current page stacks them vertically with the form second, which buries the page's single action below a paginated table.

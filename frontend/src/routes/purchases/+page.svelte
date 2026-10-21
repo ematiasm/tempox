@@ -169,6 +169,13 @@
 
   .action-foot {
     flex-shrink: 0;
+    /* Pushed to the panel's foot. Without this it follows the sheet's content and
+       stops wherever that ends — measured on an empty draft, the action landed at
+       y≈395 inside a panel running to y≈874, leaving ~480px of surface below an
+       action that read as the page having run out of content. The panel is a
+       column that fills its grid track; its action belongs at the bottom of that
+       track, not at the bottom of the content. */
+    margin-top: auto;
     padding: 16px 20px 20px;
     border-top: 1px solid var(--rule);
     background: var(--surface);

@@ -34,6 +34,7 @@
   import { lang } from '#lib/i18n/index.svelte.js';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import Stamp from './Stamp.svelte';
+  import { overflowsX } from '#lib/overflowsX.js';
 
   interface Props {
     /** Changes whenever a purchase is recorded, so the day reloads. */
@@ -336,7 +337,7 @@
     </p>
 
     <div class="table-frame">
-      <div class="table-scroll">
+      <div class="table-scroll" use:overflowsX>
         <table class="docs">
           <thead>
             <tr>
@@ -663,6 +664,7 @@
     margin-top: 10px;
   }
   .table-scroll {
+    position: relative;
     overflow: auto;
     min-width: 0;
     flex: 1 1 auto;
@@ -670,6 +672,20 @@
     scrollbar-gutter: stable;
     scrollbar-width: auto;
     scrollbar-color: var(--ink-soft) var(--rule);
+  }
+  /* The sideways cut, made visible without a gesture — the same rule and the same
+     reason as the catalog's: measured at 390px this frame reports
+     `scrollWidth 438 > clientWidth 294` while drawing no bar, and the capture
+     showed `ESTADO` cut to `EST`. */
+  .table-scroll:global(.overflows-x)::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 28px;
+    pointer-events: none;
+    background: linear-gradient(to right, transparent, var(--surface) 72%);
   }
   table.docs {
     width: 100%;

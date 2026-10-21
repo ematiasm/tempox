@@ -10,6 +10,7 @@
   import { ApiError, createProduct, listProducts, type Product, type Unit } from '#lib/api.js';
   import { formatMoney, formatQuantity, parseAmount, parseQuantity } from '#lib/money.js';
   import { lang } from '#lib/i18n/index.svelte.js';
+  import { overflowsX } from '#lib/overflowsX.js';
 
   interface Props {
     /**
@@ -209,12 +210,12 @@
            874, so everything past the first screenful was unreachable. The panel
            declared `overflow: hidden` and nothing scrolled: the redesign
            promised a scrolling catalog and shipped a truncated one. -->
-      <div class="table-frame">
+      <div class="table-frame" use:overflowsX>
         <table class="catalog">
           <thead>
             <tr>
               <th scope="col">{lang.t.sales_product}</th>
-              <th scope="col">{lang.t.products_unit}</th>
+              <th scope="col" class="unit-col">{lang.t.products_unit}</th>
               <th scope="col" class="num">{lang.t.products_list_price}</th>
               <th scope="col" class="num">{lang.t.products_stock}</th>
             </tr>
@@ -387,12 +388,28 @@
     min-height: 480px;
   }
   .table-frame {
+    position: relative;
     overflow: auto;
     flex: 1 1 auto;
     min-height: 0;
     scrollbar-gutter: stable;
     scrollbar-width: auto;
     scrollbar-color: var(--ink-soft) var(--rule);
+  }
+  /* The sideways cut, made visible without a gesture. Applied by the
+     `overflowsX` action only while the content is actually wider than the box,
+     so a table that fits wears nothing. */
+  /* `:global` because the class is applied by the `overflowsX` action at
+     runtime; the compiler cannot see it in the markup and would drop the rule. */
+  .table-frame:global(.overflows-x)::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 28px;
+    pointer-events: none;
+    background: linear-gradient(to right, transparent, var(--surface) 72%);
   }
   .catalog thead th {
     position: sticky;
@@ -410,6 +427,18 @@
     }
     .panel-catalog {
       max-height: 70vh;
+    }
+  }
+
+  /* At 390px the table scrolled sideways and cut `STOCK` to `S` — the one number
+     this surface exists to report was the one you had to swipe to find. `UNIDAD`
+     is the column that can go: every product here is sold by the unit, the unit
+     is already printed inside the price cell (`$ / unidad`), and it is the same
+     value on every row. Dropping it buys `STOCK` its place in the first view
+     without hiding information the row does not carry twice. */
+  @media (max-width: 620px) {
+    .unit-col {
+      display: none;
     }
   }
   .head {
