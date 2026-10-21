@@ -8,7 +8,8 @@
    * recorded event.
    */
   import { ApiError, createProduct, listProducts, type Product, type Unit } from '#lib/api.js';
-  import { formatMoney, formatQuantity, parseAmount, parseInitialStock } from '#lib/money.js';
+  import { formatMoney, formatQuantity } from '#lib/money.js';
+  import { parseProductForm, type ProductFormIssue } from '#lib/productForm.js';
   import { lang } from '#lib/i18n/index.svelte.js';
   import { overflowsX } from '#lib/overflowsX.js';
 
@@ -79,30 +80,35 @@
     offset = 0;
   }
 
-  const priceAmount = $derived(parseAmount(priceText));
-  // `parseInitialStock`, not `parseQuantity`: an empty field and a typed `0` both
-  // mean the shelf is empty, which is the ordinary state of a product nobody has
-  // bought yet. The sale parser refuses `0` on purpose (a movement of zero units
-  // is not a movement) and reusing it here marked the field invalid, disabled the
-  // create button, and blamed the name and the price for it.
-  const stockValue = $derived(parseInitialStock(stockText));
-  const priceBad = $derived(priceText.trim() !== '' && priceAmount === null);
-  const stockBad = $derived(stockText.trim() !== '' && stockValue === null);
-  const canCreate = $derived(name.trim() !== '' && priceAmount !== null && !stockBad && !creating);
+  const formResult = $derived(
+    parseProductForm({
+      nameText: name,
+      priceText,
+      stockText
+    })
+  );
+  const nameIssue = $derived(formResult.issues.find((issue) => issue.field === 'name'));
+  const priceIssue = $derived(formResult.issues.find((issue) => issue.field === 'price'));
+  const stockIssue = $derived(formResult.issues.find((issue) => issue.field === 'stock'));
+  const priceBad = $derived(priceIssue?.kind === 'invalid');
+  const stockBad = $derived(stockIssue?.kind === 'invalid');
+  const canCreate = $derived(formResult.parsed !== null && !creating);
 
-  // Which field is wrong, named. One sentence for both fields used to read
-  // "fill in the name and the price" while the price was filled and the stock was
-  // not, so the reader was told to fix what was already right.
-  const invalidField = $derived(
-    priceBad ? lang.t.products_invalid_price : stockBad ? lang.t.products_invalid_stock : null
-  );
-  const missingField = $derived(
-    name.trim() === ''
-      ? lang.t.products_missing_name
-      : priceAmount === null
-        ? lang.t.products_missing_price
-        : null
-  );
+  /**
+   * The sentence for one issue. Every message names its own field, which is what
+   * a single shared "a number is invalid" sentence could not do.
+   *
+   * Exhaustive over `ProductFormIssue`, which is a union of two disjoint shapes:
+   * `missing` only reaches name/price and `invalid` only reaches price/stock. The
+   * type enforces that, so each branch below covers its whole variant and no
+   * issue can fall through to a message about a field it was not asked about.
+   */
+  function issueMessage(issue: ProductFormIssue) {
+    if (issue.kind === 'missing') {
+      return issue.field === 'name' ? lang.t.products_missing_name : lang.t.products_missing_price;
+    }
+    return issue.field === 'price' ? lang.t.products_invalid_price : lang.t.products_invalid_stock;
+  }
 
   /** The price label declares the unit, so the number can never be misread. */
   function priceLabel(unit: Unit) {
@@ -110,16 +116,26 @@
   }
 
   async function create() {
+    // `canCreate`, not `formResult.parsed !== null`. `canCreate` carries
+    // `&& !creating`, and that half is the guard against a second submission
+    // landing while the first is still in flight. Dropping it looked equivalent
+    // because the button also disables itself — but the button is only one
+    // caller of this handler, and the form's own submit event is another. The
+    // other draft screens guard the same way (`SaleDraft` opens with
+    // `if (!canRecord) return`, and `canRecord` takes `submitting` for exactly
+    // this reason); this one had lost the symmetry.
     if (!canCreate) return;
+    const parsed = formResult.parsed;
+    if (parsed === null) return;
     creating = true;
     error = null;
     created = null;
     try {
       const product = await createProduct({
-        name: name.trim(),
-        list_price: priceAmount as string,
+        name: parsed.name,
+        list_price: parsed.listPrice,
         unit: 'unit',
-        initial_stock: stockValue ?? 0
+        initial_stock: parsed.initialStock
       });
       created = product.name;
       name = '';
@@ -316,6 +332,8 @@
           bind:value={name}
           placeholder={lang.t.products_name_placeholder}
           autocomplete="off"
+          aria-invalid={nameIssue ? 'true' : undefined}
+          aria-describedby={nameIssue ? 'new-name-message' : undefined}
         />
       </div>
       <div class="field">
@@ -334,6 +352,8 @@
           class:bad={priceBad}
           inputmode="decimal"
           placeholder={lang.fmt.amountHint()}
+          aria-invalid={priceIssue ? 'true' : undefined}
+          aria-describedby={priceIssue ? 'new-price-message' : undefined}
         />
       </div>
       <div class="field">
@@ -345,6 +365,8 @@
           class:bad={stockBad}
           inputmode="numeric"
           placeholder="0"
+          aria-invalid={stockIssue ? 'true' : undefined}
+          aria-describedby={stockIssue ? 'new-stock-message' : undefined}
         />
       </div>
     </form>
@@ -358,20 +380,26 @@
         {error}
       </p>
     {/if}
-    {#if invalidField}
-      <p class="warn">{invalidField}</p>
-    {/if}
+    {#each formResult.issues as issue (`${issue.field}-${issue.kind}`)}
+      <p class="warn" id={`new-${issue.field}-message`} data-issue-kind={issue.kind}>
+        {issueMessage(issue)}
+      </p>
+    {/each}
 
     <!-- The page's single action, at the foot of the form it closes and always on
        screen. It used to sit inline in the form's grid, which put it after the
        fields on a wide page and below a paginated table on a narrow one — an
-       action you have to scroll to find is one the shop will not use. The
-       disabled state carries a hint for the same reason it does on /sales: a
-       greyed control with no explanation is a control nobody learns exists. -->
+       action you have to scroll to find is one the shop will not use.
+
+       The hint that used to sit here said "fill in the name and the price" and
+       is gone. It repeated one of the messages above it, chosen by the same
+       nested ternary this branch removed: with three issues on screen it still
+       named one, and with the price filled and the stock wrong it named the
+       price. The messages above already carry every reason the button is
+       disabled, each beside the field it belongs to, so a second summary is
+       duplication that can only disagree with them. /sales and /purchases keep
+       their single hint because their drafts report one state, not a list. -->
     <div class="action-foot">
-      {#if !canCreate && !creating && missingField}
-        <span class="why">{missingField}</span>
-      {/if}
       <button
         type="submit"
         class="do"
@@ -818,13 +846,6 @@ lista") removes a scroll that revealed
     padding: 16px 18px 18px;
     border-top: 1px solid var(--rule);
     background: var(--surface);
-  }
-  .action-foot .why {
-    display: block;
-    margin: 0 0 8px;
-    font-size: var(--step--1);
-    color: var(--ink-soft);
-    text-align: center;
   }
   .do {
     width: 100%;
