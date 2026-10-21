@@ -154,10 +154,21 @@ export interface Dict {
   purchases_title: string;
   purchases_tagline: string;
   purchases_action: string;
+  purchases_document: string;
+  purchases_supplier: string;
+  purchases_confirmed_state: string;
+  purchases_returned_state: string;
+  purchases_lines_of: string;
+  purchases_footing_gross: string;
+  purchases_footing_gross_note: string;
+  purchases_footing_returned: string;
+  purchases_footing_returned_note: string;
+  purchases_footing_net: string;
+  purchases_footing_net_note: string;
+  purchases_action_hint: string;
   purchases_draft_title: string;
   purchases_ledger_title: string;
   purchases_ledger_sub: string;
-  purchases_supplier: string;
   /** The seeded supplier that a purchase falls back to. Stored as `one-off-supplier`. */
   purchases_one_off_supplier: string;
   purchases_new_supplier: string;
