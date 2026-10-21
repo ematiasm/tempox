@@ -2,10 +2,17 @@
   import { lang } from '#lib/i18n/index.svelte.js';
   import Catalog from '#lib/components/Catalog.svelte';
 
-  // How many products the search matched, reported by the catalog once its read
-  // lands. On the other two surfaces this figure is a period; here it is the
-  // size of a register, which is why it says "productos" and not "comprobantes".
-  let productCount = $state<number | null>(null);
+  // What the catalog is showing, reported by the catalog once its read lands.
+  //
+  // NOT a total. `GET /api/products` returns a plain array with no count, and the
+  // catalog pages 50 at a time, so the only figure available here is the page's
+  // own size. The first version of this header printed that page size as "50
+  // PRODUCTOS" above a shop that sells hundreds — the same defect this branch
+  // fixed twice on the money side, where a footer derived from the loaded rows
+  // called itself the period. Instead of shipping it a third time, the header
+  // reports what it actually knows: how many rows are listed, and whether more
+  // exist. A true total needs a `COUNT(*)` from the API.
+  let shown = $state<{ count: number; more: boolean } | null>(null);
 
   /**
    * F2 puts the caret in the create form's first field, and the page's action
@@ -34,17 +41,23 @@
       <h1>{lang.t.products_title}</h1>
       <span class="tagline">{lang.t.products_tagline}</span>
     </div>
-    {#if productCount !== null}
+    <!-- The figure is honest about its scope: `+` when the read hit the page
+         size, so nobody reads 50 as "the shop sells 50 products". -->
+    {#if shown !== null}
       <div class="count">
-        <span class="count-n">{productCount}</span>
+        <span class="count-n">{shown.more ? `${shown.count}+` : shown.count}</span>
         <span class="count-l">
-          {productCount === 1 ? lang.t.products_product_one : lang.t.products_products}
+          {#if shown.more}
+            {lang.t.products_products_shown}
+          {:else}
+            {shown.count === 1 ? lang.t.products_product_one : lang.t.products_products}
+          {/if}
         </span>
       </div>
     {/if}
   </header>
 
-  <Catalog oncount={(c) => (productCount = c)} />
+  <Catalog onshown={(s) => (shown = s)} />
 </div>
 
 <style>

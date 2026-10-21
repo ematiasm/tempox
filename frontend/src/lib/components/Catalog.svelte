@@ -12,11 +12,23 @@
   import { lang } from '#lib/i18n/index.svelte.js';
 
   interface Props {
-    /** Reports how many products the current search matched, to the page header. */
-    oncount?: (count: number | null) => void;
+    /**
+     * Reports what this page is currently showing: the rows on screen and
+     * whether more exist beyond them.
+     *
+     * It deliberately does NOT report a total. `GET /api/products` returns a
+     * plain array with no count, so the only number this component can compute
+     * is `rows.length` — capped at `PAGE`. Calling that "the products the shop
+     * sells" would print 50 for a 500-product catalog, which is the same defect
+     * this branch already fixed twice on the money side: a total derived from
+     * the loaded page and presented as the whole. Rather than ship a third one,
+     * the header says what is true: how many are listed, and whether to page.
+     * A real total needs a `COUNT(*)` from the API and is not this slice.
+     */
+    onshown?: (shown: { count: number; more: boolean } | null) => void;
   }
 
-  let { oncount }: Props = $props();
+  let { onshown }: Props = $props();
 
   const PAGE = 50;
 
@@ -113,11 +125,13 @@
   // reporting that as 0 puts "0 PRODUCTOS" on a page whose catalog could not be
   // fetched — the screen would be stating a fact about the shop that it derived
   // from its own error.
-  const registerSize = $derived(
-    pageError ? null : loading && rows.length === 0 ? null : rows.length
+  const shown = $derived(
+    pageError || (loading && rows.length === 0)
+      ? null
+      : { count: rows.length, more: rows.length >= PAGE }
   );
   $effect(() => {
-    oncount?.(registerSize);
+    onshown?.(shown);
   });
 </script>
 

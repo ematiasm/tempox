@@ -128,6 +128,7 @@ export interface Dict {
   products_new_sub: string;
   products_name: string;
   products_name_placeholder: string;
+  products_products_shown: string;
   products_action_hint: string;
   products_initial_stock: string;
   products_create: string;
