@@ -326,21 +326,35 @@
   {/if}
 
   <footer class="sheet-foot">
-    <span class="hint">{lang.t.purchases_draft_hint}</span>
     {#if lines.length > 0}
       <button type="button" class="ghost" onclick={clear}>{lang.t.sales_clear}</button>
     {/if}
     <span class="total-label">{lang.t.purchases_live_total}</span>
     <span class="total figure">{total === null ? '—' : formatMoney(total)}</span>
+    {#if !ready}
+      <span class="state-hint">{lang.t.purchases_action_hint}</span>
+    {/if}
+    <span class="hint">{lang.t.purchases_draft_hint}</span>
   </footer>
 </section>
 
 <style>
   .sheet {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
     background: var(--surface);
     border: 1px solid var(--rule);
     border-radius: var(--radius);
     padding: 18px 20px 0;
+  }
+  .sheet + :global(.action-foot) {
+    padding-top: 0;
+  }
+  .sheet + :global(.action-foot .why) {
+    display: none;
   }
   .sheet-head {
     display: flex;
@@ -362,12 +376,25 @@
     align-items: center;
     gap: 10px;
     margin-top: 12px;
+    /* Three items share this row: the label, the select and the "Proveedor nuevo"
+       button. At 390px they add up wider than the panel, and the button was
+       overflowing it to x=397 against a container ending at 342 — a control
+       clipped by its own frame, which no caption explains. The row wraps instead. */
+    flex-wrap: wrap;
+    min-width: 0;
   }
   .supplier-row label {
     font-size: var(--step--1);
     text-transform: uppercase;
     letter-spacing: 0.1em;
     color: var(--ink-soft);
+  }
+  .supplier-row select {
+    min-width: 0;
+    max-width: 100%;
+  }
+  .supplier-row button.ghost {
+    flex-shrink: 0;
   }
   .supplier-row select,
   .supplier-new input {
@@ -459,15 +486,21 @@
   }
   .sheet-foot {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 14px;
-    padding: 14px 0 16px;
-    margin-top: 10px;
+    gap: 8px 14px;
+    padding: 14px 0 8px;
+    margin-top: auto;
     border-top: 1px solid var(--rule-strong);
   }
-  .hint {
+  .hint,
+  .state-hint {
+    flex-basis: 100%;
     font-size: var(--step--1);
     color: var(--ink-soft);
+  }
+  .hint {
+    padding-bottom: 10px;
   }
   .total-label {
     margin-left: auto;

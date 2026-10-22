@@ -226,7 +226,10 @@
   <div class="entry">
     <div class="field">
       <span class="label" id="picker-label">{lang.t.sales_product}</span>
-      <ProductPicker onpick={addProduct} />
+      <div class="picker-wrap">
+        <ProductPicker onpick={addProduct} />
+        <kbd class="picker-key" aria-hidden="true">F2</kbd>
+      </div>
     </div>
     <div class="field">
       <label class="label" for="customer">{lang.t.sales_customer}</label>
@@ -320,7 +323,16 @@
                   onclick={() => removeLine(i)}
                   aria-label="{lang.t.sales_remove} — {line.product.name}"
                 >
-                  ×
+                  <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
+                    <path
+                      d="M4.5 2.5 8 6l-3.5 3.5"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.8"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                  </svg>
                 </button>
               </td>
             </tr>
@@ -352,23 +364,22 @@
     <div class="total figures">{total === null ? '—' : formatMoney(total)}</div>
   </div>
 
-  <div class="actions">
-    {#if lines.length}
-      <button type="button" class="ghost" onclick={() => (lines = [])} disabled={submitting}>
-        {lang.t.sales_clear}
-      </button>
-    {/if}
-    {#if hasInvalid}
-      <span class="warn">{lang.t.sales_invalid}</span>
-    {/if}
-  </div>
+  {#if lines.length || hasInvalid}
+    <div class="actions">
+      {#if lines.length}
+        <button type="button" class="ghost" onclick={() => (lines = [])} disabled={submitting}>
+          {lang.t.sales_clear}
+        </button>
+      {/if}
+      {#if hasInvalid}
+        <span class="warn">{lang.t.sales_invalid}</span>
+      {/if}
+    </div>
+  {/if}
 </section>
 
 <style>
   .sheet {
-    background: var(--surface);
-    border: 1px solid var(--rule);
-    border-radius: 4px;
     /* The draft fills the panel it sits in, so its own foot lands on the shared
        bottom edge rather than leaving a gap under it. */
     display: flex;
@@ -426,6 +437,27 @@
     display: grid;
     gap: 6px;
     min-width: 0;
+  }
+  .picker-wrap {
+    position: relative;
+  }
+  .picker-wrap :global(#product-search) {
+    padding-right: 48px;
+  }
+  .picker-key {
+    position: absolute;
+    top: 50%;
+    right: 10px;
+    transform: translateY(-50%);
+    font-family: var(--font-text);
+    font-size: var(--step--1);
+    font-weight: 600;
+    line-height: 1;
+    color: var(--ink-soft);
+    border: 1px solid currentColor;
+    border-radius: 2px;
+    padding: 2px 5px;
+    pointer-events: none;
   }
 
   .customer-actions {
@@ -547,14 +579,18 @@
   }
 
   .remove {
+    display: inline-grid;
+    place-items: center;
     background: none;
     border: 0;
     color: var(--ink-soft);
-    font-size: var(--step-3);
-    line-height: 1;
-    padding: 2px 6px;
+    padding: 5px 6px;
     cursor: pointer;
     border-radius: 2px;
+  }
+  .remove svg {
+    width: 12px;
+    height: 12px;
   }
   .remove:hover {
     color: var(--state-void);
@@ -577,6 +613,7 @@
 
   .foot {
     display: flex;
+    margin-top: auto;
     align-items: center;
     justify-content: space-between;
     gap: 16px;

@@ -185,25 +185,32 @@
     .rail {
       flex-direction: row;
       align-items: center;
-      padding: 0 14px;
+      padding: 0 8px;
       align-self: start;
       border-right: 0;
       border-bottom: 1px solid var(--rule);
+      flex-wrap: nowrap;
     }
     .brand {
-      padding: 14px 16px 14px 0;
+      padding: 14px 8px 14px 0;
       border-right: 1px solid var(--rule);
+      flex-shrink: 0;
     }
     .tabs {
       display: flex;
       flex-direction: row;
       margin: 0 0 0 10px;
-      gap: 4px;
+      gap: 1px;
+      /* A destination name is functional text: it keeps its full width and the
+       * row yields around it, never the other way round. */
+      min-width: 0;
+      flex-shrink: 0;
     }
     .tab {
-      padding: 8px 10px;
+      padding: 8px 6px;
       border-left: 0;
       border-bottom: 2px solid transparent;
+      white-space: nowrap;
     }
     .tab.is-active {
       border-left-color: transparent;
@@ -224,7 +231,7 @@
     }
     .lang {
       width: auto;
-      padding: 5px 9px;
+      padding: 8px 9px;
     }
     .version {
       display: none;

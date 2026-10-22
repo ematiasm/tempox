@@ -59,8 +59,6 @@ const en: Dict = {
   sales_scope_now: 'Now',
   sales_older: 'Older',
   sales_newer: 'Newer',
-  sales_legend_confirmed: 'Confirmed — the stamp',
-  sales_legend_annulled: 'Annulled — struck through',
   sales_loading: 'Loading…',
   sales_document_one: 'document',
   sales_documents: 'documents',
@@ -178,7 +176,7 @@ const en: Dict = {
   purchases_invalid: 'A field does not hold a valid number — fix it before recording.',
   purchases_legend: 'Purchase recorded — stock came in and money went out',
   purchases_no_purchases_today:
-    'No purchases today yet — the first one appears here with its stamp.',
+    'No purchases today yet — the first one appears here as soon as you record it.',
   purchases_no_purchases_day: 'No purchases that day.',
   purchases_document_one: 'document',
   purchases_documents: 'documents',

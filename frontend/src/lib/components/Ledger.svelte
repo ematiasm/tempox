@@ -567,9 +567,13 @@
     </div>
   </div>
 
+  <!-- The document count stays here; the state legend that used to open this row
+       is gone. It named "el sello" for a confirmed document, which described the
+       retired Stamped Ledger, and it painted state as two filled 10px squares
+       while DESIGN.md's State Is Readable Rule requires legible text beside a 2px
+       tick. Every row already prints its state, so the legend explained a reading
+       the reader had already made. -->
   <div class="legend">
-    <span class="item"><i class="swatch c"></i>{lang.t.sales_legend_confirmed}</span>
-    <span class="item"><i class="swatch a"></i>{lang.t.sales_legend_annulled}</span>
     <span class="right">
       {#if loading}
         {lang.t.sales_loading}
@@ -1063,28 +1067,6 @@
     background: var(--surface);
     font-size: var(--step-0);
     color: var(--ink-soft);
-  }
-  .legend .item {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-  }
-  .legend .swatch {
-    width: 10px;
-    height: 10px;
-    border-radius: 1px;
-  }
-  /* `.c` is "Confirmada — el sello" and `.a` is "Anulada — tachada". They were
-     crimson and ink in the previous world; here the meaning is inverted, because
-     a confirmed document is the quiet standing state and the correction is the
-     one that wears the void tone. Under the alias bridge this legend painted
-     "confirmed" in the alarm colour and "annulled" in plain ink — a legend that
-     said the opposite of the rows it explains. */
-  .legend .c {
-    background: var(--ink);
-  }
-  .legend .a {
-    background: var(--state-void);
   }
   .legend .right {
     margin-left: auto;
@@ -1621,6 +1603,10 @@
     font-size: var(--step-4);
     font-weight: 700;
     line-height: 1.1;
+    /* Money is a single figure. At 390px the larger type after the root-font fix
+     * pushed "$ 1.500,00" onto two lines with the sign stranded alone, which is
+     * the defect the purchases footings had already been cleared of. */
+    white-space: nowrap;
   }
   .note {
     color: var(--ink-soft);
@@ -1648,6 +1634,32 @@
     }
     .fig {
       padding-bottom: 14px;
+    }
+  }
+
+  @media (max-width: 620px) {
+    /* Three footings of this copy cannot share one row at 390px: the longest
+     * value is `$ 1.500,00` at 127px and the grid was giving each column 102px,
+     * so the figures overlapped each other and the notes ran straight through
+     * the column rules. Equal `top` values were reachable only by making the
+     * columns narrower than their content, which is not alignment. The block
+     * stacks in one column instead, the way /purchases already does, and each
+     * footing closes on its own rule. */
+    .footings {
+      grid-template-columns: minmax(0, 1fr);
+      row-gap: 0;
+      padding-right: 18px;
+      padding-left: 20px;
+    }
+    .fig,
+    .fig:first-child {
+      padding: 12px 0;
+      border-left: 0;
+      border-top: 1px solid var(--rule);
+    }
+    .fig:first-child {
+      border-top: 0;
+      padding-top: 0;
     }
   }
 </style>

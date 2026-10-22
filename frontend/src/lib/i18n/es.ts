@@ -68,8 +68,6 @@ const es: Dict = {
   sales_scope_now: 'Ahora',
   sales_older: 'Anterior',
   sales_newer: 'Siguiente',
-  sales_legend_confirmed: 'Confirmada — el sello',
-  sales_legend_annulled: 'Anulada — tachada',
   sales_loading: 'Cargando…',
   sales_document_one: 'comprobante',
   sales_documents: 'comprobantes',
@@ -190,7 +188,8 @@ const es: Dict = {
   purchases_error_title: 'No se registró: ',
   purchases_invalid: 'Un campo no tiene un número válido — corregilo antes de registrar.',
   purchases_legend: 'Compra registrada — el stock entró y la plata salió',
-  purchases_no_purchases_today: 'Todavía no hay compras hoy — la primera aparece acá con su sello.',
+  purchases_no_purchases_today:
+    'Todavía no hay compras hoy — la primera aparece acá apenas la registres.',
   purchases_no_purchases_day: 'No hay compras ese día.',
   purchases_document_one: 'comprobante',
   purchases_documents: 'comprobantes',

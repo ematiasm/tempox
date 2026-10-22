@@ -520,6 +520,18 @@
      value on every row. Dropping it buys `STOCK` its place in the first view
      without hiding information the row does not carry twice. */
   @media (max-width: 620px) {
+    .head .controls {
+      width: 100%;
+      flex-wrap: wrap;
+      align-items: stretch;
+    }
+    .head .search {
+      width: 100%;
+      min-width: 0;
+    }
+    .head .pager {
+      flex-wrap: wrap;
+    }
     .unit-col {
       display: none;
     }
@@ -532,6 +544,12 @@ lista") removes a scroll that revealed
        nothing, which is worse than no scroll: it teaches a swipe that gains the
        reader nothing. */
     .catalog th {
+      white-space: normal;
+    }
+    /* The price cell holds a figure and its unit label. Letting the pair wrap
+       together keeps the row readable without dropping the unit, which stays
+       inside the cell as the note at :518 requires. */
+    .catalog td.num {
       white-space: normal;
     }
   }
@@ -601,7 +619,7 @@ lista") removes a scroll that revealed
   .catalog td {
     padding: 11px 12px;
     border-bottom: 1px solid var(--rule);
-    vertical-align: middle;
+    vertical-align: top;
   }
   .catalog th:first-child,
   .catalog td:first-child {
@@ -632,16 +650,23 @@ lista") removes a scroll that revealed
   .faces {
     font-size: var(--step-2);
     font-weight: 600;
+    white-space: nowrap;
   }
   .per {
     color: var(--ink-soft);
     font-family: var(--font-figure);
     font-size: var(--step-0);
     margin-left: 4px;
+    /* The price and its unit are one reading. When the figure fit only by
+     * pushing `$ / unidad` onto its own line the row stopped being a set of
+     * baseline-aligned tabular figures, which is the whole premise of the
+     * Tabular Figures Rule; it now breaks before the unit instead. */
+    white-space: nowrap;
   }
   .stock {
     font-size: var(--step-3);
     font-weight: 700;
+    white-space: nowrap;
   }
   /* Stock is a state, so it uses the state colours and never the accent: the
      accent belongs to the balance on /sales and to the active destination, and a

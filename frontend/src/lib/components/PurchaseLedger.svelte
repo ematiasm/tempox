@@ -808,10 +808,11 @@
   }
   .footings {
     display: grid;
-    grid-template-columns: 1fr 1fr 1.2fr;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    flex-shrink: 0;
+    margin-top: auto;
     gap: 0 20px;
     border-top: 1px solid var(--rule-strong);
-    margin-top: 18px;
     padding: 14px 18px 0 0;
   }
   .fig {
@@ -838,6 +839,7 @@
     font-size: var(--step-4);
     font-weight: 700;
     line-height: 1.1;
+    white-space: nowrap;
   }
   .footings .note {
     font-size: var(--step--1);
@@ -1004,5 +1006,18 @@
     flex-basis: 100%;
     color: var(--ink-soft);
     font-size: var(--step-0);
+  }
+
+  @media (max-width: 620px) {
+    .footings {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 12px;
+      padding-right: 0;
+    }
+    .fig,
+    .fig:first-child {
+      padding-left: 12px;
+      border-left: 1px solid var(--rule);
+    }
   }
 </style>
