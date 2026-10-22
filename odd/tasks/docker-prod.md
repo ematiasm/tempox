@@ -214,3 +214,36 @@ remaining mentions are prose that explains the retirement. `vite.config.ts` no
 longer reads `loadEnv` or defines anything; `make test-e2e` no longer exports an
 API origin. Full suite after the change: 223 unit, 50 backend unit, 58 backend
 integration, 21 e2e, lint clean.
+
+L25 (review, correction cycle, complete): the native review ran at tier **high**
+(the `ci.yml` shell counted as a risk signal), lenses risk and reliability, and
+**found a real regression the suite could not see**:
+
+- **R3-001 (CRITICAL, refuted as `deterministic` / `introduced`)** — retiring
+  `PUBLIC_API_BASE` also retired the development default that made a bare
+  `npm run dev` work. Measured: `GET /api/products` answered **500** with no
+  `BACKEND_URL` set. Fixed in `d7dbbf6` with a fallback to `localhost:3001` that
+  applies **only outside production**, so a misconfigured deploy still fails
+  loudly. Three tests pin the three branches.
+- The validator approved the correction, and the authority was burned.
+
+L26 (false hypothesis, recorded because it cost a detour): after applying the
+fallback the same check still answered 500, which looked like the fix had not
+worked. It was the backend container being stopped — the log said
+`ECONNREFUSED`, not the missing-variable error. **Read the log before re-running
+the test**; the two failures have different causes and one of them is not a
+defect.
+
+L27 (delivery decision, slice size): `58c1e2d` carries **608 authored lines**, over
+the ~400 budget, and takes `size:exception`. T1, T2 and T3 are one indivisible
+behaviour — a client pointing at its own origin with no proxy in front of it is a
+broken intermediate state, which was observed between them. The document left that
+commit into `e56bb9b` rather than the code being cut, and the R3-001 correction is
+its own commit (`d7dbbf6`) so the review could validate it.
+
+L28 (advisory findings, unfixed, from the validator that approved the correction):
+five non-blocking notes, all in `apiProxy.ts` — the error message points at a file
+that does not exist yet (`.env.prod.example` is T5), the proxy forwards the
+backend's `content-type` but drops its other headers, it follows redirects by
+default, it forwards unsanitized request headers, and one reliability note about
+the development fallback's scope. None opened a correction; they are follow-ups.
