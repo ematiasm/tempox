@@ -16,22 +16,44 @@
  */
 
 /**
- * The backend URL for the configured origin, or a refusal.
+ * The development backend, used only when `BACKEND_URL` is absent in dev.
+ *
+ * This exists because removing `PUBLIC_API_BASE` removed the default that made a
+ * bare `npm run dev` work. Measured before this fallback: with no `BACKEND_URL`,
+ * `GET /api/products` answered **500** — a `vite dev` session that used to work
+ * needed hand-set environment, which is a regression no test covers because the
+ * e2e suite always supplies the variable.
+ *
+ * It is `localhost:3001` because that is where `cargo run` listens, and this is
+ * exactly the case the retirement was allowed to simplify: the browser never sees
+ * this value, so it cannot reproduce the original LAN defect.
+ */
+const DEVELOPMENT_BACKEND = 'http://localhost:3001';
+
+/**
+ * The backend URL for the configured origin.
  *
  * Read per request, not at module load: `BACKEND_URL` is deployment
- * configuration, and a container restarted with a different value must pick it
- * up without a rebuild. It is also why a missing value fails here loudly rather
- * than silently calling `undefined/api/products`.
+ * configuration, and a container restarted with a different value must pick it up
+ * without a rebuild.
+ *
+ * The default applies **only outside production**. A production process that
+ * forgot the variable must fail loudly rather than silently proxying to
+ * `localhost` — that is the one mistake this fallback must not hide. `NODE_ENV`
+ * is the signal the node adapter already sets, so no new variable is introduced.
  */
 export function backendUrl(): string {
   const configured = process.env.BACKEND_URL?.trim();
-  if (!configured) {
+  if (configured) return configured;
+
+  if (process.env.NODE_ENV === 'production') {
     throw new Error(
       'BACKEND_URL is not set. The proxy cannot reach the backend without it. ' +
         'Set it in the container environment (see .env.prod.example).'
     );
   }
-  return configured;
+
+  return DEVELOPMENT_BACKEND;
 }
 
 /**

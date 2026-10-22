@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { forward, proxyTarget } from '#lib/apiProxy.js';
+import { backendUrl, forward, proxyTarget } from '#lib/apiProxy.js';
 
 /**
  * The proxy route: the one place the browser's `/api/*` becomes the backend's
@@ -55,6 +55,38 @@ describe('proxyTarget (S8)', () => {
       'http://backend:3001'
     );
     expect(target).toBe('http://backend:3001/api/purchases/abc/supplier-returns?x=1&y=2');
+  });
+});
+
+describe('backendUrl needs no hand-set environment in development (R3-001)', () => {
+  it('falls back to the local backend when BACKEND_URL is absent outside production', async () => {
+    // The regression a review found: retiring `PUBLIC_API_BASE` also retired the
+    // default that made a bare `npm run dev` work, so every proxied call failed
+    // with a missing-variable error. Measured: `GET /api/products` answered 500.
+    vi.unstubAllEnvs();
+    vi.stubEnv('NODE_ENV', 'development');
+    const fetchMock = vi.fn(async () => new Response('[]', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await forward(request('http://app:5173/api/products'));
+
+    expect(calledTarget(fetchMock)).toBe('http://localhost:3001/api/products');
+  });
+
+  it('still refuses in production, so a misconfigured deploy cannot hide', async () => {
+    // The fallback must not reach a server: proxying to `localhost` there would
+    // turn a missing variable into a 502 nobody can trace back to configuration.
+    vi.unstubAllEnvs();
+    vi.stubEnv('NODE_ENV', 'production');
+
+    expect(() => backendUrl()).toThrow(/BACKEND_URL is not set/);
+  });
+
+  it('prefers an explicit BACKEND_URL over the default', () => {
+    vi.unstubAllEnvs();
+    vi.stubEnv('NODE_ENV', 'development');
+    vi.stubEnv('BACKEND_URL', 'http://elsewhere:9000');
+    expect(backendUrl()).toBe('http://elsewhere:9000');
   });
 });
 
