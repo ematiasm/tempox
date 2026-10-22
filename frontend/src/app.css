@@ -115,14 +115,27 @@
   --rail-w: 88px;
 }
 
+html {
+  /* The rem ramp below is declared against a 16px root on purpose. This element
+   * must never take a step token: a rem on the root resolves against the
+   * initial 16px, so `font-size: var(--step-1)` here pinned the root at 14px and
+   * every declared size downstream rendered 12.5% short (--step--1 was 10.5px
+   * instead of 12px, body prose 12.25px instead of 14px). The body's own size
+   * belongs on the body, below. */
+  font-size: 100%;
+}
+
 html,
 body {
   background: var(--ground);
   color: var(--ink);
   font-family: var(--font-text);
-  font-size: var(--step-1);
   line-height: 1.45;
   -webkit-font-smoothing: antialiased;
+}
+
+body {
+  font-size: var(--step-1);
 }
 
 /* Browser surfaces are part of the design and ship with defaults belonging to

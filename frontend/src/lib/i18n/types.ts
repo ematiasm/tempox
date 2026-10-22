@@ -65,8 +65,6 @@ export interface Dict {
   sales_scope_now: string;
   sales_older: string;
   sales_newer: string;
-  sales_legend_confirmed: string;
-  sales_legend_annulled: string;
   sales_loading: string;
   sales_document_one: string;
   sales_documents: string;

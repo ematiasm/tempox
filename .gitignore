@@ -89,3 +89,6 @@ Thumbs.db
 .agents/
 .github/agents/
 .github/skills/
+
+# Pi project-local agent definitions (mirrors .github/agents for the Pi runtime)
+/.pi/
