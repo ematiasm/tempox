@@ -37,7 +37,7 @@ CI never builds the backend image, so a green CI says nothing about it.
 
 ## A clean development database is the owner's decision
 
-`docker compose down -v` drops the `pgdata` volume and re-applies migrations on
+`docker compose down -v` drops the `pgdata_dev` volume and re-applies migrations on
 the next boot. It is destructive to development data. Ask; do not run it on your
 own initiative.
 

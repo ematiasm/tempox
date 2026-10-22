@@ -247,3 +247,76 @@ that does not exist yet (`.env.prod.example` is T5), the proxy forwards the
 backend's `content-type` but drops its other headers, it follows redirects by
 default, it forwards unsanitized request headers, and one reliability note about
 the development fallback's scope. None opened a correction; they are follow-ups.
+
+L29 (decision, owner): the existing development volume was **removed** rather than
+migrated (option B). Before removing it, a `tar.gz` of the volume was written to
+`/tmp/tempox-backup/` — outside the repository, so it cannot be committed by
+accident. Measured first: `tempox_pgdata` held 119 MB, and the public schema had
+**0 tables** before this session's work, so it was migrations and the seeded
+`walk-in` customer rather than business data. Both volumes were then removed and
+the stack rebuilt from scratch.
+
+L30 (evidence, T4 verified on a fresh database): `docker compose up -d` brings up
+postgres and adminer only; `cargo run` applied all **14 tables** on boot;
+`GET /api/products` through `vite dev` answered `200 []` with no `BACKEND_URL`
+exported. That is the development flow of S1 end to end, on a volume that did not
+exist an hour earlier.
+
+L31 (defect found while writing T5, and closed): a plain
+`${POSTGRES_PASSWORD:?set it in .env.prod}` is satisfied by the development `.env`,
+which holds `changethis`. Measured: `docker compose -f docker-compose.prod.yml
+config` with no `--env-file` resolved the production password to the development
+one, because `:?` refuses a variable that is **absent**, not one that is present and
+wrong. The production variables are now `PROD_`-prefixed, so the development `.env`
+cannot satisfy them, and the documented command names `--env-file` explicitly.
+
+L32 (evidence, T5 network isolation): `docker compose --env-file … config --format
+json` reports **one** published port in the production file, and it belongs to the
+frontend. Postgres, the backend and adminer publish nothing; adminer is not in the
+file at all.
+
+L33 (evidence, T6): the built server imports only Node builtins (`node:http`,
+`node:fs`, `node:stream`, …) and `build/client` already carries the fonts, so the
+runtime stage copies **no `node_modules` at all**. Image size went from **591 MB to
+351 MB**. Verified on the real image: `/products` 200, `/` 307, `/src/lib/api.ts`
+**404**, and through the proxy against a live backend `GET /api/products` 200. With
+`NODE_ENV=production` and no `BACKEND_URL` it refuses rather than falling back,
+which is what the R3-001 correction was built to preserve.
+
+L34 (evidence, T7): the new CI assertions were exercised locally against a real
+build before being committed — the four absences pass on the new image, and the
+`/app/src` check **fails** against the previous development image, which is the
+state those checks exist to prevent. Run against the current image, the job's three
+curl checks report 200 / 307 / 404.
+
+L35 (T8): `README.md`, `docs/en/getting-started.md`, `docs/en/testing.md` and
+`AGENTS.md` now describe the split. The F1–F6 history table keeps its original
+`PUBLIC_API_BASE` wording, annotated as superseded rather than rewritten, because it
+records what was measured at the time.
+
+L36 (review, T4-T8, approved): the second native review covered the unreviewed
+half at tier **high**, lenses risk and readability, and returned **no blocking
+findings**. Seven advisory ones; four were real documentation defects introduced by
+this branch and are fixed in `406367a`:
+
+- **R2-001** — the README quickstart was headed "Everything in Docker", untrue
+  since the development compose lost its `backend` and `frontend` services.
+- **R2-002** — `docs/en/testing.md` listed a "`backend` container" reading its
+  `DATABASE_URL` from `docker-compose.yml`. That service no longer exists.
+- **R2-003** — two comments in `frontend/.dockerignore` described a container
+  running `vite dev`. It runs `node build/index.js`, and the `build` entry's reason
+  changed with it.
+- **R2-004** — the README topology line listed four services under one file.
+
+Left as follow-ups, with reasons: the proxy forwards request headers unsanitized
+(R1-002/R2-004) — worth doing before the backend is ever exposed directly, which
+the production compose does not do; a narrower development fallback (R1-001), where
+the branch exists because a review found the opposite defect; and a note about the
+runtime base image (R1-003) that states no defect.
+
+L37 (lesson, twice in one branch): both reviews found **documentation** defects,
+not code ones, in the second pass — a table naming a service that had been deleted
+and a comment describing a command that had been replaced. Changing a compose file
+or a Dockerfile invalidates prose in files nobody thinks to open. The README, the
+`.dockerignore` comments and `testing.md`'s consumer table are part of the same
+change as the compose file.

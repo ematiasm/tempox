@@ -1,0 +1,101 @@
+# The deliverable stack.
+#
+# All four pieces in containers, built from real images, with no development tool
+# in the group: no adminer (a login straight to the database belongs on a laptop,
+# not on a server), no published Postgres, and no dev server behind the frontend.
+#
+# It is a separate file from `docker-compose.yml` on purpose. The two stacks
+# differ in almost every value — what runs, what is published, what restarts,
+# which volume holds the data — so a single file would make every command choose
+# an environment, and a forgotten variable would launch the wrong one. Here the
+# command is the selector:
+#
+#   docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
+#
+# Credentials come from `.env.prod` (git-ignored; see `.env.prod.example`). They
+# are read by Compose, never baked into an image.
+#
+# `--env-file` is NOT optional here, and the reason was measured: without it,
+# Compose silently reads the development `.env`, which holds `changethis`. The
+# `${VAR:?}` guards below do not catch that — they only fire when a variable is
+# missing entirely, not when it is present with the development value. So the
+# documented command names the file explicitly, and the required variables are
+# also given a production-shaped name (`PROD_POSTGRES_PASSWORD`) that the
+# development `.env` does not contain.
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      # No defaults here, deliberately. A server that silently inherits the
+      # development password runs with a published credential and no warning.
+      # Compose refuses to start when a required variable is missing.
+      # `PROD_`-prefixed names, so the development `.env` cannot satisfy them by
+      # accident. Measured: plain `${POSTGRES_PASSWORD:?}` resolved to the
+      # development `changethis` because Compose reads `.env` when no `--env-file`
+      # is given, and `:?` only refuses a variable that is absent, not one that is
+      # present and wrong.
+      POSTGRES_USER: ${PROD_POSTGRES_USER:?set PROD_POSTGRES_USER in .env.prod}
+      POSTGRES_PASSWORD: ${PROD_POSTGRES_PASSWORD:?set PROD_POSTGRES_PASSWORD in .env.prod}
+      POSTGRES_DB: ${PROD_POSTGRES_DB:?set PROD_POSTGRES_DB in .env.prod}
+    # No `ports:`. Nothing outside this network has any business reaching the
+    # database directly; the backend does, by service name.
+    volumes:
+      - pgdata_prod:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PROD_POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      # `postgres` is the service name on this network, so the composed URL does
+      # not depend on where the stack runs.
+      DATABASE_URL: postgres://${PROD_POSTGRES_USER}:${PROD_POSTGRES_PASSWORD}@postgres:5432/${PROD_POSTGRES_DB}
+      BACKEND_PORT: 3001
+      RUST_LOG: ${RUST_LOG:-info}
+      # The shop's calendar zone. `/api/day` answers from this, never from the
+      # browser's clock: a rebuilt PC defaults to UTC, and the shop's day must
+      # not move because of it.
+      SHOP_TIMEZONE: ${SHOP_TIMEZONE:-America/Argentina/Buenos_Aires}
+    # No `ports:` either. Only the frontend is published (S2), and it reaches
+    # this over the internal network.
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      # Read at RUNTIME by the app's `/api` proxy, per request. That is what
+      # makes this image deployment-independent: change the value and restart,
+      # with no rebuild.
+      BACKEND_URL: http://backend:3001
+      # adapter-node listens on `PORT`; `:5173` keeps CI and the docs on one port
+      # (S5). Internal either way — what the internet sees is the mapping below.
+      PORT: 5173
+      # Tells the proxy it is in production, so a missing `BACKEND_URL` fails
+      # loudly instead of falling back to a developer's localhost.
+      NODE_ENV: production
+    ports:
+      # The only published port in this file. Change the left side to put it
+      # behind whatever fronts the server (a reverse proxy on 80/443, or a
+      # different host port).
+      - "${FRONTEND_PORT:-5173}:5173"
+    depends_on:
+      - backend
+
+volumes:
+  # `_prod` on purpose: `docker compose -f docker-compose.prod.yml up` on a
+  # developer machine gets its own empty volume instead of writing into the
+  # development ledger, which is append-only and cannot be undone row by row.
+  pgdata_prod:

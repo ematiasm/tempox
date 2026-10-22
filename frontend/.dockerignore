@@ -21,9 +21,10 @@ node_modules
 # stale one from an older SvelteKit would be read instead of being rebuilt.
 .svelte-kit
 
-# The adapter's output. The container runs `vite dev`, which does not read it.
-# Keeping it out also means a future switch to `node build/index.js` cannot
-# silently serve a build produced on someone's laptop.
+# The adapter's output. The image builds its own: the runtime stage copies
+# `build/` from the build stage, so the host's directory must never enter the
+# context — otherwise a build produced on someone's laptop could be the one that
+# ships.
 build
 
 # Vite's own cache, when it exists.
@@ -35,10 +36,11 @@ playwright-report
 blob-report
 
 # The test suite itself. Authored, so the first criterion above would keep it;
-# the second one removes it. Nothing in the container runs a test: the CMD is
-# `vite dev`, and every level runs from the host. Measured on the image before
-# this line existed: `tests/` shipped 168 KB of specs that Vite answers with a
-# 404 (they sit outside `src/` and `static/`) and that no command ever imports.
+# the second one removes it. Nothing in the image runs a test: the CMD is
+# `node build/index.js`, and every level runs from the host. Measured on the
+# `vite dev` image this file used to describe: `tests/` shipped 168 KB of specs
+# that Vite answered with a 404. The two-stage Dockerfile removes them at the
+# root, so this line now mostly keeps them out of the **build** context.
 #
 # `playwright.config.ts` goes with them: it configures a command the container
 # cannot run (there is no browser in the image), and `vite.config.ts` does not

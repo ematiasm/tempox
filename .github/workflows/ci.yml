@@ -180,7 +180,13 @@ jobs:
       # actually usable, so a broken image cannot ride on a green build.
       - name: The image serves the app
         run: |
-          docker run --rm --detach --name tempox-frontend-ci --publish 4173:5173 tempox-frontend:ci
+          # `BACKEND_URL` is a runtime value the proxy reads per request. The job
+          # does not need a live backend to prove the image serves: `/sales` is
+          # server-rendered, and a missing backend only fails the `/api` calls the
+          # browser makes afterwards.
+          docker run --rm --detach --name tempox-frontend-ci --publish 4173:5173 \
+            --env BACKEND_URL=http://backend-not-reachable:3001 \
+            tempox-frontend:ci
           ready=""
           for _ in $(seq 1 60); do
             if curl -sf http://localhost:4173/sales >/dev/null; then ready=1; break; fi
@@ -195,9 +201,33 @@ jobs:
           # `/` redirects to `/sales` through the app's own +page.ts, so this
           # also proves routing survived the build.
           status="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:4173/)"
-          docker stop tempox-frontend-ci || true
           echo "GET / -> $status"
           test "$status" = "307"
+
+          # The image must NOT ship the sources it was built from. Before the
+          # two-stage Dockerfile this served `src/lib/*.ts` with a 200, because
+          # `vite dev` compiled on the fly. A 200 here is the regression.
+          src_status="$(curl -s -o /dev/null -w '%{http_code}' \
+            http://localhost:4173/src/lib/api.ts)"
+          echo "GET /src/lib/api.ts -> $src_status"
+          docker stop tempox-frontend-ci || true
+          if [ "$src_status" != "404" ]; then
+            echo "::error::the image served its own source ($src_status); it is a dev image"
+            exit 1
+          fi
+
+      # S6: the runtime stage carries `build/` and Node, nothing else. Asserted
+      # rather than assumed, because "it serves" and "it ships no toolchain" are
+      # different claims and only the first one is visible from a browser.
+      - name: The image ships no development tree
+        run: |
+          for absent in src tests node_modules playwright.config.ts; do
+            if docker run --rm --entrypoint sh tempox-frontend:ci -c "test -e /app/$absent"; then
+              echo "::error::/app/$absent is present in the runtime image"
+              exit 1
+            fi
+            echo "/app/$absent absent, as intended"
+          done
 
   # The sale flow against a real database and a real API (S14). This is the
   # stamp's regression barrier: the stamp is the one piece of the direction no
