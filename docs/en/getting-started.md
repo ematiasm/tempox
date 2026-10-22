@@ -11,10 +11,15 @@
 git clone https://github.com/ematiasm/tempox.git
 cd tempox
 cp .env.example .env
-docker compose up --build
+docker compose up -d                        # the database and adminer
+cd backend && cargo run                     # API on :3001
+cd frontend && npm install && npm run dev   # UI on :5173
 ```
 
-The first build takes ~3-5 minutes (Rust compile + npm install). Subsequent runs are cached.
+Nothing is built as an image for development: `docker-compose.yml` holds the
+database and adminer only. The first `cargo run` compiles the backend (~3-5
+minutes) and `npm install` fetches the frontend's dependencies; both are cached
+afterwards.
 
 Once up:
 
@@ -24,9 +29,9 @@ Once up:
 
 ## Making changes
 
-- **Backend** (`backend/`): edit sources under `backend/src/`. Run it from the host
-  with `cargo run` for a fast edit cycle, or keep it in the container and rebuild
-  (`docker compose up -d --build backend`). They cannot both hold `:3001`.
+- **Backend** (`backend/`): edit sources under `backend/src/`; `cargo run` picks
+  them up on restart. The deliverable stack (`docker-compose.prod.yml`) is where a
+  built backend image exists, and it is not the edit loop.
 - **Frontend** (`frontend/`): Vite HMR is enabled; changes hot-reload automatically.
 - **DB schema**: add a new migration file `backend/migrations/000X_*.sql`. `sqlx::migrate!` runs it on boot.
 
@@ -80,36 +85,39 @@ so a stale cache cannot merge.
 
 ## Deploying
 
-Tempox is designed for self-hosted deployment: `docker-compose.yml` already builds
-both services, and its `${VAR:-default}` values let the same file serve a laptop
-and a server. Nothing here is a separate production compose file.
+The deliverable stack is `docker-compose.prod.yml`, separate from the development
+one because the two differ in almost every value: it runs the backend and the
+frontend as built images, publishes only the frontend, has no adminer, and keeps
+its data in `pgdata_prod`.
 
-**No deployment has been exercised yet.** The checklist below is what the
-configuration requires, measured from the file rather than from a run, and it is
-stated that way on purpose: an untested deploy guide that reads like a tested one
-is worse than no guide.
+```bash
+cp .env.prod.example .env.prod          # fill in real credentials
+docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
+```
 
-For a production deployment, these have to come from the environment the container
-runs in, not from `.env` (which is development-only and never leaves the laptop):
+**`--env-file .env.prod` is not optional**, and the reason was measured. Without
+it Compose reads the development `.env`, and the `${VAR:?}` guards do not catch it:
+they refuse a variable that is _absent_, not one that is present and wrong. Plain
+`${POSTGRES_PASSWORD:?}` resolved to the development `changethis`. That is why the
+production variables are `PROD_`-prefixed — the development file cannot satisfy
+them.
 
-- `POSTGRES_PASSWORD` — the compose default is `tempox`, deliberately, so a clean
-  clone starts. A server that inherits that default runs with a published password
-  and no warning.
-- `BACKEND_URL` — where the app's `/api` proxy sends requests. It is read at
-  **runtime**, per request, so the image carries no deployment inside it and one
-  image serves any host. Inside compose it is the service name
-  (`http://backend:3001`); from the host it is `http://localhost:3001`. The browser
-  never sees it: it calls its own origin and the server does the forwarding, which
-  is what makes the app work from another machine on the LAN.
-- **CORS**: `backend/src/main.rs` allows any origin. That is right for development
-  and wrong for a public server. Behind the proxy it matters less, since the
-  browser only ever talks to its own origin.
+What the stack assumes:
 
-Of those, `POSTGRES_PASSWORD`, `BACKEND_URL` and the CORS policy fail **silently**
-when left unset: the stack starts and works, and the first symptom is a screen that
-cannot load data. `BACKEND_URL` is the exception at the proxy itself — it throws
-with a message naming the variable rather than calling `undefined/api/products` —
-but nothing refuses to _boot_ without it. What no guard covers is the binary having
-no notion of "which environment am I in": there is no `ENVIRONMENT` variable and no
-deploy to derive one from, so the CORS default cannot become strict by itself.
-Adding that guard is tracked as a follow-up, not built here.
+- **Only the frontend publishes a port.** Put it behind whatever fronts the server
+  and set `FRONTEND_PORT`.
+- **`BACKEND_URL` is set in the compose file**, to `http://backend:3001`, because
+  it names a service on the Compose network. The browser never sees it: it calls
+  its own origin and the server forwards, which is what makes the app work from
+  another machine on the LAN.
+- **CORS**: `backend/src/main.rs` allows any origin. Behind the proxy it matters
+  less, since the browser only ever talks to its own origin, but it is still the
+  thing to tighten before exposing the backend directly.
+- **`NODE_ENV=production` in the frontend service is load-bearing**: with
+  `BACKEND_URL` missing, the proxy throws instead of falling back to a developer's
+  localhost.
+
+**No deployment has been exercised end to end yet.** What has been verified: the
+image builds, serves the app, refuses to expose its own source, ships no
+development tree, and proxies to a live backend — measured locally, not on a
+server.

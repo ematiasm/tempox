@@ -9,12 +9,12 @@ That is why it failed twice. It lives in a file now.
 
 ## The three levels
 
-| Level | Count | What it needs running | What it **cannot** see |
-| --- | --- | --- | --- |
-| Unit (backend) | 39 | nothing | the database, the router, a real order of operations |
-| Unit (frontend) | 139 cases in 9 files | nothing | the API, the DOM as the browser builds it |
-| Integration | 47 | a postgres container | whether the screen renders |
-| End to end | 16 cases in 4 specs | postgres, chromium | why a row is missing |
+| Level           | Count                | What it needs running | What it **cannot** see                               |
+| --------------- | -------------------- | --------------------- | ---------------------------------------------------- |
+| Unit (backend)  | 39                   | nothing               | the database, the router, a real order of operations |
+| Unit (frontend) | 139 cases in 9 files | nothing               | the API, the DOM as the browser builds it            |
+| Integration     | 47                   | a postgres container  | whether the screen renders                           |
+| End to end      | 16 cases in 4 specs  | postgres, chromium    | why a row is missing                                 |
 
 ```bash
 make test-unit        # backend + frontend, nothing running
@@ -53,14 +53,19 @@ others structurally cannot.
 
 ## Two databases, one stack
 
-| Database | Who writes it | Who reads it |
-| --- | --- | --- |
-| `tempox` | you, through the app | the app, adminer |
-| `tempox_test` | `make test-backend`, `make test-e2e` | nobody |
+| Database      | Who writes it                        | Who reads it     |
+| ------------- | ------------------------------------ | ---------------- |
+| `tempox`      | you, through the app                 | the app, adminer |
+| `tempox_test` | `make test-backend`, `make test-e2e` | nobody           |
 
-Both live inside `tempox-postgres-1`, on the same `pgdata` volume, on the same
+Both live inside `tempox-postgres-1`, on the same `pgdata_dev` volume, on the same
 `postgres:18-alpine` image. There is no second stack, no second container and no
 second image.
+
+The deliverable stack declares `pgdata_prod`, so running
+`docker compose -f docker-compose.prod.yml up` on a developer machine gets its own
+empty volume instead of writing into this ledger — which is append-only and cannot
+be undone row by row.
 
 ### Why not the development database
 
@@ -87,12 +92,12 @@ hides it.
 This was the confusing part, so it is written down explicitly. Four places read a
 database URL, for two different purposes:
 
-| Consumer | Where the value comes from | Which database |
-| --- | --- | --- |
-| The `backend` container | `docker-compose.yml`, composed from `POSTGRES_*` | `tempox` |
-| `cargo run` on the host | `.env` via `dotenvy::dotenv()` | `tempox` |
-| `make test-backend` | `.env`: `TEST_DATABASE_URL` | `tempox_test` |
-| `make sqlx-prepare` | `.env`: `DATABASE_URL` | `tempox` |
+| Consumer                | Where the value comes from                       | Which database |
+| ----------------------- | ------------------------------------------------ | -------------- |
+| The `backend` container | `docker-compose.yml`, composed from `POSTGRES_*` | `tempox`       |
+| `cargo run` on the host | `.env` via `dotenvy::dotenv()`                   | `tempox`       |
+| `make test-backend`     | `.env`: `TEST_DATABASE_URL`                      | `tempox_test`  |
+| `make sqlx-prepare`     | `.env`: `DATABASE_URL`                           | `tempox`       |
 
 **The container never reads `.env` for `DATABASE_URL`.** Compose sets it
 explicitly in the service's `environment:`, and `.env` is used only to substitute
@@ -106,31 +111,30 @@ host's**, which is what makes `cargo run` work with no exported variables.
 ## The development loop
 
 Postgres and adminer stay in Docker. Backend and frontend run on the host, the same
-way `npm run dev` already ran the frontend.
+way `npm run dev` already ran the frontend. `docker-compose.yml` contains exactly
+those two services now, so naming them is optional.
 
 ```bash
-docker compose up -d postgres adminer     # the database, in Docker
+docker compose up -d                      # the database and adminer, in Docker
 cd backend && cargo run                   # API on :3001, from .env
 cd frontend && npm run dev                # UI on :5173, hot reload
 ```
 
-To run the backend from Docker instead, stop the host one first — they cannot both
-hold `:3001`:
+No API origin is exported: the browser calls its own origin and the server reads
+`BACKEND_URL`, which defaults to `http://localhost:3001` outside production.
 
-```bash
-cd backend && cargo run &                 # development: the branch's code
-# later
-kill %1
-docker compose start backend
-```
+The backend is not a service in `docker-compose.yml` any more. It runs with
+`cargo run`, which is what makes the edit loop fast, and the deliverable stack
+(`docker-compose.prod.yml`) is where a built backend image exists. Running both at
+once is impossible anyway: they would both hold `:3001`.
 
 ### Why `cargo run` and not the image
 
-|  | `cargo run` | rebuilding the image |
-| --- | --- | --- |
-| Compile feedback | seconds, incremental | minutes, full `--release` graph |
-| Touches `tempox-backend:latest` | no | **yes, silently** |
-| Orchestration in the loop | none | `build` + `up`, then undo |
+|                                 | `cargo run`          | rebuilding the image            |
+| ------------------------------- | -------------------- | ------------------------------- |
+| Compile feedback                | seconds, incremental | minutes, full `--release` graph |
+| Touches `tempox-backend:latest` | no                   | **yes, silently**               |
+| Orchestration in the loop       | none                 | `build` + `up`, then undo       |
 
 It is also what CI does: `ci.yml` starts `./target/debug/tempox`, never the image.
 
@@ -192,16 +196,14 @@ suite as well.
 
   If you add a test that reads global state through something other than its own
   pool, you have reintroduced the problem. Convert it, do not serialize it.
+
 - **A leftover backend on a fixed port.** Neither suite has this failure mode any
   more, and the two levels solved it differently because they own different things.
 
   The backend suite binds port `0` and reads the real address from the binary's own
   log, so there is no port to collide over. The e2e level cannot do that: it runs one
-  long-lived backend and one long-lived frontend, and the frontend is a **compiled
-  artifact** — `vite` inlines `PUBLIC_API_BASE` at build time (measured: a build given
-  `PUBLIC_API_BASE=http://probe-1234` contains that literal in
-  `_app/immutable/chunks/*.js`). So the URL must be known before the build runs, which
-  rules out discovering it.
+  long-lived backend and one long-lived frontend, so the port has to be agreed before
+  either starts. That is `:3099`.
 
   Playwright therefore starts the backend on the fixed `:3099` and owns its lifetime.
   The external `scripts/test-stack.sh` that used to do this had no caller left once both
@@ -218,24 +220,30 @@ suite as well.
   A third guard refuses `TEST_BACKEND_PORT=3001` by name: that is the development
   backend's port, and starting the e2e backend on it would make every check agree with
   the wrong database.
+
 - **A leftover preview on `:4173`.** `reuseExistingServer` is on outside CI, so a
   stale preview is reused. Stop it before trusting an e2e result.
 - **Running a suite directly.** The dangerous half is gone; the inconvenient half
   is not, and the difference is worth knowing precisely.
 
-  What F6 closed: `npx playwright test` can no longer reach the development
-  backend through a default. Measured on 2026-10-19, the three shapes are —
+  What F6 closed was a build-time value that could point at development. That value
+  no longer exists: `PUBLIC_API_BASE` and `REQUIRE_PUBLIC_API_BASE` were **retired**
+  when the browser started calling its own origin and the server began reading
+  `BACKEND_URL` per request (`odd/tasks/docker-prod.md`, S9 and S10). The guarantee
+  that remains is F5's, and it is a different mechanism: the e2e starts its own
+  backend on `:3099` against `tempox_test` and refuses `:3001` by name.
 
-  | invocation | result |
-  | --- | --- |
-  | no `TEST_DATABASE_URL`, no `PUBLIC_API_BASE` | `error with configuration: relative URL without a base`, exit 1 |
-  | `TEST_DATABASE_URL` set, no `PUBLIC_API_BASE` | lists and runs; the build's origin comes from `:3099` |
-  | `make test-e2e` | sets both, and is the supported path |
+  Measured on 2026-10-19, the shapes were —
+
+  | invocation              | result                                                          |
+  | ----------------------- | --------------------------------------------------------------- |
+  | no `TEST_DATABASE_URL`  | `error with configuration: relative URL without a base`, exit 1 |
+  | `TEST_DATABASE_URL` set | lists and runs; the proxy's backend comes from the harness      |
+  | `make test-e2e`         | sets the database, and is the supported path                    |
 
   The first row fails because the backend entry hands the binary an empty
-  `DATABASE_URL`, not because of `PUBLIC_API_BASE`: `playwright.config.ts` derives
-  the build's origin from `:3099` itself, so a missing `PUBLIC_API_BASE` in the
-  shell is no longer a way to end up pointed at development.
+  `DATABASE_URL`, not because of the API origin. `playwright.config.ts` supplies the
+  preview's `BACKEND_URL` from its own `:3099`.
 
   So `TEST_DATABASE_URL` is what the harness still owns, and a bare invocation that
   supplies it runs against the test database. Nothing here can reach `tempox`. That
@@ -245,6 +253,7 @@ suite as well.
   The shortcut this repository already paid for was different and cannot recur: 5
   sales, 11 products and 22 movements written to `tempox` while `api.ts` defaulted
   to `:3001`.
+
 - **A stale test database.** The schema applies on the backend's boot, so a
   unit-only run migrates nothing. `make test-db` recreates it when the schema has
   moved.
@@ -275,14 +284,15 @@ CI has no development stack, so it builds its own:
 
   CI never builds the backend image — see the note above about a green CI saying
   nothing about it.
+
 - **Frontend job**: lint, `svelte-check`, Vitest, build.
 - **Image job**: builds the **frontend** image and asserts it serves `/sales`. It is
   the only artifact CI covers; the backend image is deliberately not built here.
 - **E2E job**: its own `postgres:18-alpine` service and a `tempox_test` database, then
   `cargo build` for the binary Playwright will start, then `npx playwright test`.
   Playwright starts both servers itself — the backend on `:3099` and the preview on
-  `:4173` — so the job has no separate server step; it only sets `PUBLIC_API_BASE`,
-  because `vite` inlines that value at build time.
+  `:4173` — so the job has no separate server step, and no API origin to set: the
+  preview is handed `BACKEND_URL` by `playwright.config.ts`.
 
 That is the shape **of CI**, which owns its own services. It is not a pattern to
 copy locally, and copying it is what produced throwaway stacks and rebuilt images
@@ -300,12 +310,12 @@ provoke a second one on `:3001` and then verify it was talking to the right
 database — the check the six phases exist to retire. Each level now owns what it
 measures:
 
-| Level | Proves | Owns the process | Owns the database | Desync possible? |
-| --- | --- | --- | --- | --- |
-| T1 unit | pure logic | nothing | nothing | n/a |
-| T2 handler, in-process | routing, extractors, status, body, effects | the test, same process | the test, fresh per test | **no** |
-| T3 boot and reality | migrations on boot, real TCP, `serve()` middleware | the test, via `CARGO_BIN_EXE_tempox` | the test, fresh per test | **no** |
-| T4 end to end | the real screen in a browser | Playwright, one long-lived backend on `:3099` | the test, `tempox_test` | **no — Playwright starts the backend itself**, so there is no other process to be wrong about |
+| Level                  | Proves                                             | Owns the process                              | Owns the database        | Desync possible?                                                                              |
+| ---------------------- | -------------------------------------------------- | --------------------------------------------- | ------------------------ | --------------------------------------------------------------------------------------------- |
+| T1 unit                | pure logic                                         | nothing                                       | nothing                  | n/a                                                                                           |
+| T2 handler, in-process | routing, extractors, status, body, effects         | the test, same process                        | the test, fresh per test | **no**                                                                                        |
+| T3 boot and reality    | migrations on boot, real TCP, `serve()` middleware | the test, via `CARGO_BIN_EXE_tempox`          | the test, fresh per test | **no**                                                                                        |
+| T4 end to end          | the real screen in a browser                       | Playwright, one long-lived backend on `:3099` | the test, `tempox_test`  | **no — Playwright starts the backend itself**, so there is no other process to be wrong about |
 
 T2 is `tower::oneshot`: the router runs inside the test, with no socket and no
 second process. It keeps the public surface and removes the desync. T3 is the real
@@ -317,23 +327,32 @@ Ordered by dependency, and **complete**: F1–F6 shipped between 2026-10-18 and
 2026-10-19. What follows is the record of what each one did, kept because the
 measurements in them are what the rest of this document rests on.
 
-| Phase | Work | Size |
-| --- | --- | --- |
-| **F1** | **Done** — PR #56. The seam: `src/lib.rs` with `build_app(state) -> Router` and `Config::from_env()`; `main.rs` keeps boot only. `BACKEND_PORT=0` reports the real port. `DATABASE_URL` became a required input instead of a silent fallback. | ~150 lines |
-| **F2** | **Done** — PR #57. `tests/common/mod.rs` harness on `#[sqlx::test]`; the 14 pool-only tests each got their own database. `--test-threads=1` stopped being needed for those. | per domain |
-| **F3** | **Done** — PR #61–#65. `tower::oneshot` for the 27 HTTP tests, in five domain slices. Removes the desync: the router runs in the test's own process. | per domain |
-| **F4** | **Done** — PR #66. T3: the test spawns `CARGO_BIN_EXE_tempox` on an ephemeral port — `BACKEND_PORT=0` and the real address read from the binary's own log — against its own database, with `migrations = false` so boot's migration step is what gets proven. `docker-compose` no longer needs a backend for tests. | small |
-| **F5** | **Done** — PR #67. E2E: Playwright's `webServer` starts the backend on its own database, in array order, and owns its lifetime. `PUBLIC_API_BASE` still comes from the target, because `webServer.env` cannot reach the build. | small |
-| **F6** | **Done** — PR #68. Retired the plumbing that measurement found, which was less than this row used to claim: `test-stack.sh` (no caller left), and **a direct suite invocation can no longer reach the development backend** — `api.ts` has no fallback, a build without `PUBLIC_API_BASE` emits a client that throws at module load instead of falling back to `:3001`, and the e2e refuses `:3001` by name. The "38 hardcoded URLs" was wrong: there was exactly one, in `api.ts`. The `Makefile` health guard was already gone. | cleanup |
+**F6 was superseded on 2026-10-21.** It protected a build-time value that no
+longer exists: `PUBLIC_API_BASE` was retired when the browser began calling its own
+origin and the server started reading `BACKEND_URL` per request
+(`odd/tasks/docker-prod.md`, S9). That did not reopen the hole it closed — a test
+still cannot reach the development database — but the mechanism is now F5's: the
+e2e starts its own backend on `:3099` against `tempox_test` and refuses `:3001` by
+name. The rows below are left as they were written, because they record what was
+measured at the time; read the `PUBLIC_API_BASE` half of F5 and F6 as history.
+
+| Phase  | Work                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Size       |
+| ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
+| **F1** | **Done** — PR #56. The seam: `src/lib.rs` with `build_app(state) -> Router` and `Config::from_env()`; `main.rs` keeps boot only. `BACKEND_PORT=0` reports the real port. `DATABASE_URL` became a required input instead of a silent fallback.                                                                                                                                                                                                                                                                                     | ~150 lines |
+| **F2** | **Done** — PR #57. `tests/common/mod.rs` harness on `#[sqlx::test]`; the 14 pool-only tests each got their own database. `--test-threads=1` stopped being needed for those.                                                                                                                                                                                                                                                                                                                                                       | per domain |
+| **F3** | **Done** — PR #61–#65. `tower::oneshot` for the 27 HTTP tests, in five domain slices. Removes the desync: the router runs in the test's own process.                                                                                                                                                                                                                                                                                                                                                                              | per domain |
+| **F4** | **Done** — PR #66. T3: the test spawns `CARGO_BIN_EXE_tempox` on an ephemeral port — `BACKEND_PORT=0` and the real address read from the binary's own log — against its own database, with `migrations = false` so boot's migration step is what gets proven. `docker-compose` no longer needs a backend for tests.                                                                                                                                                                                                               | small      |
+| **F5** | **Done** — PR #67. E2E: Playwright's `webServer` starts the backend on its own database, in array order, and owns its lifetime. `PUBLIC_API_BASE` still comes from the target, because `webServer.env` cannot reach the build.                                                                                                                                                                                                                                                                                                    | small      |
+| **F6** | **Done** — PR #68. Retired the plumbing that measurement found, which was less than this row used to claim: `test-stack.sh` (no caller left), and **a direct suite invocation can no longer reach the development backend** — `api.ts` has no fallback, a build without `PUBLIC_API_BASE` emits a client that throws at module load instead of falling back to `:3001`, and the e2e refuses `:3001` by name. The "38 hardcoded URLs" was wrong: there was exactly one, in `api.ts`. The `Makefile` health guard was already gone. | cleanup    |
 
 One wording from that row needed correcting, and the measurement is the reason: a
 build without `PUBLIC_API_BASE` **succeeds** and emits a client that throws when a
-page runs. Measured on 2026-10-19:
+page runs. Measured on 2026-10-19, when the variable still existed:
 
-| build | result |
-| --- | --- |
+| build                              | result                                                                                        |
+| ---------------------------------- | --------------------------------------------------------------------------------------------- |
 | `vite build`, no `PUBLIC_API_BASE` | **succeeds**; the emitted chunk contains `PUBLIC_API_BASE is not set` and no `:3001` anywhere |
-| same, `REQUIRE_PUBLIC_API_BASE=1` | fails at config load: `PUBLIC_API_BASE is required for this build and was not set` |
+| same, `REQUIRE_PUBLIC_API_BASE=1`  | fails at config load: `PUBLIC_API_BASE is required for this build and was not set`            |
 
 The build error is opt-in on purpose: `make build` and CI's frontend job exist to
 prove the app compiles, never to serve it. What is not optional is the absence of

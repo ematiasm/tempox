@@ -27,7 +27,10 @@ Everything in Docker:
 git clone https://github.com/ematiasm/tempox.git
 cd tempox
 cp .env.example .env
-docker compose up --build
+docker compose up -d          # the database and adminer, in Docker
+
+cd backend && cargo run       # API on :3001, from .env
+cd frontend && npm install && npm run dev   # UI on :5173, hot reload
 ```
 
 - Frontend: <http://localhost:5173>
@@ -36,26 +39,41 @@ docker compose up --build
 
 ## Development
 
-The backend and database run in Docker. `cargo run` serves the backend from the
-host, the same way the frontend already ran, and gives a much faster edit cycle.
+Only the database and adminer run in Docker. The backend runs with `cargo run`
+and the frontend with `npm run dev`, both on the host, because that is the edit
+loop: a change is visible in seconds instead of after an image build.
 
 ```bash
-docker compose up -d --build postgres adminer backend
+docker compose up -d postgres adminer     # the database, in Docker
 
-cd frontend && npm install && npm run dev
+cd backend && cargo run                   # API on :3001
+cd frontend && npm run dev                # UI on :5173, hot reload
 ```
 
-- Frontend: <http://localhost:5173> (local, hot reload)
-- Backend: <http://localhost:3001/health>
-- Adminer (DB): <http://localhost:8080>
+The API origin needs no configuration: the browser calls its own origin and the
+SvelteKit server proxies `/api/*` to `BACKEND_URL`, which defaults to
+`http://localhost:3001` in development. Nothing about a deployment is compiled
+into a build.
 
-To run the backend from the host instead of the container (stop the container
-first — they cannot both hold `:3001`):
+## Deployment
+
+The deliverable stack is a separate file, with real images and no development
+tool in the group: no adminer, no published Postgres, and a frontend built with
+`npm run build` instead of served by `vite dev`.
 
 ```bash
-docker compose stop backend
-cd backend && cargo run
+cp .env.prod.example .env.prod   # fill in real credentials
+docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
 ```
+
+Two things worth knowing before deploying:
+
+- **`--env-file .env.prod` is not optional.** Without it Compose reads the
+  development `.env`, and the `${VAR:?}` guards do not catch it: they refuse a
+  variable that is _absent_, not one that is present and wrong. That is why the
+  production variables are `PROD_`-prefixed.
+- **Only the frontend publishes a port.** Put it behind whatever fronts the
+  server and change `FRONTEND_PORT` to taste.
 
 `.env` names `localhost` for `DATABASE_URL`, which is the host's view of the
 published port, so `cargo run` needs no exported variables. The container does
@@ -89,6 +107,7 @@ Compiling needs no database at all: `backend/.sqlx/` carries the metadata the
 PostgreSQL stopped. After changing a query, run `make sqlx-prepare` to refresh
 that cache; CI fails if it is stale. See
 [`docs/en/getting-started.md`](./docs/en/getting-started.md).
+
 ## Structure
 
 ```
