@@ -189,7 +189,11 @@
       align-self: start;
       border-right: 0;
       border-bottom: 1px solid var(--rule);
-      flex-wrap: nowrap;
+      /* Brand, three destinations and the language toggle need roughly 400px at
+       * the sizes below. Below that the toggle wraps to its own row instead of
+       * pushing the bar past the viewport: measured at 320px the bar was 364px
+       * wide on a 320px screen, so the whole page panned. */
+      flex-wrap: wrap;
     }
     .brand {
       padding: 14px 8px 14px 0;
@@ -201,10 +205,11 @@
       flex-direction: row;
       margin: 0 0 0 10px;
       gap: 1px;
-      /* A destination name is functional text: it keeps its full width and the
-       * row yields around it, never the other way round. */
+      /* A destination name is functional text and keeps its full width; when the
+       * row cannot hold everything, the toggle wraps below rather than the labels
+       * being clipped. */
       min-width: 0;
-      flex-shrink: 0;
+      flex-shrink: 1;
     }
     .tab {
       padding: 8px 6px;

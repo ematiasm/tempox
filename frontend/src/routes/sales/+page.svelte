@@ -158,8 +158,14 @@
        names, a wider total). The day's ledger is a reading column and stops
        being useful once its rows fit, so it takes what it needs and no more —
        growing it instead would push every figure further from the eye that is
-       scanning them. */
-    grid-template-columns: minmax(520px, 1fr) minmax(420px, 640px);
+       scanning them.
+
+       `minmax(560px, ...)`, not `520px`. The draft's own table has a minimum
+       width of 550px — the product name, quantity, price, line total and the
+       remove control do not compress further — so a 520px track let the table
+       escape its panel by 31px on every viewport from 1350px down to the old
+       1080px breakpoint. 560 is that minimum plus the panel's own inset. */
+    grid-template-columns: minmax(560px, 1fr) minmax(420px, 640px);
     gap: var(--panel-gap);
     align-items: stretch;
     padding: 0 26px 26px 28px;
@@ -187,7 +193,13 @@
     overflow: hidden;
   }
 
-  @media (max-width: 1080px) {
+  /* Two columns stop being viable below this width. The draft needs 560px and
+     the ledger 420px, plus the gap and the page's own insets: at 1080px the
+     pair still fitted the grid but the draft track fell to its 520px floor and
+     the table inside it overflowed by 31px on every width down to 1081. The
+     breakpoint moves up to where the two tracks genuinely still fit, so there
+     is no band between the two layouts where the draft is broken. */
+  @media (max-width: 1120px) {
     /* The stack scrolls like a document. The action is still pinned — but to the
        bottom of the viewport, with the panel's own padding holding it clear of
        whatever it would otherwise cover. */
