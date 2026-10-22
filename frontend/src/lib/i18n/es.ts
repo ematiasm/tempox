@@ -188,7 +188,8 @@ const es: Dict = {
   purchases_error_title: 'No se registró: ',
   purchases_invalid: 'Un campo no tiene un número válido — corregilo antes de registrar.',
   purchases_legend: 'Compra registrada — el stock entró y la plata salió',
-  purchases_no_purchases_today: 'Todavía no hay compras hoy — la primera aparece acá apenas la registres.',
+  purchases_no_purchases_today:
+    'Todavía no hay compras hoy — la primera aparece acá apenas la registres.',
   purchases_no_purchases_day: 'No hay compras ese día.',
   purchases_document_one: 'comprobante',
   purchases_documents: 'comprobantes',
