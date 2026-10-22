@@ -1,10 +1,24 @@
+# The development stack.
+#
+# Two pieces, and only two: the database and a way to look inside it. The backend
+# runs with `cargo run` on the host and the frontend with `npm run dev`, which is
+# what makes the edit loop fast — neither pays for an image build to see a change.
+#
+# The deliverable stack is `docker-compose.prod.yml`, and it is a different file
+# on purpose: that one runs real images, publishes only the frontend, and has no
+# adminer. Making one file do both would mean every command choosing an
+# environment, and a forgotten variable launching the wrong one.
+#
+# Usage:  docker compose up -d          (from the repository root)
+#         cd backend && cargo run
+#         cd frontend && npm run dev
+
 services:
   postgres:
     image: postgres:18-alpine
-    restart: unless-stopped
     environment:
       # These defaults are for a NEW volume. Docker only applies POSTGRES_* when
-      # it initializes `pgdata`, so a volume created by an older checkout keeps
+      # it initializes the volume, so a volume created by an older checkout keeps
       # whatever role it was born with, and these values silently do nothing.
       #
       # They used to say `skilluv`, from the template this repository started as.
@@ -18,57 +32,26 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tempox}
       POSTGRES_DB: ${POSTGRES_DB:-tempox}
     ports:
+      # Published because `cargo run` on the host connects through it. The
+      # production file does not publish this: nothing there needs a host view.
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
-      - pgdata:/var/lib/postgresql
+      - pgdata_dev:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tempox}"]
       interval: 3s
       timeout: 3s
       retries: 20
 
-  backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    restart: unless-stopped
-    environment:
-      # The `tempox` defaults are what a clone with no `.env` gets.
-      DATABASE_URL: postgres://${POSTGRES_USER:-tempox}:${POSTGRES_PASSWORD:-tempox}@postgres:5432/${POSTGRES_DB:-tempox}
-      BACKEND_PORT: 3001
-      RUST_LOG: ${RUST_LOG:-info}
-      # The shop's calendar zone. `/api/day` answers from this, never from the
-      # browser's clock: a rebuilt PC defaults to UTC, and the shop's day must
-      # not move because of it.
-      SHOP_TIMEZONE: ${SHOP_TIMEZONE:-America/Argentina/Buenos_Aires}
-    ports:
-      - "3001:3001"
-    depends_on:
-      postgres:
-        condition: service_healthy
-
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    restart: unless-stopped
-    environment:
-      # The proxy in the app reads this per request, so the image carries no
-      # deployment inside it. `backend` is the service name on this network; from
-      # the host, `http://localhost:3001` is the same process.
-      BACKEND_URL: http://backend:3001
-    ports:
-      - "5173:5173"
-    depends_on:
-      - backend
-
   adminer:
     image: adminer:latest
-    restart: unless-stopped
     ports:
       - "8080:8080"
     depends_on:
       - postgres
 
 volumes:
-  pgdata:
+  # `_dev` on purpose. The production file declares `pgdata_prod`, so starting
+  # that stack on a developer machine cannot write into this ledger — which is
+  # append-only by trigger, and therefore cannot be undone row by row.
+  pgdata_dev:
