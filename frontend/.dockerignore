@@ -4,8 +4,11 @@
 # idea: what is generated rather than authored never enters the image. The
 # image generates its own, so the build depends only on what is committed.
 #
-# The test is "does a tool generate this?", not "is it large". Two people with
-# the same commit and different local directories must build the same image.
+# Two criteria, not one. The first is "does a tool generate this?". The second,
+# added when this file's images were treated as deliverables, is "does the
+# runtime need this?" -- an authored file the container never reads is still
+# dead weight in a shipped artifact, and the answer to the first question says
+# nothing about the second.
 
 # The `deps` stage installs this from the lockfile. Copying the developer's
 # tree here would overwrite that install with whatever is on the machine --
@@ -30,6 +33,18 @@ build
 test-results
 playwright-report
 blob-report
+
+# The test suite itself. Authored, so the first criterion above would keep it;
+# the second one removes it. Nothing in the container runs a test: the CMD is
+# `vite dev`, and every level runs from the host. Measured on the image before
+# this line existed: `tests/` shipped 168 KB of specs that Vite answers with a
+# 404 (they sit outside `src/` and `static/`) and that no command ever imports.
+#
+# `playwright.config.ts` goes with them: it configures a command the container
+# cannot run (there is no browser in the image), and `vite.config.ts` does not
+# reference it.
+tests
+playwright.config.ts
 
 # Local tool state, not part of the project.
 .atl
