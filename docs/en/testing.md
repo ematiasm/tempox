@@ -92,18 +92,21 @@ hides it.
 This was the confusing part, so it is written down explicitly. Four places read a
 database URL, for two different purposes:
 
-| Consumer                | Where the value comes from                       | Which database |
-| ----------------------- | ------------------------------------------------ | -------------- |
-| The `backend` container | `docker-compose.yml`, composed from `POSTGRES_*` | `tempox`       |
-| `cargo run` on the host | `.env` via `dotenvy::dotenv()`                   | `tempox`       |
-| `make test-backend`     | `.env`: `TEST_DATABASE_URL`                      | `tempox_test`  |
-| `make sqlx-prepare`     | `.env`: `DATABASE_URL`                           | `tempox`       |
+| Consumer                 | Where the value comes from                        | Which database |
+| ------------------------ | ------------------------------------------------- | -------------- |
+| `cargo run` on the host  | `.env` via `dotenvy::dotenv()`                    | `tempox`       |
+| The production `backend` | `docker-compose.prod.yml`, composed from `PROD_*` | `tempox`       |
+| `make test-backend`      | `.env`: `TEST_DATABASE_URL`                       | `tempox_test`  |
+| `make sqlx-prepare`      | `.env`: `DATABASE_URL`                            | `tempox`       |
 
-**The container never reads `.env` for `DATABASE_URL`.** Compose sets it
-explicitly in the service's `environment:`, and `.env` is used only to substitute
-`${POSTGRES_*}`. Changing `.env` therefore does not move the container, and editing
-`docker-compose.yml` does not move `cargo run`. They are separate paths that
-happened to agree.
+There is no `backend` service in `docker-compose.yml` any more: development runs
+it with `cargo run`, and the containerized backend lives only in the deliverable
+stack.
+
+**A container never reads `.env` for `DATABASE_URL`.** Compose sets it explicitly
+in the service's `environment:`. Changing `.env` therefore does not move a
+container, and editing a compose file does not move `cargo run`. They are separate
+paths that happened to agree, which is why the table above names both.
 
 `DATABASE_URL` in `.env` uses `@localhost:5432` because it is **exclusively the
 host's**, which is what makes `cargo run` work with no exported variables.

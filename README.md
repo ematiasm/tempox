@@ -15,19 +15,20 @@
 
 - **Backend**: Rust (Axum, sqlx, PostgreSQL 18)
 - **Frontend**: SvelteKit 5 (runes) + Tailwind
-- **Orchestration**: Docker Compose (postgres + backend + frontend + adminer)
+- **Orchestration**: Docker Compose — `postgres` + `adminer` for development,
+  `docker-compose.prod.yml` with all three services for delivery
 - **Tests**: `cargo test` + Vitest + Playwright
 - **CI**: GitHub Actions
 
 ## Quickstart
 
-Everything in Docker:
+The database in Docker, the code on your machine:
 
 ```bash
 git clone https://github.com/ematiasm/tempox.git
 cd tempox
 cp .env.example .env
-docker compose up -d          # the database and adminer, in Docker
+docker compose up -d          # postgres + adminer (the only two services)
 
 cd backend && cargo run       # API on :3001, from .env
 cd frontend && npm install && npm run dev   # UI on :5173, hot reload
