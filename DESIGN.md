@@ -75,7 +75,7 @@ components:
 
 The printed account statement is the money document the shop already trusts. The day reads as one: every row is a computed figure and every balance is recomputed. This refuses the category default of a CRUD screen where state is a coloured pill nobody reads.
 
-The signature is a running-balance column in the ledger's left margin, recomputed per row so it reads as one continuous number down the page. Work areas are contained in closed, bordered panels: their own edges establish separation, rather than whitespace alone. The sales surface and shell are documented here; `/products` and `/purchases` have not yet been redesigned and remain outside this system's implemented scope.
+The signature is a running-balance column in the ledger's left margin, recomputed per row so it reads as one continuous number down the page. Work areas are contained in closed, bordered panels: their own edges establish separation, rather than whitespace alone. The shell and `/sales` are documented here in detail; `/purchases` and `/products` are built in the same world, and the structure, content and states each of them resolves are recorded in its own surface brief.
 
 **Key Characteristics:**
 

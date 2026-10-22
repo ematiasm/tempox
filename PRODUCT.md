@@ -44,7 +44,9 @@ Back office at a fixed PC in the shop: desktop-first, keyboard-friendly, mobile 
 
 Name: **Tempox**. No logo and no identity asset. No voice is committed as a product decision.
 
-**The visual world is being replaced, by explicit decision (2026-10-20).** "The Stamped Ledger" — paper ground, hairline rules, ink, one crimson accent on the stamp — is now **anti-reference**: evidence of what the subject is, never authority over what it becomes. `DESIGN.md` and `.impeccable/design.json` still describe it because they record the incumbent build; they are frozen until the new world is committed through the visual-world flow, at which point they are rewritten from the built result. Nothing in the current world is protected by this record: the rail, the composition and the stamp gesture are all reopenable.
+**The visual world is "The Computed Account Statement", committed 2026-10-20 and applied across all three surfaces.** `DESIGN.md` and `.impeccable/design.json` record it, and they are the visual authority from here on; they were rewritten from the built result, not from a proposal. "The Stamped Ledger" — paper ground, hairline rules, ink, one crimson accent on the stamp — is superseded and stands as **anti-reference**: evidence of what the subject is, never authority over what it becomes.
+
+**Built and applied is not the same as settled.** This world carries no protection either: the rail, the composition, the panels, the balance column and the statement gesture are all reopenable under the same standing rule that nothing is sacred. A replacement world is not drift from this record — it is a decision this record already permits, to be made through the visual-world flow and recorded here afterwards.
 
 ## Evidence on Hand
 
