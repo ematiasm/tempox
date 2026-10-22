@@ -35,11 +35,25 @@ way to observe a failing test. Reasons, with the measurements, are in
 
 CI never builds the backend image, so a green CI says nothing about it.
 
+## There are two stacks, and the file decides which one you mean
+
+`docker-compose.yml` is **development**: `postgres` and `adminer`, with `cargo run`
+and `npm run dev` on the host. Its data is `pgdata_dev`. There is no backend or
+frontend service in it, so `docker compose up --build` no longer builds either —
+that command was the old quickstart and it now starts only the database.
+
+`docker-compose.prod.yml` is **delivery**: all three services as built images, no
+adminer, only the frontend published, its data in `pgdata_prod`, and it demands
+`--env-file .env.prod`. Its variables are `PROD_`-prefixed so the development
+`.env` cannot satisfy them by accident.
+
 ## A clean development database is the owner's decision
 
-`docker compose down -v` drops the `pgdata_dev` volume and re-applies migrations on
-the next boot. It is destructive to development data. Ask; do not run it on your
-own initiative.
+`docker compose down -v` drops **the volume of the stack whose file you name** —
+`pgdata_dev` for the default file, `pgdata_prod` if you pass `-f
+docker-compose.prod.yml`. It is destructive and re-applies migrations on the next
+boot. Ask; do not run it on your own initiative, and say which stack you mean when
+you ask.
 
 The test database needs nobody's permission: `make test-db`.
 
