@@ -3,8 +3,26 @@ name: CI
 on:
   push:
     branches: [main]
+  # No `branches:` filter, deliberately. With one, a PR whose base is another
+  # branch runs **no CI at all** — GitHub discards the event before any job is
+  # considered, and the PR shows `no checks reported`. That is every PR in a
+  # chain, which is how this repository works when a change is too large for one
+  # review slice.
+  #
+  # Measured on #75: while it targeted #74's branch, no run existed. Retargeting
+  # it to `main` did not start one either — GitHub emits `pull_request` on
+  # `opened`, `synchronize` and `reopened`, and a base change is `edited`. Closing
+  # and reopening produced a run immediately. Two manual steps per stacked PR,
+  # and none of them a guarantee: until they happen, the code has no CI at all.
+  #
+  # The cost of removing the filter is that a PR against a scratch branch also
+  # runs. That is the cheaper side of the trade.
+  #
+  # `types:` is spelled out rather than left empty: a bare `pull_request:` means
+  # all of them and parses to `null`, which reads like a mistake. These are the
+  # defaults, kept visible so nobody has to know that.
   pull_request:
-    branches: [main]
+    types: [opened, synchronize, reopened]
 
 jobs:
   backend:
