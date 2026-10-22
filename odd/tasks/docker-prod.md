@@ -293,3 +293,30 @@ L35 (T8): `README.md`, `docs/en/getting-started.md`, `docs/en/testing.md` and
 `AGENTS.md` now describe the split. The F1–F6 history table keeps its original
 `PUBLIC_API_BASE` wording, annotated as superseded rather than rewritten, because it
 records what was measured at the time.
+
+L36 (review, T4-T8, approved): the second native review covered the unreviewed
+half at tier **high**, lenses risk and readability, and returned **no blocking
+findings**. Seven advisory ones; four were real documentation defects introduced by
+this branch and are fixed in `406367a`:
+
+- **R2-001** — the README quickstart was headed "Everything in Docker", untrue
+  since the development compose lost its `backend` and `frontend` services.
+- **R2-002** — `docs/en/testing.md` listed a "`backend` container" reading its
+  `DATABASE_URL` from `docker-compose.yml`. That service no longer exists.
+- **R2-003** — two comments in `frontend/.dockerignore` described a container
+  running `vite dev`. It runs `node build/index.js`, and the `build` entry's reason
+  changed with it.
+- **R2-004** — the README topology line listed four services under one file.
+
+Left as follow-ups, with reasons: the proxy forwards request headers unsanitized
+(R1-002/R2-004) — worth doing before the backend is ever exposed directly, which
+the production compose does not do; a narrower development fallback (R1-001), where
+the branch exists because a review found the opposite defect; and a note about the
+runtime base image (R1-003) that states no defect.
+
+L37 (lesson, twice in one branch): both reviews found **documentation** defects,
+not code ones, in the second pass — a table naming a service that had been deleted
+and a comment describing a command that had been replaced. Changing a compose file
+or a Dockerfile invalidates prose in files nobody thinks to open. The README, the
+`.dockerignore` comments and `testing.md`'s consumer table are part of the same
+change as the compose file.
