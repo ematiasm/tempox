@@ -39,6 +39,7 @@ typography:
     lineHeight: 1.45
 rounded:
   control: "2px"
+  joined: "4px"
   panel: "8px"
 spacing:
   panel-gap: "24px"
@@ -136,6 +137,8 @@ The system is flat: no shadow vocabulary is used to lift work areas. Depth and s
 ## Shapes
 
 Controls use restrained 2px corners. Work panels use an 8px radius and clip their contents with `overflow: hidden`. Rules stay thin and functional: they mark panel edges, calculated rows and boundaries rather than decorating the page.
+
+**The Joined Edge Rule.** A 4px radius belongs to an element that meets another edge rather than standing alone: the table frame whose bottom corners continue a header strip, and the loading and empty states that sit inside the ledger's frame. It is not a third control size — a control is still 2px and a panel is still 8px. When an element joins a neighbour on one side and closes on the other, it takes 4px on the closed side only, never a full 4px box.
 
 ## Components
 

@@ -325,7 +325,7 @@
                 >
                   <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
                     <path
-                      d="M4.5 2.5 8 6l-3.5 3.5"
+                      d="M3 3 9 9M9 3 3 9"
                       fill="none"
                       stroke="currentColor"
                       stroke-width="1.8"
@@ -396,7 +396,13 @@
   .lines-scroll {
     flex: 1 1 auto;
     min-height: 0;
-    overflow-y: auto;
+    /* `overflow: auto` on both axes, not `overflow-y` alone. The table's own
+     * minimum is 550px and it does not compress below that, so on a phone the
+     * table escaped the panel and stretched the whole document to 538px on a
+     * 390px screen — the page panned sideways with a line in the draft. The
+     * draft is a four-column table; on a narrow screen it scrolls inside its own
+     * frame, the way the ledgers already do, instead of pushing the page. */
+    overflow: auto;
     /* The scrollbar sits in the table's own margin instead of over the price
        column. */
     padding-right: 2px;
@@ -652,7 +658,15 @@
   }
 
   .sr {
-    position: absolute;
+    /* `clip-path` plus `position: absolute` with no offset only stays 1px wide
+     * when it is anchored to a positioned ancestor. There was none here, so the
+     * span anchored to the page and its `white-space: nowrap` label — the word
+     * "Quitar" in the column header — measured 538px inside a 390px viewport and
+     * stretched the whole document. Taking it out of flow keeps it 1px and out
+     * of the layout, which is what a screen-reader-only label is for. */
+    position: fixed;
+    top: 0;
+    left: 0;
     width: 1px;
     height: 1px;
     overflow: hidden;
