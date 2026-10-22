@@ -6,12 +6,12 @@ import { defineConfig } from '@playwright/test';
  * Fixed, not ephemeral, and that is a deliberate difference from the backend
  * integration suite. That level owns one process per test and can bind port 0
  * because the test reads the bound address from the binary's own log. This level
- * owns ONE long-lived backend and one long-lived frontend, and the frontend is a
- * compiled artifact: `vite` inlines `PUBLIC_API_BASE` at build time, so the URL has
- * to be known before the build starts, not discovered by it.
+ * owns ONE long-lived backend and one long-lived frontend, so the port has to be
+ * agreed before either starts.
  *
- * Measured, not assumed: building with `PUBLIC_API_BASE=http://probe-1234` puts that
- * literal into `_app/immutable/chunks/*.js`. It is not read at runtime.
+ * It is also the value the preview is handed as `BACKEND_URL`. The app's `/api`
+ * proxy reads that per request, so the origin is a runtime fact rather than
+ * something compiled into the bundle — see `src/lib/apiProxy.ts`.
  */
 const BACKEND_PORT = process.env.TEST_BACKEND_PORT ?? '3099';
 const BACKEND_URL = `http://localhost:${BACKEND_PORT}`;
@@ -46,11 +46,14 @@ if (BACKEND_PORT === DEVELOPMENT_PORT) {
  * 2. That `env` reaches only the process this entry starts. It never reaches the
  *    test process and never reaches the frontend build.
  *
- * Point 2 is why `PUBLIC_API_BASE` is still exported by `make test-e2e` before
- * Playwright is invoked. A `npx playwright test` run by hand would build the
- * frontend with whatever `PUBLIC_API_BASE` the shell has — and with none, `api.ts`
- * falls back to the development backend. Closing that hole is F6's job, and this
- * comment exists so the gap is not mistaken for an oversight.
+ * Point 2 is why the preview entry below carries `BACKEND_URL` in its own `env`:
+ * that entry owns the process the proxy runs in, so it must own the pointer the
+ * proxy reads. A `npx playwright test` run by hand therefore still cannot reach
+ * the development backend through this file.
+ *
+ * The retired `PUBLIC_API_BASE` needed the opposite arrangement — it had to be
+ * exported by `make test-e2e`, because `webServer.env` never reached the build.
+ * Reading the origin at runtime removed that constraint along with the variable.
  */
 export default defineConfig({
   webServer: [
@@ -87,22 +90,19 @@ export default defineConfig({
       stderr: 'pipe'
     },
     {
-      // `PUBLIC_API_BASE` is inherited from this process's environment, which
-      // `make test-e2e` sets. It is consumed by the build in this command.
-      // Guard 2: this entry OWNS the frontend build's API origin.
+      // `BACKEND_URL` is the preview server's runtime pointer at the backend the
+      // suite started above. It replaces `PUBLIC_API_BASE`, which had to be known
+      // before the build; the proxy reads this per request instead, so nothing
+      // about the deployment is baked into the bundle.
       //
       // `env` is merged as `{ ...process.env, ...webServer.env }`, so the value set
-      // here wins over whatever the shell or a `.env` happens to carry. That matters:
-      // `.env.example` and a developer's `.env` both name `:3001`, and inheriting that
-      // would serve the suite a build pointed at the development backend — the exact
-      // defect F6 closes, reintroduced through the environment instead of the source.
-      //
-      // `REQUIRE_PUBLIC_API_BASE=1` makes `vite.config.ts` fail the build instead of
-      // emitting a client that throws when a page runs.
+      // here wins over whatever the shell or a `.env` happens to carry. That
+      // matters: `.env` names the development backend on `:3001`, and inheriting it
+      // would point the suite's proxy at the development database — the desync F6
+      // exists to prevent, reintroduced through the environment.
       command: 'npm run build && npm run preview',
       env: {
-        PUBLIC_API_BASE: BACKEND_URL,
-        REQUIRE_PUBLIC_API_BASE: '1'
+        BACKEND_URL: BACKEND_URL
       },
       // `port`, not `url`: the preview answers `/` with a 307 (the app redirects to
       // its first screen), and a `url` check treats a redirect as "not ready" —

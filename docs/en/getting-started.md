@@ -95,20 +95,21 @@ runs in, not from `.env` (which is development-only and never leaves the laptop)
 - `POSTGRES_PASSWORD` — the compose default is `tempox`, deliberately, so a clean
   clone starts. A server that inherits that default runs with a published password
   and no warning.
-- `PUBLIC_API_BASE` — `docker-compose.yml` sets `http://localhost:3001` for the
-  frontend service, and that is the right value for the *frontend's* container
-  talking to a browser running on the same host. It is wrong for a real server:
-  every browser would be told to call its own `localhost`. Note that `api.ts`
-  itself has no default any more (F6); the value has to come from the build or the
-  process environment.
+- `BACKEND_URL` — where the app's `/api` proxy sends requests. It is read at
+  **runtime**, per request, so the image carries no deployment inside it and one
+  image serves any host. Inside compose it is the service name
+  (`http://backend:3001`); from the host it is `http://localhost:3001`. The browser
+  never sees it: it calls its own origin and the server does the forwarding, which
+  is what makes the app work from another machine on the LAN.
 - **CORS**: `backend/src/main.rs` allows any origin. That is right for development
-  and wrong for a public server.
+  and wrong for a public server. Behind the proxy it matters less, since the
+  browser only ever talks to its own origin.
 
-Of those, `POSTGRES_PASSWORD` and the CORS policy fail **silently** when left
-unset: the stack starts and works. A frontend build made without
-`PUBLIC_API_BASE` fails loudly instead — `api.ts` throws at module load, and
-`REQUIRE_PUBLIC_API_BASE=1` turns that into a build error. What no guard covers is
-the binary having no notion of "which environment am I in": there is no
-`ENVIRONMENT` variable and no deploy to derive one from, so the CORS default cannot
-become strict by itself. Adding that guard is tracked as a follow-up, not built
-here.
+Of those, `POSTGRES_PASSWORD`, `BACKEND_URL` and the CORS policy fail **silently**
+when left unset: the stack starts and works, and the first symptom is a screen that
+cannot load data. `BACKEND_URL` is the exception at the proxy itself — it throws
+with a message naming the variable rather than calling `undefined/api/products` —
+but nothing refuses to _boot_ without it. What no guard covers is the binary having
+no notion of "which environment am I in": there is no `ENVIRONMENT` variable and no
+deploy to derive one from, so the CORS default cannot become strict by itself.
+Adding that guard is tracked as a follow-up, not built here.

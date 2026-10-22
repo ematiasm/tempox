@@ -287,13 +287,11 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       # `playwright.config.ts` starts BOTH servers: the backend on :3099 and the
-      # preview on 4173, with no separate dev-server step. This step only has to say
-      # where the backend will be, because `vite` inlines `PUBLIC_API_BASE` at build
-      # time and `webServer.env` never reaches the build.
+      # preview on 4173, with no separate dev-server step. It also hands the
+      # preview its `BACKEND_URL`, which the app's `/api` proxy reads per request,
+      # so this step no longer sets an API origin of its own.
       - name: Run the sale flow
         working-directory: frontend
-        env:
-          PUBLIC_API_BASE: http://localhost:3099
         run: npx playwright test
 
       # v6, not v5: v5 does not move this action off Node 20.

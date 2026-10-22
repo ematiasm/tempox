@@ -9,39 +9,41 @@
  */
 
 /**
- * The API origin.
+ * The API origin is the page's own origin.
  *
- * There is deliberately **no fallback here**. This line used to read
- * `?? 'http://localhost:3001'`, which pointed every unconfigured build at the
- * development backend. That is the one URL a test must never reach: the
- * development ledger is append-only by trigger, so a row a test wrote there
- * cannot be deleted on its own — only `docker compose down -v`, which takes the
- * owner's data with it.
+ * Every request goes to `/api/*` on whatever host served the app, where the
+ * SvelteKit server proxies it to the backend. The backend's address is a
+ * **runtime** value the server reads (`BACKEND_URL`), so one image serves any
+ * deployment and no value has to be known before the build.
  *
- * Measured, not assumed: building with `PUBLIC_API_BASE` unset put the literal
- * `localhost:3001` into `_app/immutable/chunks/*.js`, so a bare
- * `npx playwright test` really did run against development.
+ * This replaced a build-time constant, `import.meta.env.PUBLIC_API_BASE`, which
+ * had to be correct at `vite build` time and therefore baked one deployment into
+ * the artifact. It also threw at module load when absent — a guard worth having
+ * while the value existed, and meaningless once it does not.
  *
- * The value comes from whoever builds:
+ * The defect this closes is the one the whole change exists for: the baked value
+ * was `http://localhost:3001`, and on any machine other than the Docker host, a
+ * browser resolves `localhost` to **that** machine. The catalog loaded on the
+ * developer's laptop and failed on the shop's counter.
  *
- * - `docker-compose.yml` and `.env.example` set it for the dev stack;
- * - `make test-e2e` sets it for the e2e build;
- * - `vite.config.ts` supplies a development default for `vite dev` and vitest.
+ * `location.origin` rather than a relative string: `new URL('/api/x', '/')`
+ * throws `Invalid URL`, measured, so a bare path cannot be the base. Every call
+ * site keeps passing `base()` to `new URL`, and the argument stays a `URL`.
  *
- * A build that sets none of those now fails loudly here, at module load, instead
- * of silently talking to the wrong database.
+ * These calls all run in the browser — inside `$effect`s and event handlers.
+ * Nothing in this repository fetches from a server-side `load`, which is why
+ * reading `location` per call is enough; see `base()` for the measured reason it
+ * cannot be read at module load.
  */
-const configured = import.meta.env.PUBLIC_API_BASE as string | undefined;
-
-if (!configured) {
-  throw new Error(
-    'PUBLIC_API_BASE is not set. Point it at the backend this build talks to. ' +
-      'It is deliberately required: an unset value used to default to the development ' +
-      'backend on :3001, which tests must never reach.'
-  );
+function base(): string {
+  // Read per call, not at module load. `api.ts` is imported by the SSR build too,
+  // where `location` does not exist — measured: a module-level `location.origin`
+  // made every page render 500 with `ReferenceError: location is not defined`,
+  // and the jsdom unit suite could not see it because jsdom always has a
+  // `location`. Nothing fetches during SSR today, so the function is never
+  // called there; it exists so that merely importing the module stays safe.
+  return location.origin;
 }
-
-const BASE = configured;
 
 /** A failed request, carrying the status the caller may need to branch on. */
 export class ApiError extends Error {
@@ -197,7 +199,7 @@ export type ListSalesParams = {
 
 /** Sales newest first, with their nested lines and customer name. */
 export async function listSales(params: ListSalesParams = {}): Promise<SaleListItem[]> {
-  const url = new URL('/api/sales', BASE);
+  const url = new URL('/api/sales', base());
   setIfPresent(url, 'from', params.from);
   setIfPresent(url, 'to', params.to);
   setIfPresent(url, 'limit', params.limit);
@@ -228,11 +230,11 @@ export async function createSale(sale: NewSale): Promise<Sale & { items: SaleIte
   // Omitted, not null: the server distinguishes "no customer" (walk-in) from
   // "an unknown customer id" (404).
   if (sale.customer_id) body.customer_id = sale.customer_id;
-  return request<Sale & { items: SaleItem[] }>(new URL('/api/sales', BASE), json('POST', body));
+  return request<Sale & { items: SaleItem[] }>(new URL('/api/sales', base()), json('POST', body));
 }
 
 export async function getCash(): Promise<Cash> {
-  return request<Cash>(new URL('/api/cash', BASE));
+  return request<Cash>(new URL('/api/cash', base()));
 }
 
 /**
@@ -251,7 +253,7 @@ export type PeriodSummary = {
 };
 
 export async function getSalesSummary(from: string, to: string): Promise<PeriodSummary> {
-  const url = new URL('/api/sales/summary', BASE);
+  const url = new URL('/api/sales/summary', base());
   url.searchParams.set('from', from);
   url.searchParams.set('to', to);
   return request<PeriodSummary>(url);
@@ -278,7 +280,7 @@ export async function createCreditNote(
   items: NewCreditNoteLine[]
 ): Promise<CreditNote> {
   return request<CreditNote>(
-    new URL(`/api/sales/${saleId}/credit-notes`, BASE),
+    new URL(`/api/sales/${saleId}/credit-notes`, base()),
     json('POST', { items })
   );
 }
@@ -295,7 +297,7 @@ export type Supplier = { id: string; name: string; created_at: string };
  * make that fallback invisible.
  */
 export async function listSuppliers(): Promise<Supplier[]> {
-  return request<Supplier[]>(new URL('/api/suppliers', BASE));
+  return request<Supplier[]>(new URL('/api/suppliers', base()));
 }
 
 /**
@@ -308,7 +310,7 @@ export async function listSuppliers(): Promise<Supplier[]> {
  * is right there to choose, and hiding the conflict would hide that.
  */
 export async function createSupplier(name: string): Promise<Supplier> {
-  return request<Supplier>(new URL('/api/suppliers', BASE), json('POST', { name }));
+  return request<Supplier>(new URL('/api/suppliers', base()), json('POST', { name }));
 }
 
 // ── Purchases ────────────────────────────────────────────────────────────────
@@ -383,7 +385,7 @@ export type PurchaseItem = {
 
 /** Purchases newest first, with their nested lines. */
 export async function listPurchases(params: ListPurchasesParams = {}): Promise<PurchaseListItem[]> {
-  const url = new URL('/api/purchases', BASE);
+  const url = new URL('/api/purchases', base());
   setIfPresent(url, 'from', params.from);
   setIfPresent(url, 'to', params.to);
   setIfPresent(url, 'limit', params.limit);
@@ -406,7 +408,7 @@ export type PurchasesSummary = {
 };
 
 export async function getPurchasesSummary(from: string, to: string): Promise<PurchasesSummary> {
-  const url = new URL('/api/purchases/summary', BASE);
+  const url = new URL('/api/purchases/summary', base());
   url.searchParams.set('from', from);
   url.searchParams.set('to', to);
   return request<PurchasesSummary>(url);
@@ -426,7 +428,7 @@ export async function createPurchase(purchase: NewPurchase): Promise<PurchaseLis
   // shape as the list endpoint, with `supplier_returns` empty because a purchase
   // cannot be born corrected. The narrower type described the server wrongly and
   // the comment above the list type claimed otherwise.
-  return request<PurchaseListItem>(new URL('/api/purchases', BASE), json('POST', body));
+  return request<PurchaseListItem>(new URL('/api/purchases', base()), json('POST', body));
 }
 
 /**
@@ -491,7 +493,7 @@ export async function createSupplierReturn(
   items: NewSupplierReturnLine[]
 ): Promise<SupplierReturnWithItems> {
   return request<SupplierReturnWithItems>(
-    new URL(`/api/purchases/${purchaseId}/supplier-returns`, BASE),
+    new URL(`/api/purchases/${purchaseId}/supplier-returns`, base()),
     json('POST', { items })
   );
 }
@@ -506,7 +508,7 @@ export type ListProductsParams = {
 };
 
 export async function listProducts(params: ListProductsParams = {}): Promise<Product[]> {
-  const url = new URL('/api/products', BASE);
+  const url = new URL('/api/products', base());
   const q = params.q?.trim();
   if (q) url.searchParams.set('q', q);
   setIfPresent(url, 'limit', params.limit);
@@ -523,13 +525,13 @@ export type NewProduct = {
 };
 
 export async function createProduct(product: NewProduct): Promise<Product> {
-  return request<Product>(new URL('/api/products', BASE), json('POST', product));
+  return request<Product>(new URL('/api/products', base()), json('POST', product));
 }
 
 // ── Customers ────────────────────────────────────────────────────────────────
 
 export async function listCustomers(): Promise<Customer[]> {
-  return request<Customer[]>(new URL('/api/customers', BASE));
+  return request<Customer[]>(new URL('/api/customers', base()));
 }
 
 /**
@@ -544,7 +546,7 @@ export async function findOrCreateCustomer(name: string): Promise<Customer> {
   const trimmed = name.trim();
   try {
     return await request<Customer>(
-      new URL('/api/customers', BASE),
+      new URL('/api/customers', base()),
       json('POST', { name: trimmed })
     );
   } catch (e) {
@@ -597,7 +599,7 @@ export type Scope = 'day' | 'week' | 'month';
  * server-side (S7).
  */
 export async function fetchDay(at: Date, scope: Scope = 'day'): Promise<DayRange> {
-  const url = new URL('/api/day', BASE);
+  const url = new URL('/api/day', base());
   url.searchParams.set('at', at.toISOString());
   // Sent only when it is not the default, so an older server that does not know
   // the parameter keeps answering exactly as before.
@@ -608,7 +610,7 @@ export async function fetchDay(at: Date, scope: Scope = 'day'): Promise<DayRange
 // ── The walking skeleton (kept, not extended) ────────────────────────────────
 
 export async function sayHello(name: string): Promise<{ message: string; server_time: string }> {
-  const url = new URL('/api/hello', BASE);
+  const url = new URL('/api/hello', base());
   if (name) url.searchParams.set('name', name);
   const r = await fetch(url);
   if (!r.ok) throw new Error(`hello failed: ${r.status}`);
@@ -616,14 +618,14 @@ export async function sayHello(name: string): Promise<{ message: string; server_
 }
 
 export async function listNotes(): Promise<Note[]> {
-  return request<Note[]>(new URL('/api/notes', BASE));
+  return request<Note[]>(new URL('/api/notes', base()));
 }
 
 export async function createNote(text: string): Promise<Note> {
-  return request<Note>(new URL('/api/notes', BASE), json('POST', { text }));
+  return request<Note>(new URL('/api/notes', base()), json('POST', { text }));
 }
 
 export async function deleteNote(id: string): Promise<void> {
-  const r = await fetch(new URL(`/api/notes/${id}`, BASE), { method: 'DELETE' });
+  const r = await fetch(new URL(`/api/notes/${id}`, base()), { method: 'DELETE' });
   if (!r.ok) throw new ApiError(r.status, `deleteNote failed: ${r.status}`);
 }

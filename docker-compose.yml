@@ -53,7 +53,10 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
-      PUBLIC_API_BASE: http://localhost:3001
+      # The proxy in the app reads this per request, so the image carries no
+      # deployment inside it. `backend` is the service name on this network; from
+      # the host, `http://localhost:3001` is the same process.
+      BACKEND_URL: http://backend:3001
     ports:
       - "5173:5173"
     depends_on:

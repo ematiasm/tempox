@@ -589,3 +589,59 @@ describe('createPurchase', () => {
     ).rejects.toMatchObject({ status: 404 });
   });
 });
+
+/**
+ * T1 — the client calls the app's own origin, not a baked-in one.
+ *
+ * S7 and S9 of `odd/tasks/docker-prod.md`. Before this, `api.ts` read
+ * `import.meta.env.PUBLIC_API_BASE` and threw at module load when it was absent,
+ * so the value had to be known *before* the build and a single image could not
+ * serve two deployments. The proxy at `/api/*` runs on the app's own server, so
+ * every request must be same-origin: a `localhost:3001` in a browser on another
+ * machine is that machine, which is the defect the whole feature exists for.
+ *
+ * `calledUrl` already asserts the argument is a `URL`, so these cases also pin
+ * that the shape stays a `URL` and does not silently become a string.
+ */
+describe('the client targets its own origin (S7, S9)', () => {
+  it('sends a read to the origin the page was served from', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse([]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await listProducts({ limit: 50 });
+
+    const url = calledUrl(fetchMock);
+    expect(url.origin).toBe(window.location.origin);
+    expect(url.pathname).toBe('/api/products');
+    expect(url.searchParams.get('limit')).toBe('50');
+  });
+
+  it('sends a create to the same origin, not only reads', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ id: 'p1' }, 201));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createProduct({ name: 'Harina', list_price: '10.00' });
+
+    expect(calledUrl(fetchMock).origin).toBe(window.location.origin);
+  });
+
+  it('never produces an absolute URL to another host', async () => {
+    // The specific regression: a leftover `BASE` pointing at `:3001` would make
+    // this pass on the developer's machine and fail on the shop's counter —
+    // measured, that is how the original defect shipped.
+    const fetchMock = vi.fn(async () => jsonResponse([]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await listSales({});
+
+    const url = calledUrl(fetchMock);
+    expect(url.host).toBe(window.location.host);
+    // `:3001` is the development backend's port, and the one value that made the
+    // bug invisible on the developer's laptop. Asserting the *port* rather than
+    // the literal `localhost`: jsdom serves from `http://localhost:3000`, so
+    // "no localhost anywhere" would fail for the environment's reason, not the
+    // code's — which is a test asserting its own harness.
+    expect(url.port).toBe(window.location.port);
+    expect(url.href).not.toContain(':3001');
+  });
+});

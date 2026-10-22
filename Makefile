@@ -124,8 +124,9 @@ test-backend-binary:
 	cd backend && cargo build --all-features
 
 # Playwright builds and serves the frontend itself on :4173, and reaches the
-# backend through PUBLIC_API_BASE, which the harness sets. Chromium is a
-# machine-level artifact, not a repo one, so its absence is reported in one line
+# backend through the app's own `/api` proxy, pointed at it with `BACKEND_URL` —
+# which `playwright.config.ts` passes to the preview server it spawns. Chromium is
+# a machine-level artifact, not a repo one, so its absence is reported in one line
 # instead of as a wall of context launches that never happen.
 #
 # The check reads the browser binary rather than `playwright install --dry-run`:
@@ -136,11 +137,9 @@ test-backend-binary:
 # frontend build, serves the preview, and tears all of it down.
 #
 # It still prepares the database (`test-db`, which recreates it and sweeps the
-# `_sqlx_test_*` leftovers) and still exports `PUBLIC_API_BASE`, because `vite`
-# inlines that value into the bundle at BUILD time and Playwright's `webServer.env`
-# only reaches the process it spawns. Measured: a build given
-# `PUBLIC_API_BASE=http://probe-1234` contains that literal in
-# `_app/immutable/chunks/*.js`.
+# `_sqlx_test_*` leftovers). It no longer exports a build-time API origin: the
+# value is `BACKEND_URL`, read per request by the proxy, so a build carries no
+# deployment inside it and this recipe only has to name the database.
 #
 # Building the binary here rather than inside Playwright's command keeps the build
 # failure legible: a compile error should read as a compile error, not as
@@ -152,9 +151,7 @@ test-e2e: test-db
 		exit 1; \
 	}
 	@$(MAKE) --no-print-directory test-backend-binary
-	cd frontend && TEST_DATABASE_URL='$(TEST_DATABASE_URL)' \
-		PUBLIC_API_BASE="http://localhost:$${TEST_BACKEND_PORT:-3099}" \
-		npx playwright test
+	cd frontend && TEST_DATABASE_URL='$(TEST_DATABASE_URL)' npx playwright test
 
 # Recreating the test database. The SQL and the safety checks live in
 # `scripts/test-db.sh`: a heredoc cannot span Make's recipe lines, because Make
