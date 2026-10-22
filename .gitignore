@@ -15,6 +15,9 @@ frontend/dist/
 # Env
 .env
 .env.local
+# The deliverable stack's credentials. `.env.prod.example` is tracked (it holds
+# placeholders); this one holds real values and must never be committed.
+.env.prod
 !.env.example
 
 # Playwright
