@@ -59,6 +59,11 @@ $$;
 -- per-account totals are captured here and compared after. A migration that rewrites a
 -- read model owes that comparison; without it, "the view still works" would be a claim
 -- about compilation, not about arithmetic.
+-- `DROP` first: a `TEMP TABLE` lives for the session, and a migrator that re-runs this
+-- file within one connection — a retry after a failed attempt, which is exactly how
+-- `0009`'s re-run defect was found — would otherwise fail on the name rather than on
+-- anything true. `R3-001` flagged the unguarded create; this is the guard.
+DROP TABLE IF EXISTS v3_totals_before_drop;
 CREATE TEMP TABLE v3_totals_before_drop AS
 SELECT account_id, SUM(amount) AS total
   FROM money_movements

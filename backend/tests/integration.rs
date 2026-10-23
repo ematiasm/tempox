@@ -336,9 +336,18 @@ async fn v1_units_and_history_guards(pool: sqlx::PgPool) {
         .bind(sid.0)
         .execute(&mut *tx)
         .await;
+    let refusal = any_write.expect_err("a sale must have no writable column at all");
+    // **The failure has to be the guard, not a CHECK.** `total + 0.01` still lands on
+    // whole cents, so a whole-cents constraint cannot be what refuses it; but the
+    // assertion would accept any error at all, and that is the class of test this
+    // slice has already been caught by twice. `R3-002` named it.
+    let message = refusal
+        .as_database_error()
+        .map(|e| e.message().to_string())
+        .unwrap_or_default();
     assert!(
-        any_write.is_err(),
-        "a sale must have no writable column at all since the lifecycle was dropped"
+        message.contains("economics are immutable"),
+        "the refusal must come from the sale guard, got: {message}"
     );
 
     tx.rollback().await.expect("rollback");

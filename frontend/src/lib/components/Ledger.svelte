@@ -353,18 +353,6 @@
   }
 
   /**
-   * Whether a sale contributes nothing to the running balance.
-   *
-   * It used to also test `row.status === 'cancel' || row.reversed_at !== null`, a
-   * branch **unreachable for the whole life of the system**: nothing ever wrote either
-   * column, and `0015` dropped them. A return is what actually takes a sale out of the
-   * running total, so that is what this asks now.
-   */
-  function isAnnulled(row: SaleListItem) {
-    return isFullyRefunded(row);
-  }
-
-  /**
    * How much of each line has already come back, keyed by sale-line id.
    *
    * Derived from the notes the server sent rather than tracked locally: the
@@ -416,7 +404,10 @@
         // shop kept, so a partly refunded sale contributes its net: 100.00 sold
         // with 30.00 returned moved 70.00 through the till, not 100.00.
         refunded: row.credit_notes.reduce((sum, note) => sum + Number(note.total), 0).toFixed(2),
-        counts: !(isAnnulled(row) || isFullyRefunded(row))
+        // A fully refunded sale contributes nothing to the running balance. This
+        // read `isAnnulled(row) || isFullyRefunded(row)`, where the first was an
+        // alias of the second: one question, two names (`R3-003`).
+        counts: !isFullyRefunded(row)
       }))
     );
     // `SvelteMap`, not `Map`: the column must recompute when the day reloads.
@@ -660,7 +651,7 @@
           <tbody>
             {#each rows as row (row.id)}
               {@const open = expanded.has(row.id)}
-              {@const annulled = isAnnulled(row) || isFullyRefunded(row)}
+              {@const annulled = isFullyRefunded(row)}
               <!-- The whole row is the control. The chevron used to be the only
                  thing that opened a document, which means aiming a mouse at a
                  12px triangle — on a shop PC, several times an hour. A row is
@@ -745,7 +736,7 @@
                        nothing to the day.
 
                        This branch used to be the SECOND of two, behind
-                       `isAnnulled(row)`, which read `status === 'cancel'`: a state
+                       a branch reading `status === 'cancel'`: a state
                        nothing could ever enter. With the lifecycle dropped (`0015`)
                        that first branch would have shadowed this one and labelled every
                        return "Anulada", which is what the e2e caught. -->
