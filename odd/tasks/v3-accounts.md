@@ -1344,3 +1344,33 @@ real finding is reproduced and handed to the collections slice as a requirement
 (`L107`). What the slice leaves behind: 91 integration tests, 50 backend unit tests, 232
 frontend unit tests, 22 e2e, five migrations, and a system where a sale can name a bank
 transfer and the till stops claiming money it never received.
+
+L110 (delivery, 2026-10-23, **the branch is published and chained**): `feat/v3-accounts`
+was pushed to `origin` as the backup that did not exist, then split into a **two-PR
+chain**, both open and both 4/4 green on CI:
+
+| PR | base | head | budget |
+|---|---|---|---|
+| **#80** backend (T1, T0, T3, T4, T5, T6) | `main` | `feat/v3-backend` | 5 585 / 400 — `size:exception` |
+| **#81** frontend, e2e and the closing drop (T7, T8, T2) | `feat/v3-backend` | `feat/v3-frontend-close` | ~1 630 / 400 — `size:exception` |
+
+#81's base is a branch, and **CI ran on it** — the defect `#42`/`#76` cost, now fixed.
+
+L111 (why two PRs and not nine, recorded because the first plan was nine): nine
+task-sized PRs were planned and **rejected for an honest reason**. The commit history is
+ordered by task, but the ODD decision log is ordered by when decisions happened, so
+`414db30` (T0's spec correction) and `41e67b2` (T6's approval) sit after the natural
+split point. Grouping the log per task would mean **rewriting content in commits already
+reviewed and sealed**, which destroys the correspondence the receipt certifies. Two PRs
+keep the history untouched and simply declare which docs travel in the second one. The
+`size:exception` is structural: the log is 1 364 lines that ship with the code they
+explain, and `T1` alone is 2 221 lines of migrations and guards.
+
+L112 (one thing learned while doing it, worth stating): the first attempt at the chain
+was **wrong and was caught by checking ancestry** rather than by assuming. The PR-1 doc
+commit was made on `feat/v3-backend` *after* `feat/v3-frontend-close` had been branched
+from the old head, so the second branch did not contain it —
+`git merge-base --is-ancestor` said `NO`. Both branches were deleted and rebuilt in the
+right order: PR 1's doc commit first, then the second branch created from it and the 17
+remaining commits cherry-picked, which applied without conflict. An unchecked chain is a
+chain that looks right in the GitHub UI and rebases into a mess.
