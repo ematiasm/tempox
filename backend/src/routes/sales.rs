@@ -19,6 +19,16 @@ use crate::money::{self, LineInput};
 /// customer. Must match the fixed id in `0002_v1_sales_stock.sql`.
 const WALK_IN_CUSTOMER_ID: Uuid = Uuid::from_u128(1);
 
+/// The seeded `cash` payment method (`00000000-0000-0000-0000-000000000004`,
+/// migration `0012`).
+///
+/// v3's migration made `payment_method_id` NOT NULL on all four documents while
+/// nothing in the API sends one yet, so the write paths name the seeded method —
+/// the same destination `0002`'s `DEFAULT 'cash'` produced. The client-supplied
+/// field arrives with the sales/purchases write paths; until then this constant is
+/// what keeps every recorded document saying where its money moved.
+pub const CASH_PAYMENT_METHOD_ID: Uuid = Uuid::from_u128(4);
+
 /// Upper bound for a single list query, whatever the client asks for.
 const MAX_LIST_LIMIT: i64 = 200;
 
@@ -186,9 +196,10 @@ async fn create_sale(
 
     // The sale header.
     let sale_id = sqlx::query_scalar!(
-        "INSERT INTO sales (customer_id, total) VALUES ($1, $2) RETURNING id",
+        "INSERT INTO sales (customer_id, total, payment_method_id) VALUES ($1, $2, $3) RETURNING id",
         customer_id,
-        total
+        total,
+        CASH_PAYMENT_METHOD_ID
     )
     .fetch_one(&mut *tx)
     .await
@@ -256,9 +267,16 @@ async fn create_sale(
         // round(...,2): the column declares scale 6 and returns its value at that
         // scale, so an amount would leave as `3750.000000`. See 0006 for why the
         // column declares 6, and `money::MONEY_SCALE` for the contract.
-        "SELECT id, customer_id, round(total, 2) AS \"total!\", payment_method, status,
-                reversed_at, created_at
-         FROM sales WHERE id = $1",
+        //
+        // `payment_method` is joined, not read off `sales`: 0012 dropped the TEXT
+        // column and the name lives on `payment_methods`. Joining by id is what
+        // lets a rename correct history instead of freezing a typo.
+        "SELECT s.id, s.customer_id, round(s.total, 2) AS \"total!\",
+                pm.name AS \"payment_method!\", s.status,
+                s.reversed_at, s.created_at
+         FROM sales s
+         JOIN payment_methods pm ON pm.id = s.payment_method_id
+         WHERE s.id = $1",
         sale_id
     )
     .fetch_one(&mut *tx)
@@ -381,10 +399,25 @@ async fn create_credit_note(
     }
     note_total.rescale(money::MONEY_SCALE);
 
+    // The note inherits the corrected sale's method. That inheritance is what makes
+    // a refund of an unpaid credit sale move no money: the note credits the same
+    // account the sale debited, so the debt drops instead of a till paying out.
+    // The override (a note naming its own method) is T5's; here the inherited value
+    // is read from the sale, never chosen by the client.
+    let inherited_method: Uuid =
+        sqlx::query_scalar!("SELECT payment_method_id FROM sales WHERE id = $1", sale_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| {
+                tracing::error!(?e, "sale payment method read failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+
     let note_id = sqlx::query_scalar!(
-        "INSERT INTO credit_notes (sale_id, total) VALUES ($1, $2) RETURNING id",
+        "INSERT INTO credit_notes (sale_id, total, payment_method_id) VALUES ($1, $2, $3) RETURNING id",
         sale_id,
-        note_total
+        note_total,
+        inherited_method
     )
     .fetch_one(&mut *tx)
     .await
@@ -534,10 +567,13 @@ async fn list_sales(
     // With both bounds absent the WHERE clause is vacuously true, which is the
     // unscoped behaviour v1 shipped.
     let rows = sqlx::query!(
-        "SELECT s.id, s.customer_id, round(s.total, 2) AS \"total!\", s.payment_method, s.status,
+        // `payment_method` is the method's name, joined on the FK that 0012 added.
+        "SELECT s.id, s.customer_id, round(s.total, 2) AS \"total!\",
+                pm.name AS \"payment_method!\", s.status,
                 s.reversed_at, s.created_at, c.name AS customer_name
          FROM sales s
          JOIN customers c ON c.id = s.customer_id
+         JOIN payment_methods pm ON pm.id = s.payment_method_id
          WHERE ($1::timestamptz IS NULL OR s.created_at >= $1)
            AND ($2::timestamptz IS NULL OR s.created_at < $2)
          ORDER BY s.created_at DESC

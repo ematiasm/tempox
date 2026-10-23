@@ -19,6 +19,11 @@ use crate::money;
 /// resolve without a lookup, and the migration seeds exactly this row.
 const ONE_OFF_SUPPLIER_ID: Uuid = Uuid::from_u128(2);
 
+/// The seeded `cash` payment method; see `sales::CASH_PAYMENT_METHOD_ID`. A
+/// purchase is cash terms until the payable document exists, so this is the
+/// destination the migration backfilled history with.
+use crate::routes::sales::CASH_PAYMENT_METHOD_ID;
+
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/purchases", post(create_purchase).get(list_purchases))
@@ -224,9 +229,10 @@ async fn create_purchase(
     }
 
     let purchase_id = sqlx::query_scalar!(
-        "INSERT INTO purchases (supplier_id, total) VALUES ($1, $2) RETURNING id",
+        "INSERT INTO purchases (supplier_id, total, payment_method_id) VALUES ($1, $2, $3) RETURNING id",
         supplier_id,
-        total
+        total,
+        CASH_PAYMENT_METHOD_ID
     )
     .fetch_one(&mut *tx)
     .await
@@ -559,10 +565,25 @@ async fn create_supplier_return(
     }
     return_total.rescale(money::MONEY_SCALE);
 
+    // The return inherits the corrected purchase's method, the mirror of a credit
+    // note inheriting the sale's: the supplier gives money back through the same
+    // rail that paid them. No override exists in v3.
+    let inherited_method: Uuid = sqlx::query_scalar!(
+        "SELECT payment_method_id FROM purchases WHERE id = $1",
+        purchase_id
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| {
+        tracing::error!(?e, "purchase payment method read failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
     let return_id = sqlx::query_scalar!(
-        "INSERT INTO supplier_returns (purchase_id, total) VALUES ($1, $2) RETURNING id",
+        "INSERT INTO supplier_returns (purchase_id, total, payment_method_id) VALUES ($1, $2, $3) RETURNING id",
         purchase_id,
-        return_total
+        return_total,
+        inherited_method
     )
     .fetch_one(&mut *tx)
     .await

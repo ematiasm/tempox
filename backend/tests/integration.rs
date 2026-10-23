@@ -236,8 +236,8 @@ async fn v1_units_and_history_guards(pool: sqlx::PgPool) {
     .await
     .expect("insert product");
     let sid: (uuid::Uuid,) = sqlx::query_as(
-        "INSERT INTO sales (customer_id, total)
-         VALUES ('00000000-0000-0000-0000-000000000001', 3750.00) RETURNING id",
+        "INSERT INTO sales (customer_id, total, payment_method_id)
+         VALUES ('00000000-0000-0000-0000-000000000001', 3750.00, '00000000-0000-0000-0000-000000000004') RETURNING id",
     )
     .fetch_one(&mut *tx)
     .await
@@ -302,8 +302,8 @@ async fn v1_units_and_history_guards(pool: sqlx::PgPool) {
             .await
             .expect("savepoint");
         let result = sqlx::query(
-            "INSERT INTO sales (customer_id, total)
-             VALUES ('00000000-0000-0000-0000-000000000001', 1.235)",
+            "INSERT INTO sales (customer_id, total, payment_method_id)
+             VALUES ('00000000-0000-0000-0000-000000000001', 1.235, '00000000-0000-0000-0000-000000000004')",
         )
         .execute(&mut *tx)
         .await;
@@ -358,8 +358,8 @@ async fn v1_ledger_is_append_only_and_reason_coherent(pool: sqlx::PgPool) {
     .await
     .expect("insert initial movement");
     let sid: (uuid::Uuid,) = sqlx::query_as(
-        "INSERT INTO sales (customer_id, total)
-         VALUES ('00000000-0000-0000-0000-000000000001', 3750) RETURNING id",
+        "INSERT INTO sales (customer_id, total, payment_method_id)
+         VALUES ('00000000-0000-0000-0000-000000000001', 3750, '00000000-0000-0000-0000-000000000004') RETURNING id",
     )
     .fetch_one(&mut *tx)
     .await
@@ -877,8 +877,8 @@ async fn v1a_sales_list_is_scoped_by_date_and_offset(pool: sqlx::PgPool) {
         let pool = pool.clone();
         async move {
             let row: (uuid::Uuid,) = sqlx::query_as(
-                "INSERT INTO sales (customer_id, total, created_at)
-                 VALUES ('00000000-0000-0000-0000-000000000001', 1.00, $1::timestamptz) RETURNING id",
+                "INSERT INTO sales (customer_id, total, created_at, payment_method_id)
+                 VALUES ('00000000-0000-0000-0000-000000000001', 1.00, $1::timestamptz, '00000000-0000-0000-0000-000000000004') RETURNING id",
             )
             .bind(created_at)
             .fetch_one(&pool)
@@ -2490,7 +2490,7 @@ async fn v2_a_purchase_is_immutable_after_it_exists(pool: sqlx::PgPool) {
     .expect("insert product");
 
     let purchase_id: (uuid::Uuid,) = sqlx::query_as(
-        "INSERT INTO purchases (supplier_id, total) VALUES ($1, 20.00) RETURNING id",
+        "INSERT INTO purchases (supplier_id, total, payment_method_id) VALUES ($1, 20.00, '00000000-0000-0000-0000-000000000004') RETURNING id",
     )
     .bind(uuid::Uuid::parse_str(ONE_OFF_SUPPLIER_ID).expect("fixed uuid"))
     .fetch_one(&mut *tx)
@@ -2566,7 +2566,7 @@ async fn v2_a_purchase_is_immutable_after_it_exists(pool: sqlx::PgPool) {
     // A finer-than-a-cent amount is refused on both new money columns.
     probe_denied!(
         "a purchase total finer than a cent",
-        "INSERT INTO purchases (supplier_id, total) VALUES ($1, 20.005)",
+        "INSERT INTO purchases (supplier_id, total, payment_method_id) VALUES ($1, 20.005, '00000000-0000-0000-0000-000000000004')",
         uuid::Uuid::parse_str(ONE_OFF_SUPPLIER_ID).expect("fixed uuid")
     );
 
@@ -2584,7 +2584,7 @@ async fn v2_the_ledger_refuses_a_purchase_movement_without_its_document(pool: sq
     .expect("insert product");
 
     let purchase_id: (uuid::Uuid,) =
-        sqlx::query_as("INSERT INTO purchases (supplier_id, total) VALUES ($1, 0.00) RETURNING id")
+        sqlx::query_as("INSERT INTO purchases (supplier_id, total, payment_method_id) VALUES ($1, 0.00, '00000000-0000-0000-0000-000000000004') RETURNING id")
             .bind(uuid::Uuid::parse_str(ONE_OFF_SUPPLIER_ID).expect("fixed uuid"))
             .fetch_one(&mut *tx)
             .await
@@ -2669,7 +2669,7 @@ async fn v2_the_ledger_refuses_a_purchase_movement_without_its_document(pool: sq
     // one-sided `purchase => purchase_id` check would let this through, which is
     // exactly what a mutation run measured.
     let sale_id: (uuid::Uuid,) = sqlx::query_as(
-        "INSERT INTO sales (customer_id, total) VALUES ('00000000-0000-0000-0000-000000000001', 0.00) RETURNING id",
+        "INSERT INTO sales (customer_id, total, payment_method_id) VALUES ('00000000-0000-0000-0000-000000000001', 0.00, '00000000-0000-0000-0000-000000000004') RETURNING id",
     )
     .fetch_one(&mut *tx)
     .await
@@ -3315,7 +3315,7 @@ async fn v2_purchase_tables_refuse_truncate_and_keep_their_state(pool: sqlx::PgP
             .await
             .expect("insert product");
     let purchase_id: (uuid::Uuid,) =
-        sqlx::query_as("INSERT INTO purchases (supplier_id, total) VALUES ($1, 1.00) RETURNING id")
+        sqlx::query_as("INSERT INTO purchases (supplier_id, total, payment_method_id) VALUES ($1, 1.00, '00000000-0000-0000-0000-000000000004') RETURNING id")
             .bind(uuid::Uuid::parse_str(ONE_OFF_SUPPLIER_ID).expect("fixed uuid"))
             .fetch_one(&mut *tx)
             .await
@@ -3449,7 +3449,7 @@ async fn v2_5_fixture(
             .await
             .expect("insert product");
     let purchase_id: (uuid::Uuid,) = sqlx::query_as(
-        "INSERT INTO purchases (supplier_id, total) VALUES ($1, 30.00) RETURNING id",
+        "INSERT INTO purchases (supplier_id, total, payment_method_id) VALUES ($1, 30.00, '00000000-0000-0000-0000-000000000004') RETURNING id",
     )
     .bind(uuid::Uuid::parse_str(ONE_OFF_SUPPLIER_ID).expect("fixed uuid"))
     .fetch_one(&mut **tx)
@@ -3491,7 +3491,7 @@ async fn v2_5_a_return_takes_stock_out_and_names_both_documents(pool: sqlx::PgPo
     let (pid, purchase_id, item_id) = v2_5_fixture(&mut tx, "happy").await;
 
     let return_id: (uuid::Uuid,) = sqlx::query_as(
-        "INSERT INTO supplier_returns (purchase_id, total) VALUES ($1, 10.00) RETURNING id",
+        "INSERT INTO supplier_returns (purchase_id, total, payment_method_id) VALUES ($1, 10.00, '00000000-0000-0000-0000-000000000004') RETURNING id",
     )
     .bind(purchase_id)
     .fetch_one(&mut *tx)
@@ -3534,14 +3534,14 @@ async fn v2_5_the_ledger_refuses_incoherent_supplier_return_movements(pool: sqlx
 
     let (pid, purchase_id, _item_id) = v2_5_fixture(&mut tx, "coherence").await;
     let return_id: (uuid::Uuid,) = sqlx::query_as(
-        "INSERT INTO supplier_returns (purchase_id, total) VALUES ($1, 10.00) RETURNING id",
+        "INSERT INTO supplier_returns (purchase_id, total, payment_method_id) VALUES ($1, 10.00, '00000000-0000-0000-0000-000000000004') RETURNING id",
     )
     .bind(purchase_id)
     .fetch_one(&mut *tx)
     .await
     .expect("insert return");
     let sale_id: (uuid::Uuid,) = sqlx::query_as(
-        "INSERT INTO sales (customer_id, total) VALUES ('00000000-0000-0000-0000-000000000001', 0.00) RETURNING id",
+        "INSERT INTO sales (customer_id, total, payment_method_id) VALUES ('00000000-0000-0000-0000-000000000001', 0.00, '00000000-0000-0000-0000-000000000004') RETURNING id",
     )
     .fetch_one(&mut *tx)
     .await
@@ -3602,7 +3602,7 @@ async fn v2_5_the_return_tables_are_immutable(pool: sqlx::PgPool) {
 
     let (pid, purchase_id, item_id) = v2_5_fixture(&mut tx, "immutable").await;
     let return_id: (uuid::Uuid,) = sqlx::query_as(
-        "INSERT INTO supplier_returns (purchase_id, total) VALUES ($1, 10.00) RETURNING id",
+        "INSERT INTO supplier_returns (purchase_id, total, payment_method_id) VALUES ($1, 10.00, '00000000-0000-0000-0000-000000000004') RETURNING id",
     )
     .bind(purchase_id)
     .fetch_one(&mut *tx)
@@ -3661,7 +3661,7 @@ async fn v2_5_the_return_tables_are_immutable(pool: sqlx::PgPool) {
     // A finer-than-a-cent amount is refused on the new money columns.
     probe_denied!(
         "a supplier_return total finer than a cent",
-        "INSERT INTO supplier_returns (purchase_id, total) VALUES ($1, 10.005)",
+        "INSERT INTO supplier_returns (purchase_id, total, payment_method_id) VALUES ($1, 10.005, '00000000-0000-0000-0000-000000000004')",
         purchase_id
     );
 
@@ -4227,7 +4227,7 @@ async fn ledger_fixture(
     let stranger = product_ids[2];
 
     let sale_id: (uuid::Uuid,) = sqlx::query_as(
-        "INSERT INTO sales (customer_id, total) VALUES ('00000000-0000-0000-0000-000000000001', 10.00) RETURNING id",
+        "INSERT INTO sales (customer_id, total, payment_method_id) VALUES ('00000000-0000-0000-0000-000000000001', 10.00, '00000000-0000-0000-0000-000000000004') RETURNING id",
     )
     .fetch_one(&mut **tx)
     .await
@@ -4243,7 +4243,7 @@ async fn ledger_fixture(
     .expect("insert sale item");
 
     let purchase_id: (uuid::Uuid,) = sqlx::query_as(
-        "INSERT INTO purchases (supplier_id, total) VALUES ('00000000-0000-0000-0000-000000000002', 10.00) RETURNING id",
+        "INSERT INTO purchases (supplier_id, total, payment_method_id) VALUES ('00000000-0000-0000-0000-000000000002', 10.00, '00000000-0000-0000-0000-000000000004') RETURNING id",
     )
     .fetch_one(&mut **tx)
     .await
@@ -4275,13 +4275,13 @@ async fn ledger_refuses_a_movement_whose_product_is_not_in_its_document(pool: sq
     let f = ledger_fixture(&mut tx, "belongs").await;
 
     let cn: (uuid::Uuid,) =
-        sqlx::query_as("INSERT INTO credit_notes (sale_id, total) VALUES ($1, 10.00) RETURNING id")
+        sqlx::query_as("INSERT INTO credit_notes (sale_id, total, payment_method_id) VALUES ($1, 10.00, '00000000-0000-0000-0000-000000000004') RETURNING id")
             .bind(f.sale_id)
             .fetch_one(&mut *tx)
             .await
             .expect("insert credit note");
     let ret: (uuid::Uuid,) = sqlx::query_as(
-        "INSERT INTO supplier_returns (purchase_id, total) VALUES ($1, 10.00) RETURNING id",
+        "INSERT INTO supplier_returns (purchase_id, total, payment_method_id) VALUES ($1, 10.00, '00000000-0000-0000-0000-000000000004') RETURNING id",
     )
     .bind(f.purchase_id)
     .fetch_one(&mut *tx)
@@ -4387,13 +4387,13 @@ async fn ledger_still_refuses_everything_the_old_constraints_refused(pool: sqlx:
     let f = ledger_fixture(&mut tx, "equivalence").await;
 
     let cn: (uuid::Uuid,) =
-        sqlx::query_as("INSERT INTO credit_notes (sale_id, total) VALUES ($1, 10.00) RETURNING id")
+        sqlx::query_as("INSERT INTO credit_notes (sale_id, total, payment_method_id) VALUES ($1, 10.00, '00000000-0000-0000-0000-000000000004') RETURNING id")
             .bind(f.sale_id)
             .fetch_one(&mut *tx)
             .await
             .expect("insert credit note");
     let ret: (uuid::Uuid,) = sqlx::query_as(
-        "INSERT INTO supplier_returns (purchase_id, total) VALUES ($1, 10.00) RETURNING id",
+        "INSERT INTO supplier_returns (purchase_id, total, payment_method_id) VALUES ($1, 10.00, '00000000-0000-0000-0000-000000000004') RETURNING id",
     )
     .bind(f.purchase_id)
     .fetch_one(&mut *tx)
@@ -4521,13 +4521,13 @@ async fn ledger_refuses_a_document_from_another_transaction(pool: sqlx::PgPool) 
 
     // A credit note on sale B, used on a movement naming sale A.
     let cn_on_b: (uuid::Uuid,) =
-        sqlx::query_as("INSERT INTO credit_notes (sale_id, total) VALUES ($1, 10.00) RETURNING id")
+        sqlx::query_as("INSERT INTO credit_notes (sale_id, total, payment_method_id) VALUES ($1, 10.00, '00000000-0000-0000-0000-000000000004') RETURNING id")
             .bind(b.sale_id)
             .fetch_one(&mut *tx)
             .await
             .expect("insert credit note");
     let ret_on_b: (uuid::Uuid,) = sqlx::query_as(
-        "INSERT INTO supplier_returns (purchase_id, total) VALUES ($1, 10.00) RETURNING id",
+        "INSERT INTO supplier_returns (purchase_id, total, payment_method_id) VALUES ($1, 10.00, '00000000-0000-0000-0000-000000000004') RETURNING id",
     )
     .bind(b.purchase_id)
     .fetch_one(&mut *tx)
@@ -4564,4 +4564,549 @@ async fn ledger_refuses_a_document_from_another_transaction(pool: sqlx::PgPool) 
     );
 
     tx.rollback().await.expect("rollback");
+}
+
+// ── v3: accounts, payment methods and the four destinations (0012) ──────────
+//
+// The migration's own claims, measured. Every assertion here is about something
+// `0012` created: the seeds, the backfill, the four `NOT NULL`s, and the four
+// guards that make "where the money moved" an invariant instead of a convention.
+//
+// The guard tests assert the **positive** case first, on purpose. `v2`'s T1
+// recorded why: a guard test that only checks refusals can pass before the feature
+// exists, because the refusal comes from a missing table or a narrower vocabulary
+// rather than from the rule under test.
+
+#[sqlx::test]
+async fn v3_seeds_cash_and_an_inactive_credit_account_and_method(pool: sqlx::PgPool) {
+    let accounts: Vec<(uuid::Uuid, String, bool)> =
+        sqlx::query_as("SELECT id, name, is_default FROM accounts ORDER BY name")
+            .fetch_all(&pool)
+            .await
+            .expect("read accounts");
+
+    assert_eq!(accounts.len(), 2, "exactly the two seeded accounts");
+    let (cash_id, cash_name, cash_default) = &accounts[0];
+    let (credit_id, credit_name, credit_default) = &accounts[1];
+    assert_eq!(cash_name, "cash");
+    assert!(cash_default, "the till is the default account");
+    assert_eq!(credit_name, "credit");
+    assert!(!credit_default, "the debt account is not the till");
+
+    // Fixed ids, the mechanism walk-in and one-off-supplier established.
+    assert_eq!(*cash_id, uuid::Uuid::from_u128(3));
+    assert_eq!(*credit_id, uuid::Uuid::from_u128(5));
+
+    let methods: Vec<(String, bool, uuid::Uuid)> =
+        sqlx::query_as("SELECT name, is_active, account_id FROM payment_methods ORDER BY name")
+            .fetch_all(&pool)
+            .await
+            .expect("read methods");
+    assert_eq!(methods.len(), 2);
+    assert_eq!(methods[0].0, "cash");
+    assert!(methods[0].1, "cash is offered at the counter");
+    assert_eq!(methods[0].2, *cash_id);
+    assert_eq!(methods[1].0, "credit");
+    assert!(
+        !methods[1].1,
+        "credit is seeded INACTIVE: v3 has no way to collect a credit sale, so the \
+         picker must not offer a debt nothing can settle"
+    );
+    assert_eq!(methods[1].2, *credit_id);
+}
+
+#[sqlx::test]
+async fn v3_every_existing_document_names_where_its_money_moved(pool: sqlx::PgPool) {
+    // The backfill could not invent a destination, so it records the only one that
+    // existed. `0002`'s DEFAULT 'cash' is the evidence that every existing row means
+    // "the till". What is asserted here is the outcome: no document is stranded.
+    let cash_method = uuid::Uuid::from_u128(4);
+    // Literal statements rather than a formatted loop: sqlx 0.9 requires
+    // `&'static str` for queries, and building the table name at runtime defeats the
+    // compile-time checking this crate relies on everywhere else anyway.
+    const STRANDED: [(&str, &str); 4] = [
+        (
+            "sales",
+            "SELECT count(*) FROM sales WHERE payment_method_id IS DISTINCT FROM $1",
+        ),
+        (
+            "credit_notes",
+            "SELECT count(*) FROM credit_notes WHERE payment_method_id IS DISTINCT FROM $1",
+        ),
+        (
+            "purchases",
+            "SELECT count(*) FROM purchases WHERE payment_method_id IS DISTINCT FROM $1",
+        ),
+        (
+            "supplier_returns",
+            "SELECT count(*) FROM supplier_returns WHERE payment_method_id IS DISTINCT FROM $1",
+        ),
+    ];
+    for (table, statement) in STRANDED {
+        let stranded: i64 = sqlx::query_scalar(statement)
+            .bind(cash_method)
+            .fetch_one(&pool)
+            .await
+            .unwrap_or_else(|e| panic!("count {table}: {e}"));
+        assert_eq!(
+            stranded, 0,
+            "{table} rows must be backfilled to the cash method"
+        );
+    }
+
+    // And the old TEXT column is gone, with the guard that froze it re-cut to the
+    // foreign key. Dropping the column without re-cutting the function would leave a
+    // plpgsql body that resolves only at the next UPDATE.
+    let old_column: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM information_schema.columns
+          WHERE table_name = 'sales' AND column_name = 'payment_method'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read columns");
+    assert_eq!(old_column, 0, "sales.payment_method must be dropped");
+}
+
+#[sqlx::test]
+async fn v3_the_economics_guard_follows_the_destination_to_its_new_column(pool: sqlx::PgPool) {
+    // The regression this closes: a recorded sale's destination must not be
+    // rewritable. Before the re-cut, the guard compared a column that no longer
+    // exists; after it, the comparison follows the foreign key.
+    let (sale_id,): (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO sales (customer_id, total, payment_method_id)
+         VALUES ('00000000-0000-0000-0000-000000000001', 10.00,
+                 '00000000-0000-0000-0000-000000000004') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("insert sale");
+
+    let moved = sqlx::query("UPDATE sales SET payment_method_id = $1 WHERE id = $2")
+        .bind(uuid::Uuid::from_u128(6))
+        .bind(sale_id)
+        .execute(&pool)
+        .await;
+    assert!(
+        moved.is_err(),
+        "a sale's payment method must be immutable: moving it rewrites which account \
+         the money reached"
+    );
+
+    // The status transition the guard deliberately still permits stays permitted.
+    sqlx::query("UPDATE sales SET status = 'done' WHERE id = $1")
+        .bind(sale_id)
+        .execute(&pool)
+        .await
+        .expect("the guard permits a status write and nothing else");
+}
+
+#[sqlx::test]
+async fn v3_a_referenced_method_cannot_move_between_accounts(pool: sqlx::PgPool) {
+    // Positive case first: an UNREFERENCED method is a typo and must be correctable.
+    let (free_id,): (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO payment_methods (account_id, name)
+         VALUES ('00000000-0000-0000-0000-000000000003', 'transfer') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("insert an unreferenced method");
+
+    sqlx::query("UPDATE payment_methods SET account_id = $1 WHERE id = $2")
+        .bind(uuid::Uuid::from_u128(5))
+        .bind(free_id)
+        .execute(&pool)
+        .await
+        .expect("an unreferenced method may move: it is a typo, not history");
+
+    // Now the refusal. The cash method is named by the seeded history of this test
+    // database only after a document exists, so create one.
+    sqlx::query(
+        "INSERT INTO sales (customer_id, total, payment_method_id)
+         VALUES ('00000000-0000-0000-0000-000000000001', 5.00,
+                 '00000000-0000-0000-0000-000000000004')",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert sale naming the cash method");
+
+    // **A second active method on the same account, deliberately.** Without it, the
+    // move below would also be refused by the *default-account* invariant (the till
+    // would be left with no active method), and this test would pass while the guard
+    // under test was absent — measured by mutating `guard_payment_method_account`
+    // into a no-op and watching the test stay green. With the second method present
+    // the default-account rule is satisfied, so the only thing left to refuse the
+    // move is the rule this test is about.
+    sqlx::query(
+        "INSERT INTO payment_methods (account_id, name)
+         VALUES ('00000000-0000-0000-0000-000000000003', 'card')",
+    )
+    .execute(&pool)
+    .await
+    .expect("give the default account another active method");
+
+    let moved = sqlx::query("UPDATE payment_methods SET account_id = $1 WHERE id = $2")
+        .bind(uuid::Uuid::from_u128(5))
+        .bind(uuid::Uuid::from_u128(4))
+        .execute(&pool)
+        .await;
+    assert!(
+        moved.is_err(),
+        "a referenced method must not move accounts: yesterday's balance would change today"
+    );
+}
+
+#[sqlx::test]
+async fn v3_a_rename_corrects_history_instead_of_freezing_a_typo(pool: sqlx::PgPool) {
+    // The whole reason the name is a join and not a snapshot. Renaming is one UPDATE
+    // of one row, and the document's rendered name follows it.
+    sqlx::query(
+        "INSERT INTO sales (customer_id, total, payment_method_id)
+         VALUES ('00000000-0000-0000-0000-000000000001', 7.00,
+                 '00000000-0000-0000-0000-000000000004')",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert sale");
+
+    sqlx::query("UPDATE payment_methods SET name = 'MervadoPago' WHERE id = $1")
+        .bind(uuid::Uuid::from_u128(4))
+        .execute(&pool)
+        .await
+        .expect("a rename is allowed: the id is the identity, the name is a label");
+
+    let (rendered,): (String,) = sqlx::query_as(
+        "SELECT pm.name FROM sales s JOIN payment_methods pm ON pm.id = s.payment_method_id
+          WHERE s.customer_id = '00000000-0000-0000-0000-000000000001'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read the joined name");
+    assert_eq!(
+        rendered, "MervadoPago",
+        "the typo is corrected everywhere, because the document stores the id"
+    );
+
+    // And the other half of the trade, stated as a test: the balance did not move.
+    let (cash_total, credit_total): (rust_decimal::Decimal, rust_decimal::Decimal) =
+        sqlx::query_as(
+            "SELECT (SELECT COALESCE(SUM(total), 0) FROM sales s
+                  JOIN payment_methods pm ON pm.id = s.payment_method_id
+                  JOIN accounts a ON a.id = pm.account_id WHERE a.name = 'cash'),
+                (SELECT COALESCE(SUM(total), 0) FROM sales s
+                  JOIN payment_methods pm ON pm.id = s.payment_method_id
+                  JOIN accounts a ON a.id = pm.account_id WHERE a.name = 'credit')",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("read both balances");
+    assert_eq!(cash_total, rust_decimal::Decimal::from(7));
+    assert_eq!(credit_total, rust_decimal::Decimal::ZERO);
+}
+
+#[sqlx::test]
+async fn v3_the_default_account_always_keeps_an_active_method(pool: sqlx::PgPool) {
+    // The owner's invariant, and it is the interesting one because no CHECK can
+    // express a statement about other rows. Three paths are measured.
+    let cash_method = uuid::Uuid::from_u128(4);
+    let cash_account = uuid::Uuid::from_u128(3);
+    let credit_account = uuid::Uuid::from_u128(5);
+
+    // Positive case: a second active method on the default account is fine, and so is
+    // deactivating one of two.
+    let (second,): (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO payment_methods (account_id, name) VALUES ($1, 'card') RETURNING id",
+    )
+    .bind(cash_account)
+    .fetch_one(&pool)
+    .await
+    .expect("insert a second active method");
+    sqlx::query("UPDATE payment_methods SET is_active = false WHERE id = $1")
+        .bind(cash_method)
+        .execute(&pool)
+        .await
+        .expect("deactivating one of two active methods is allowed");
+
+    // Restore, then measure the three refusals.
+    sqlx::query("UPDATE payment_methods SET is_active = true WHERE id = $1")
+        .bind(cash_method)
+        .execute(&pool)
+        .await
+        .expect("reactivate");
+
+    // (1) the last active method of the default account may not be deactivated
+    sqlx::query("UPDATE payment_methods SET is_active = false WHERE id = $1")
+        .bind(second)
+        .execute(&pool)
+        .await
+        .expect("deactivate the second");
+    let refusal = sqlx::query("UPDATE payment_methods SET is_active = false WHERE id = $1")
+        .bind(cash_method)
+        .execute(&pool)
+        .await;
+    assert!(
+        refusal.is_err(),
+        "the default account would be left with no active payment method"
+    );
+
+    // (2) an account with no active method may not become the default.
+    //
+    // **Asserted by the failure's MESSAGE, not merely by its existence.** Two
+    // guards can refuse this statement — the trigger under test and the partial
+    // unique index, since the till is already the default — so a bare `is_err()`
+    // passes when either one is present. Measured: mutating this trigger into a
+    // no-op left the test green, because the unique index answered instead. Pinning
+    // the message is what makes the assertion belong to one guard.
+    let (bare,): (uuid::Uuid,) =
+        sqlx::query_as("INSERT INTO accounts (name) VALUES ('bare') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .expect("insert an account with no methods");
+    let refusal = sqlx::query("UPDATE accounts SET is_default = true WHERE id = $1")
+        .bind(bare)
+        .execute(&pool)
+        .await
+        .expect_err("an account with no active method cannot be the till");
+    let message = refusal
+        .as_database_error()
+        .map(|e| e.message().to_string())
+        .unwrap_or_default();
+    assert!(
+        message.contains("no active payment method"),
+        "the refusal must come from the default-account rule, got: {message}"
+    );
+
+    // (3) the shop may never END a transaction with no till at all — but it MAY
+    //     move the default, which is what the deferred constraint exists for.
+    //
+    // **This case was originally written the other way round, and the test encoded
+    // the bug.** It asserted that unsetting the default was refused, which is only
+    // half of a rule; combined with the partial unique index (which refuses a second
+    // true row while the first is still true) it made the default permanently fixed
+    // to the seeded account, with no ordering able to move it. Native review found
+    // it (`R3-001`, critical) and both failure modes were reproduced by hand.
+    //
+    // So the assertion is now about the *state at COMMIT*, which is what the rule
+    // really says: two statements in one transaction always work, and ending with
+    // zero defaults never does.
+    let mut tx = pool.begin().await.expect("begin");
+    sqlx::query("UPDATE accounts SET is_default = false WHERE id = $1")
+        .bind(cash_account)
+        .execute(&mut *tx)
+        .await
+        .expect("unsetting the default inside a transaction is allowed");
+    let refusal = tx.commit().await;
+    assert!(
+        refusal.is_err(),
+        "ending a transaction with no default must be refused at COMMIT"
+    );
+
+    // And the legal move: unset one and set another in the same transaction, which
+    // is the operation the shop needs if the till ever changes hands.
+    //
+    // The candidate needs an ACTIVE method first, which is the other half of the
+    // rule and not an obstacle to it: `credit` is seeded inactive, so activating it
+    // is what a real move to a different account would require anyway.
+    sqlx::query("UPDATE payment_methods SET is_active = true WHERE account_id = $1")
+        .bind(credit_account)
+        .execute(&pool)
+        .await
+        .expect("the new till needs an active payment method");
+
+    let mut tx = pool.begin().await.expect("begin");
+    sqlx::query("UPDATE accounts SET is_default = false WHERE id = $1")
+        .bind(cash_account)
+        .execute(&mut *tx)
+        .await
+        .expect("unset the old default");
+    sqlx::query("UPDATE accounts SET is_default = true WHERE id = $1")
+        .bind(credit_account)
+        .execute(&mut *tx)
+        .await
+        .expect("set the new default");
+    tx.commit()
+        .await
+        .expect("a transaction that ends with exactly one default must commit");
+    let (now_default,): (uuid::Uuid,) = sqlx::query_as("SELECT id FROM accounts WHERE is_default")
+        .fetch_one(&pool)
+        .await
+        .expect("read the default");
+    assert_eq!(now_default, credit_account, "the till moved, as allowed");
+
+    // Put it back so the rest of the assertions below read the seeded state.
+    let mut tx = pool.begin().await.expect("begin");
+    sqlx::query("UPDATE accounts SET is_default = false WHERE id = $1")
+        .bind(credit_account)
+        .execute(&mut *tx)
+        .await
+        .expect("unset");
+    sqlx::query("UPDATE accounts SET is_default = true WHERE id = $1")
+        .bind(cash_account)
+        .execute(&mut *tx)
+        .await
+        .expect("restore");
+    tx.commit().await.expect("restore commits");
+
+    // (4) a second default is refused by the partial unique index.
+    //
+    // The candidate here HAS an active method on purpose: with an account that had
+    // none, the trigger of (2) would refuse it first and this assertion would pass
+    // while the index was absent — the same masking, in the other direction. Its
+    // message is the index's own, which is what identifies the cause.
+    sqlx::query("INSERT INTO payment_methods (account_id, name) VALUES ($1, 'credit-card')")
+        .bind(credit_account)
+        .execute(&pool)
+        .await
+        .expect("give the credit account an active method");
+    let refusal = sqlx::query("UPDATE accounts SET is_default = true WHERE id = $1")
+        .bind(credit_account)
+        .execute(&pool)
+        .await
+        .expect_err("at most one account may be the default");
+    let message = refusal
+        .as_database_error()
+        .map(|e| e.message().to_string())
+        .unwrap_or_default();
+    assert!(
+        message.contains("accounts_one_default_idx"),
+        "the second default must be refused by the partial unique index, got: {message}"
+    );
+}
+
+#[sqlx::test]
+async fn v3_accounts_and_methods_are_never_deleted(pool: sqlx::PgPool) {
+    // Deletion would erase the explanation of a balance. `is_active` is the only
+    // retirement either table needs, and TRUNCATE needs its own statement-level
+    // guard because it does not fire FOR EACH ROW — the mistake `0007` shipped and
+    // `0008` repaired.
+    for (description, statement) in [
+        (
+            "delete a method",
+            "DELETE FROM payment_methods WHERE id = '00000000-0000-0000-0000-000000000006'",
+        ),
+        (
+            "delete an account",
+            "DELETE FROM accounts WHERE id = '00000000-0000-0000-0000-000000000005'",
+        ),
+    ] {
+        let result = sqlx::query(statement).execute(&pool).await;
+        assert!(result.is_err(), "{description} must be refused");
+    }
+
+    // TRUNCATE is blocked by the foreign key before the trigger is even reached, so
+    // this asserts the effect: the rows survive.
+    let _ = sqlx::query("TRUNCATE accounts CASCADE")
+        .execute(&pool)
+        .await;
+    let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM accounts")
+        .fetch_one(&pool)
+        .await
+        .expect("count accounts");
+    assert!(remaining >= 2, "TRUNCATE must not empty the accounts table");
+}
+
+#[sqlx::test]
+async fn v3_names_are_unique_across_the_board(pool: sqlx::PgPool) {
+    // Global uniqueness, so the picker can never show two entries the cashier cannot
+    // tell apart. Measured on both tables.
+    let dup_account = sqlx::query("INSERT INTO accounts (name) VALUES ('cash')")
+        .execute(&pool)
+        .await;
+    assert!(dup_account.is_err(), "two accounts may not share a name");
+
+    let dup_method = sqlx::query(
+        "INSERT INTO payment_methods (account_id, name)
+         VALUES ('00000000-0000-0000-0000-000000000005', 'cash')",
+    )
+    .execute(&pool)
+    .await;
+    assert!(
+        dup_method.is_err(),
+        "two methods may not share a name, not even on different accounts"
+    );
+
+    // A blank name is refused after trimming, on both tables.
+    let blank_method = sqlx::query(
+        "INSERT INTO payment_methods (account_id, name)
+         VALUES ('00000000-0000-0000-0000-000000000003', '   ')",
+    )
+    .execute(&pool)
+    .await;
+    assert!(blank_method.is_err(), "a blank method name is refused");
+}
+
+#[sqlx::test]
+async fn v3_the_till_guard_locks_the_account_row_so_a_racing_writer_waits(pool: sqlx::PgPool) {
+    // **The race this closes, reproduced before the fix.** The invariant "the default
+    // account always has an active method" was an `EXISTS` check in a BEFORE trigger,
+    // which cannot see another transaction's uncommitted work. Measured with two real
+    // sessions on the pre-fix schema: A deactivated `m1`, B deactivated `m2`
+    // concurrently, each saw the other method as still active, both committed, and the
+    // default account was left with **zero** active methods.
+    //
+    // The fix is `SELECT ... FOR UPDATE` on the account row. This test asserts the
+    // observable consequence of that lock rather than the SQL: a second writer's
+    // statement cannot complete while the first holds the account, and the state it
+    // then judges is the committed one.
+    let cash_account = uuid::Uuid::from_u128(3);
+    sqlx::query("INSERT INTO payment_methods (account_id, name) VALUES ($1, 'm1'), ($1, 'm2')")
+        .bind(cash_account)
+        .execute(&pool)
+        .await
+        .expect("insert two active methods");
+    sqlx::query("UPDATE payment_methods SET is_active = false WHERE name = 'cash'")
+        .execute(&pool)
+        .await
+        .expect("retire the seeded method");
+
+    // A takes the account lock by deactivating m1, and holds it.
+    let mut a = pool.begin().await.expect("begin A");
+    sqlx::query("UPDATE payment_methods SET is_active = false WHERE name = 'm1'")
+        .execute(&mut *a)
+        .await
+        .expect("A deactivates m1");
+
+    // B tries to deactivate m2 through a second connection. With the lock it cannot
+    // complete; without it, it would sail through in milliseconds.
+    let pool_b = pool.clone();
+    let mut b_task = tokio::spawn(async move {
+        let mut b = pool_b.begin().await.expect("begin B");
+        let result = sqlx::query("UPDATE payment_methods SET is_active = false WHERE name = 'm2'")
+            .execute(&mut *b)
+            .await;
+        match result {
+            Ok(_) => b.commit().await.map(|_| ()).map_err(|e| e.to_string()),
+            Err(e) => {
+                let _ = b.rollback().await;
+                Err(e.to_string())
+            }
+        }
+    });
+
+    // If B finishes while A still holds the account, there was no lock and the race
+    // is open. That is the assertion: it must still be pending.
+    let raced = tokio::time::timeout(std::time::Duration::from_millis(500), &mut b_task).await;
+    assert!(
+        raced.is_err(),
+        "the second writer completed while the first held the account: the guard does \
+         not serialize them, so two concurrent deactivations could empty the till"
+    );
+
+    // Release: A commits. B now proceeds against the committed state and must refuse,
+    // because m1 is already inactive and m2 is the last one left.
+    a.commit().await.expect("commit A");
+    let b_outcome = b_task.await.expect("B finished");
+
+    let active: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM payment_methods WHERE account_id = $1 AND is_active",
+    )
+    .bind(cash_account)
+    .fetch_one(&pool)
+    .await
+    .expect("count active methods");
+
+    assert!(
+        active >= 1,
+        "the default account must never be left with no active method, even when two \
+         deactivations race; B's outcome was {b_outcome:?}"
+    );
 }

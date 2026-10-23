@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT payment_method_id FROM sales WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "payment_method_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "sales",
+            "name": "payment_method_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "64f8e6ace7ac03859d901fa8476b85663a348ced8105dc5442f7d774bd12d549"
+}

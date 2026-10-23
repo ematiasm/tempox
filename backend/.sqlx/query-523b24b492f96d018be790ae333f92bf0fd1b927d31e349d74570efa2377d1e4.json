@@ -1,29 +1,28 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO purchases (supplier_id, total) VALUES ($1, $2) RETURNING id",
+  "query": "SELECT payment_method_id FROM purchases WHERE id = $1",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "id",
+        "name": "payment_method_id",
         "type_info": "Uuid",
         "origin": {
           "Table": {
             "table": "purchases",
-            "name": "id"
+            "name": "payment_method_id"
           }
         }
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid",
-        "Numeric"
+        "Uuid"
       ]
     },
     "nullable": [
       false
     ]
   },
-  "hash": "592a83bb9e83ee7671d381040d721725c8455e9c628fb177668f0cda2539db62"
+  "hash": "523b24b492f96d018be790ae333f92bf0fd1b927d31e349d74570efa2377d1e4"
 }

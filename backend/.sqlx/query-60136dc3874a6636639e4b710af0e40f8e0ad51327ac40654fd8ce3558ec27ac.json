@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, customer_id, round(total, 2) AS \"total!\", payment_method, status,\n                reversed_at, created_at\n         FROM sales WHERE id = $1",
+  "query": "SELECT s.id, s.customer_id, round(s.total, 2) AS \"total!\",\n                pm.name AS \"payment_method!\", s.status,\n                s.reversed_at, s.created_at\n         FROM sales s\n         JOIN payment_methods pm ON pm.id = s.payment_method_id\n         WHERE s.id = $1",
   "describe": {
     "columns": [
       {
@@ -33,12 +33,12 @@
       },
       {
         "ordinal": 3,
-        "name": "payment_method",
+        "name": "payment_method!",
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "sales",
-            "name": "payment_method"
+            "table": "payment_methods",
+            "name": "name"
           }
         }
       },
@@ -91,5 +91,5 @@
       false
     ]
   },
-  "hash": "4bb542308a4d733db7d6f64db24f4b2390a3579d8fbf6d562e2485858f6efac8"
+  "hash": "60136dc3874a6636639e4b710af0e40f8e0ad51327ac40654fd8ce3558ec27ac"
 }
