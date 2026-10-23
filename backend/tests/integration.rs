@@ -5285,7 +5285,12 @@ async fn v3_t0_a_rename_corrects_the_name_everywhere_and_moves_no_balance(pool: 
         .await;
 
     let before = client.get("/api/sales").await;
-    assert_eq!(before.body[0]["payment_method"], "cash");
+    // The wire is flat since T4: an id and a joined name, no `account_id`.
+    assert_eq!(
+        before.body[0]["payment_method_id"],
+        "00000000-0000-0000-0000-000000000004"
+    );
+    assert_eq!(before.body[0]["payment_method_name"], "cash");
 
     let renamed = client
         .patch(
@@ -5297,8 +5302,12 @@ async fn v3_t0_a_rename_corrects_the_name_everywhere_and_moves_no_balance(pool: 
 
     let after = client.get("/api/sales").await;
     assert_eq!(
-        after.body[0]["payment_method"], "MervadoPago",
+        after.body[0]["payment_method_name"], "MervadoPago",
         "renaming CORRECTS history: documents store the id, so the typo is fixed everywhere"
+    );
+    assert_eq!(
+        after.body[0]["payment_method_id"], "00000000-0000-0000-0000-000000000004",
+        "and the identity is unchanged by the rename"
     );
 }
 
@@ -5769,5 +5778,201 @@ async fn v3_t3_the_view_counts_only_confirmed_sales(pool: sqlx::PgPool) {
         balance_of(&client, cash).await,
         "0.00",
         "a sale whose status is not confirmed must not move the balance"
+    );
+}
+
+// ── v3 T4: a sale names where the money went ────────────────────────────────
+//
+// Until this task, every sale wrote the seeded `cash` method no matter what the
+// client said. Now the destination is the client's, defaulted to cash so an older
+// caller keeps its exact behaviour.
+
+#[sqlx::test]
+async fn v3_t4_a_sale_on_another_method_lands_in_that_account(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+    let cash = "00000000-0000-0000-0000-000000000003";
+
+    // A real bank account with its own method, which is the whole point of v3: a
+    // sale whose money did not go to the till.
+    let account = client
+        .post("/api/accounts", serde_json::json!({ "name": "banco" }))
+        .await;
+    let account_id = account.body["id"].as_str().expect("account id").to_string();
+    let method = client
+        .post(
+            "/api/payment-methods",
+            serde_json::json!({ "name": "transferencia", "account_id": account_id }),
+        )
+        .await;
+    let method_id = method.body["id"].as_str().expect("method id").to_string();
+
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "t4-probe", "list_price": "80.00" }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("product id").to_string();
+
+    let sale = client
+        .post(
+            "/api/sales",
+            serde_json::json!({
+                "items": [{ "product_id": product_id, "quantity": 1 }],
+                "payment_method_id": method_id
+            }),
+        )
+        .await;
+    assert_eq!(sale.status(), axum::http::StatusCode::CREATED);
+    assert_eq!(sale.body["payment_method_name"], "transferencia");
+
+    // The money is in the bank, NOT in the till. Before T4 this assertion was
+    // impossible to write, and the till would have read 80.00 it never saw.
+    assert_eq!(balance_of(&client, cash).await, "0.00");
+    assert_eq!(balance_of(&client, &account_id).await, "80.00");
+}
+
+#[sqlx::test]
+async fn v3_t4_an_omitted_method_still_means_the_till(pool: sqlx::PgPool) {
+    // The differential guarantee: an older client sends no method and must keep
+    // exactly the behaviour it had. This is the one assertion that makes the new
+    // field additive rather than a breaking change.
+    let client = common::client(pool.clone());
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "t4-default", "list_price": "25.00" }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("id").to_string();
+
+    let sale = client
+        .post(
+            "/api/sales",
+            serde_json::json!({ "items": [{ "product_id": product_id, "quantity": 2 }] }),
+        )
+        .await;
+    assert_eq!(sale.status(), axum::http::StatusCode::CREATED);
+    assert_eq!(
+        sale.body["payment_method_id"], "00000000-0000-0000-0000-000000000004",
+        "an omitted method resolves to the seeded cash method"
+    );
+    assert_eq!(
+        balance_of(&client, "00000000-0000-0000-0000-000000000003").await,
+        "50.00"
+    );
+}
+
+#[sqlx::test]
+async fn v3_t4_an_unknown_method_is_a_404_and_writes_nothing(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "t4-unknown", "list_price": "10.00" }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("id").to_string();
+
+    // Positive case first: the same body with a real method succeeds, so the refusal
+    // below cannot be an artefact of a broken fixture.
+    let ok = client
+        .post(
+            "/api/sales",
+            serde_json::json!({
+                "items": [{ "product_id": product_id, "quantity": 1 }],
+                "payment_method_id": "00000000-0000-0000-0000-000000000004"
+            }),
+        )
+        .await;
+    assert_eq!(ok.status(), axum::http::StatusCode::CREATED);
+
+    let refused = client
+        .post(
+            "/api/sales",
+            serde_json::json!({
+                "items": [{ "product_id": product_id, "quantity": 1 }],
+                "payment_method_id": "00000000-0000-0000-0000-0000000000ff"
+            }),
+        )
+        .await;
+    assert_eq!(
+        refused.status(),
+        axum::http::StatusCode::NOT_FOUND,
+        "an unknown method is a 404, not a foreign-key 500"
+    );
+
+    // Nothing was written by the refusal: the till still holds exactly one sale.
+    assert_eq!(
+        balance_of(&client, "00000000-0000-0000-0000-000000000003").await,
+        "10.00"
+    );
+}
+
+#[sqlx::test]
+async fn v3_t4_a_credit_sale_must_name_a_customer(pool: sqlx::PgPool) {
+    // S9, and it is written positive-first on purpose: a refusal alone could pass
+    // because the `credit` method is seeded inactive, rather than because the
+    // customer is anonymous.
+    let client = common::client(pool.clone());
+    let credit_method = "00000000-0000-0000-0000-000000000006";
+
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "t4-credit", "list_price": "30.00" }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("id").to_string();
+
+    // 1. Accepted with a named customer — and note the method is INACTIVE, which
+    //    proves `is_active` is a picker concern and not a write gate.
+    let customer = client
+        .post(
+            "/api/customers",
+            serde_json::json!({ "name": "T4 Cliente" }),
+        )
+        .await;
+    let customer_id = customer.body["id"]
+        .as_str()
+        .expect("customer id")
+        .to_string();
+    let accepted = client
+        .post(
+            "/api/sales",
+            serde_json::json!({
+                "customer_id": customer_id,
+                "items": [{ "product_id": product_id, "quantity": 1 }],
+                "payment_method_id": credit_method
+            }),
+        )
+        .await;
+    assert_eq!(
+        accepted.status(),
+        axum::http::StatusCode::CREATED,
+        "a credit sale to a named customer is accepted, even with an inactive method"
+    );
+
+    // 2. Refused for the anonymous one.
+    let refused = client
+        .post(
+            "/api/sales",
+            serde_json::json!({
+                "items": [{ "product_id": product_id, "quantity": 1 }],
+                "payment_method_id": credit_method
+            }),
+        )
+        .await;
+    assert_eq!(
+        refused.status(),
+        axum::http::StatusCode::BAD_REQUEST,
+        "anonymous debt is not debt"
+    );
+
+    // 3. And the credit account holds only the accepted one.
+    assert_eq!(
+        balance_of(&client, "00000000-0000-0000-0000-000000000005").await,
+        "30.00",
+        "the refused credit sale left nothing behind"
     );
 }

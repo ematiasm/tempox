@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::AppState;
-use crate::models::account::CASH_PAYMENT_METHOD_ID;
+use crate::models::account::{CASH_ACCOUNT_ID, CASH_PAYMENT_METHOD_ID, CREDIT_ACCOUNT_ID};
 use crate::models::{
     credit_note::CreditNote, credit_note_item::CreditNoteItem, sale::Sale, sale_item::SaleItem,
 };
@@ -36,6 +36,14 @@ pub struct NewSale {
     /// Omitted means the seeded walk-in customer.
     #[serde(default)]
     pub customer_id: Option<Uuid>,
+    /// Where the money went. Omitted means the seeded `cash` method, which is what
+    /// every sale meant before this existed — so an older client keeps its exact
+    /// behaviour rather than breaking.
+    ///
+    /// An unknown id is a 404, and a method whose account is the debt account is
+    /// refused when the sale names `walk-in` (S9): anonymous debt is not debt.
+    #[serde(default)]
+    pub payment_method_id: Option<Uuid>,
     pub items: Vec<NewSaleItem>,
 }
 
@@ -152,6 +160,39 @@ async fn create_sale(
         None => WALK_IN_CUSTOMER_ID,
     };
 
+    // Resolve the destination before any write, the same way the customer is
+    // resolved: an unknown method is a 404 rather than a foreign-key 500, and the
+    // account it points at is read here because the credit rule below needs it.
+    //
+    // This reads the method's account rather than trusting the client to send one:
+    // the client names the method, the method knows its account. That is the whole
+    // point of the direction chosen in v3.
+    let (payment_method_id, method_account_id) = match body.payment_method_id {
+        Some(id) => {
+            let row = sqlx::query!("SELECT account_id FROM payment_methods WHERE id = $1", id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|e| {
+                    tracing::error!(?e, "payment method lookup failed");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?;
+            let row = row.ok_or(StatusCode::NOT_FOUND)?;
+            (id, row.account_id)
+        }
+        None => (CASH_PAYMENT_METHOD_ID, CASH_ACCOUNT_ID),
+    };
+
+    // S9: a sale paid on credit must name a real customer. The check is written
+    // **positively first** in the tests — a credit sale to a named customer is
+    // accepted — because a refusal on its own could pass for the wrong reason.
+    //
+    // `is_active` is deliberately NOT consulted: it is a picker concern, and gating
+    // writes on it would make this refusal fire because the seeded `credit` method is
+    // inactive rather than because the customer is anonymous.
+    if method_account_id == CREDIT_ACCOUNT_ID && customer_id == WALK_IN_CUSTOMER_ID {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
     // Resolve every line against the product: snapshot name and unit, resolve
     // the price (override or list price), and build the money input.
     let mut lines: Vec<LineInput> = Vec::with_capacity(body.items.len());
@@ -190,7 +231,7 @@ async fn create_sale(
         "INSERT INTO sales (customer_id, total, payment_method_id) VALUES ($1, $2, $3) RETURNING id",
         customer_id,
         total,
-        CASH_PAYMENT_METHOD_ID
+        payment_method_id
     )
     .fetch_one(&mut *tx)
     .await
@@ -263,7 +304,7 @@ async fn create_sale(
         // column and the name lives on `payment_methods`. Joining by id is what
         // lets a rename correct history instead of freezing a typo.
         "SELECT s.id, s.customer_id, round(s.total, 2) AS \"total!\",
-                pm.name AS \"payment_method!\", s.status,
+                s.payment_method_id, pm.name AS \"payment_method_name!\", s.status,
                 s.reversed_at, s.created_at
          FROM sales s
          JOIN payment_methods pm ON pm.id = s.payment_method_id
@@ -560,7 +601,7 @@ async fn list_sales(
     let rows = sqlx::query!(
         // `payment_method` is the method's name, joined on the FK that 0012 added.
         "SELECT s.id, s.customer_id, round(s.total, 2) AS \"total!\",
-                pm.name AS \"payment_method!\", s.status,
+                s.payment_method_id, pm.name AS \"payment_method_name!\", s.status,
                 s.reversed_at, s.created_at, c.name AS customer_name
          FROM sales s
          JOIN customers c ON c.id = s.customer_id
@@ -604,7 +645,8 @@ async fn list_sales(
                 id: row.id,
                 customer_id: row.customer_id,
                 total: row.total,
-                payment_method: row.payment_method,
+                payment_method_id: row.payment_method_id,
+                payment_method_name: row.payment_method_name,
                 status: row.status,
                 reversed_at: row.reversed_at,
                 created_at: row.created_at,
