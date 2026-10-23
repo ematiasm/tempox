@@ -323,13 +323,23 @@ async fn v1_units_and_history_guards(pool: sqlx::PgPool) {
         cid.0
     );
 
-    // The status transition (reversal) must still work.
-    let transition =
-        sqlx::query("UPDATE sales SET status = 'cancel', reversed_at = now() WHERE id = $1")
-            .bind(sid.0)
-            .execute(&mut *tx)
-            .await;
-    assert!(transition.is_ok(), "status transition was blocked");
+    // **No column of a sale is writable any more.** v1 permitted the status
+    // transition here because `status`/`reversed_at` were reserved for a lifecycle
+    // `0015` has since dropped; there is nothing left to transition, so the guard now
+    // refuses every UPDATE rather than all but one. What that costs is a capability
+    // nothing ever used; what it buys is that "the row exists" and "it counts" are one
+    // statement, as they already were for the other three documents.
+    // The write has to CHANGE something, or PostgreSQL does not fire the trigger at
+    // all: `SET total = total` is a no-op and the row is not rewritten. Measured —
+    // the first version of this assertion passed for the wrong reason.
+    let any_write = sqlx::query("UPDATE sales SET total = total + 0.01 WHERE id = $1")
+        .bind(sid.0)
+        .execute(&mut *tx)
+        .await;
+    assert!(
+        any_write.is_err(),
+        "a sale must have no writable column at all since the lifecycle was dropped"
+    );
 
     tx.rollback().await.expect("rollback");
 }
@@ -458,12 +468,11 @@ async fn v1_sale_of_bonus_lines_is_recorded(pool: sqlx::PgPool) {
         "a decimal string with two decimals comes back"
     );
 
-    let cash_before: (rust_decimal::Decimal,) = sqlx::query_as(
-        "SELECT COALESCE(SUM(total), 0)::numeric FROM sales WHERE status = 'confirmed'",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("cash before");
+    let cash_before: (rust_decimal::Decimal,) =
+        sqlx::query_as("SELECT COALESCE(SUM(total), 0)::numeric FROM sales")
+            .fetch_one(&pool)
+            .await
+            .expect("cash before");
 
     // Three units, given away: the price override is zero.
     let resp = client
@@ -484,7 +493,8 @@ async fn v1_sale_of_bonus_lines_is_recorded(pool: sqlx::PgPool) {
     // The sale exists and is worth nothing. Amounts are decimal strings: `0.00`
     // is money, the number `0` would not be.
     assert_eq!(sale["total"], "0.00", "a bonus sale totals zero");
-    assert_eq!(sale["status"], "confirmed");
+    // No lifecycle on the wire since 0015; the row is the record.
+    assert!(sale.get("status").is_none());
     let lines = sale["items"].as_array().expect("items");
     assert_eq!(lines.len(), 1);
     assert_eq!(lines[0]["unit_price"], "0.00", "the bonus price is zero");
@@ -503,12 +513,11 @@ async fn v1_sale_of_bonus_lines_is_recorded(pool: sqlx::PgPool) {
     assert_eq!(stock.0, 7, "10 in, 3 given away");
 
     // A zero-total sale contributes zero to cash, so the balance is untouched.
-    let cash_after: (rust_decimal::Decimal,) = sqlx::query_as(
-        "SELECT COALESCE(SUM(total), 0)::numeric FROM sales WHERE status = 'confirmed'",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("cash after");
+    let cash_after: (rust_decimal::Decimal,) =
+        sqlx::query_as("SELECT COALESCE(SUM(total), 0)::numeric FROM sales")
+            .fetch_one(&pool)
+            .await
+            .expect("cash after");
     assert_eq!(cash_after.0, cash_before.0, "a bonus sale moves no money");
 }
 
@@ -552,12 +561,11 @@ async fn v1_create_sale_drops_stock_in_one_transaction(pool: sqlx::PgPool) {
     .expect("beans initial stock");
 
     // Cash measured as a delta: prior runs' sales must not matter.
-    let cash_before: (rust_decimal::Decimal,) = sqlx::query_as(
-        "SELECT COALESCE(SUM(total), 0)::numeric FROM sales WHERE status = 'confirmed'",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("cash before");
+    let cash_before: (rust_decimal::Decimal,) =
+        sqlx::query_as("SELECT COALESCE(SUM(total), 0)::numeric FROM sales")
+            .fetch_one(&pool)
+            .await
+            .expect("cash before");
 
     // Two items in one sale: no customer (walk-in), second line overrides the price.
     let resp = client
@@ -576,7 +584,8 @@ async fn v1_create_sale_drops_stock_in_one_transaction(pool: sqlx::PgPool) {
 
     // Header: total = 1500 x $2.50 + 3 x $2.00 = $3756.00, confirmed, on the walk-in.
     assert_eq!(sale["total"], "3756.00");
-    assert_eq!(sale["status"], "confirmed");
+    // No lifecycle on the wire since 0015; the row is the record.
+    assert!(sale.get("status").is_none());
     assert_eq!(sale["customer_id"], "00000000-0000-0000-0000-000000000001");
     let lines = sale["items"].as_array().expect("items array");
     assert_eq!(lines.len(), 2, "expected two sale lines");
@@ -653,12 +662,11 @@ async fn v1_create_sale_drops_stock_in_one_transaction(pool: sqlx::PgPool) {
     assert_eq!(beans_stock.0, 7);
 
     // Cash moved by exactly the sale total.
-    let cash_after: (rust_decimal::Decimal,) = sqlx::query_as(
-        "SELECT COALESCE(SUM(total), 0)::numeric FROM sales WHERE status = 'confirmed'",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("cash after");
+    let cash_after: (rust_decimal::Decimal,) =
+        sqlx::query_as("SELECT COALESCE(SUM(total), 0)::numeric FROM sales")
+            .fetch_one(&pool)
+            .await
+            .expect("cash after");
     assert_eq!(
         cash_after.0 - cash_before.0,
         rust_decimal::Decimal::new(375600, 2),
@@ -777,7 +785,7 @@ async fn v1_read_endpoints_reflect_writes(pool: sqlx::PgPool) {
         .find(|s| s["id"] == sale["id"])
         .expect("sale in list");
     assert_eq!(sale_read["customer_name"], customer_name);
-    assert_eq!(sale_read["status"], "confirmed");
+    assert!(sale_read.get("status").is_none());
     let lines = sale_read["items"].as_array().expect("lines");
     assert_eq!(lines.len(), 2);
     assert!(
@@ -793,7 +801,7 @@ async fn v1_read_endpoints_reflect_writes(pool: sqlx::PgPool) {
     // the old definition of a changed endpoint, which is precisely how this test
     // failed both times a term was added.
     let cash_before: (rust_decimal::Decimal,) = sqlx::query_as(
-        "SELECT COALESCE((SELECT SUM(total) FROM sales WHERE status = 'confirmed'), 0)::numeric
+        "SELECT COALESCE((SELECT SUM(total) FROM sales), 0)::numeric
               - COALESCE((SELECT SUM(total) FROM credit_notes), 0)::numeric
               - COALESCE((SELECT SUM(total) FROM purchases), 0)::numeric
               + COALESCE((SELECT SUM(total) FROM supplier_returns), 0)::numeric
@@ -1024,7 +1032,7 @@ async fn v1a_sales_list_is_scoped_by_date_and_offset(pool: sqlx::PgPool) {
     let row = &day_one.as_array().expect("array")[0];
     assert!(row["customer_name"].is_string(), "customer_name is missing");
     assert!(row["items"].is_array(), "items is missing");
-    assert_eq!(row["status"], "confirmed");
+    assert!(row.get("status").is_none());
 
     // Nothing above may have written, and this database holds only this test's
     // rows, so the count is exact rather than a window into a shared ledger.
@@ -1316,12 +1324,11 @@ async fn v1_5_credit_note_returns_stock_and_money_without_touching_the_sale(pool
     let f = reversal_fixture(&client, &pool, "w5").await;
     let (rice_item, rice_product, rice_qty, rice_price) = f.lines[0].clone();
 
-    let sale_before: (String, String, Option<chrono::DateTime<chrono::Utc>>) =
-        sqlx::query_as("SELECT status, total::text, reversed_at FROM sales WHERE id = $1")
-            .bind(f.sale_id)
-            .fetch_one(&pool)
-            .await
-            .expect("sale before");
+    let sale_before: (String,) = sqlx::query_as("SELECT total::text FROM sales WHERE id = $1")
+        .bind(f.sale_id)
+        .fetch_one(&pool)
+        .await
+        .expect("sale before");
 
     // Stock before: 1000 initial − 400 sold = 600.
     let stock_before: (i64,) = sqlx::query_as(
@@ -1358,16 +1365,18 @@ async fn v1_5_credit_note_returns_stock_and_money_without_touching_the_sale(pool
     assert_eq!(note_items[0]["unit"], "g");
     let note_id: uuid::Uuid = note["id"].as_str().expect("note id").parse().expect("uuid");
 
-    // The corrected sale is untouched, byte for byte.
-    let sale_after: (String, String, Option<chrono::DateTime<chrono::Utc>>) =
-        sqlx::query_as("SELECT status, total::text, reversed_at FROM sales WHERE id = $1")
-            .bind(f.sale_id)
-            .fetch_one(&pool)
-            .await
-            .expect("sale after");
-    assert_eq!(sale_after.0, sale_before.0, "status must not change");
-    assert_eq!(sale_after.1, sale_before.1, "total must not change");
-    assert_eq!(sale_after.2, sale_before.2, "reversed_at must stay NULL");
+    // The corrected sale is untouched, byte for byte. What is compared is what now
+    // exists: the total, and — since `0015` dropped the lifecycle — the whole row's
+    // identity, which no credit note may move.
+    let sale_after: (String,) = sqlx::query_as("SELECT total::text FROM sales WHERE id = $1")
+        .bind(f.sale_id)
+        .fetch_one(&pool)
+        .await
+        .expect("sale after");
+    assert_eq!(
+        sale_after.0, sale_before.0,
+        "the corrected sale's total must not change"
+    );
 
     // Stock came back: 600 + 150 = 750, as a new positive movement that names
     // both the sale and the note it belongs to.
@@ -1705,11 +1714,15 @@ async fn v1_5_cumulative_refunds_stop_at_the_quantity_sold(pool: sqlx::PgPool) {
 
     // The sale itself never moved.
     let sale = find_sale(&client, f.sale_id).await;
-    assert_eq!(
-        sale["status"], "confirmed",
-        "the sale is still a confirmed record"
+    // No `status` and no `reversed_at` any more: the sale being an existing row IS
+    // its validity (`0015`), and its annulment is read from the notes below. What this
+    // asserts is the absence, because a wire that grew the field back would be a
+    // contract change nobody asked for.
+    assert!(
+        sale.get("status").is_none(),
+        "a sale has no lifecycle column since 0015"
     );
-    assert!(sale["reversed_at"].is_null());
+    assert!(sale.get("reversed_at").is_none());
     assert_eq!(
         sale["credit_notes"].as_array().expect("notes").len(),
         4,
@@ -1872,12 +1885,11 @@ async fn v1_5_cash_still_counts_every_confirmed_sale_and_nothing_else(pool: sqlx
     );
 
     // The endpoint and the two sums it is defined as, read independently.
-    let confirmed: rust_decimal::Decimal = sqlx::query_scalar(
-        "SELECT COALESCE(SUM(total), 0)::numeric FROM sales WHERE status = 'confirmed'",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("confirmed sum");
+    let confirmed: rust_decimal::Decimal =
+        sqlx::query_scalar("SELECT COALESCE(SUM(total), 0)::numeric FROM sales")
+            .fetch_one(&pool)
+            .await
+            .expect("confirmed sum");
     let refunded: rust_decimal::Decimal =
         sqlx::query_scalar("SELECT COALESCE(SUM(total), 0)::numeric FROM credit_notes")
             .fetch_one(&pool)
@@ -4729,12 +4741,20 @@ async fn v3_the_economics_guard_follows_the_destination_to_its_new_column(pool: 
          the money reached"
     );
 
-    // The status transition the guard deliberately still permits stays permitted.
-    sqlx::query("UPDATE sales SET status = 'done' WHERE id = $1")
-        .bind(sale_id)
-        .execute(&pool)
-        .await
-        .expect("the guard permits a status write and nothing else");
+    // The status transition this test used to permit is gone with the column
+    // (`0015`): there is no column left whose write the guard allows, so the
+    // permitted case is now the absence of one.
+    let status_column: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM information_schema.columns
+          WHERE table_name = 'sales' AND column_name IN ('status', 'reversed_at')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read columns");
+    assert_eq!(
+        status_column, 0,
+        "the lifecycle columns are dropped, so the guard has nothing to permit"
+    );
 }
 
 #[sqlx::test]
@@ -5661,7 +5681,7 @@ async fn v3_t3_the_four_documents_move_money_with_the_right_sign(pool: sqlx::PgP
     // retirement safe: `T6` removed an endpoint whose number the view already
     // reproduces, not one whose number changed.
     let (hand_computed,): (rust_decimal::Decimal,) = sqlx::query_as(
-        "SELECT (COALESCE((SELECT SUM(total) FROM sales WHERE status = 'confirmed'), 0)
+        "SELECT (COALESCE((SELECT SUM(total) FROM sales), 0)
                - COALESCE((SELECT SUM(total) FROM credit_notes), 0)
                - COALESCE((SELECT SUM(total) FROM purchases), 0)
                + COALESCE((SELECT SUM(total) FROM supplier_returns), 0))::numeric",
@@ -5781,22 +5801,26 @@ async fn balance_of(client: &common::Client, account_id: &str) -> String {
 }
 
 #[sqlx::test]
-async fn v3_t3_the_view_counts_only_confirmed_sales(pool: sqlx::PgPool) {
-    // The `status = 'confirmed'` predicate survived from `/api/cash`, and `T2` will
-    // delete the column so that "the row exists" and "it counts" become one
-    // statement. Until then the filter has to be there, and nothing else in this
-    // slice exercises it: every sale these tests create is `confirmed` by default, so
-    // removing the predicate left the whole suite green.
+async fn v3_t2_the_lifecycle_drop_changed_no_balance(pool: sqlx::PgPool) {
+    // **This replaces `v3_t3_the_view_counts_only_confirmed_sales`, and the reason is
+    // the whole point of `0015`.**
     //
-    // Measured by mutation: `WHERE s.status = 'confirmed'` -> `WHERE true` passed
-    // every other v3 test. This is the assertion that makes the predicate observable.
+    // That test proved a sale whose `status` was not confirmed did not move the
+    // balance. It made the predicate observable — and mutation had shown nothing else
+    // was. But `0015` drops the column, so the state it constructed can no longer
+    // exist, and a test asserting an impossible state is vacuous rather than passing.
+    //
+    // What replaces it is the risk `0015` actually carries: a `DROP COLUMN` on
+    // populated tables is the one irreversible act in the slice. The migration
+    // already asserts this inside its own transaction — every account total measured
+    // before the drop must be identical after — and this test asserts the same
+    // property from outside, on data a sale and a document actually created.
     let client = common::client(pool.clone());
-    let cash = "00000000-0000-0000-0000-000000000003";
 
     let product = client
         .post(
             "/api/products",
-            serde_json::json!({ "name": "status-probe", "list_price": "70.00" }),
+            serde_json::json!({ "name": "t2-probe", "list_price": "70.00" }),
         )
         .await;
     let product_id = product.body["id"].as_str().expect("id").to_string();
@@ -5806,35 +5830,47 @@ async fn v3_t3_the_view_counts_only_confirmed_sales(pool: sqlx::PgPool) {
             serde_json::json!({ "items": [{ "product_id": product_id, "quantity": 1 }] }),
         )
         .await;
-    assert_eq!(balance_of(&client, cash).await, "70.00");
 
-    // Move the sale out of the counted state directly: no API route writes `status`,
-    // which is exactly why the view's filter is easy to forget.
-    let (sale_id,): (uuid::Uuid,) = sqlx::query_as(
-        "SELECT id FROM sales WHERE customer_id = '00000000-0000-0000-0000-000000000001'
-          ORDER BY created_at DESC LIMIT 1",
+    // The lifetime totals, computed the way the retired `/api/cash` did — from the
+    // documents, with no filter, because the column that used to carry the filter is
+    // gone.
+    let (from_documents,): (rust_decimal::Decimal,) = sqlx::query_as(
+        "SELECT (COALESCE((SELECT SUM(total) FROM sales), 0)
+               - COALESCE((SELECT SUM(total) FROM credit_notes), 0)
+               - COALESCE((SELECT SUM(total) FROM purchases), 0)
+               + COALESCE((SELECT SUM(total) FROM supplier_returns), 0))::numeric",
     )
     .fetch_one(&pool)
     .await
-    .expect("read the sale");
-    sqlx::query("UPDATE sales SET status = 'draft' WHERE id = $1")
-        .bind(sale_id)
-        .execute(&pool)
-        .await
-        .expect("move the sale out of confirmed");
+    .expect("totals from documents");
+
+    // The same total through the view, which `0015` recreated without a predicate.
+    let (from_view,): (rust_decimal::Decimal,) =
+        sqlx::query_as("SELECT COALESCE(SUM(amount), 0)::numeric FROM money_movements")
+            .fetch_one(&pool)
+            .await
+            .expect("totals from the view");
 
     assert_eq!(
-        balance_of(&client, cash).await,
-        "0.00",
-        "a sale whose status is not confirmed must not move the balance"
+        from_documents, from_view,
+        "the view must still reproduce the documents after the lifecycle drop"
     );
-}
+    assert_eq!(
+        from_view,
+        rust_decimal::Decimal::from_str_exact("70.00").expect("decimal"),
+        "and the sale that exists must still count, unfiltered"
+    );
 
-// ── v3 T4: a sale names where the money went ────────────────────────────────
-//
-// Until this task, every sale wrote the seeded `cash` method no matter what the
-// client said. Now the destination is the client's, defaulted to cash so an older
-// caller keeps its exact behaviour.
+    // The columns are gone, which is what makes the assertion above unconditional.
+    let lifecycle_columns: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM information_schema.columns
+          WHERE table_name = 'sales' AND column_name IN ('status', 'reversed_at')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read columns");
+    assert_eq!(lifecycle_columns, 0);
+}
 
 #[sqlx::test]
 async fn v3_t4_a_sale_on_another_method_lands_in_that_account(pool: sqlx::PgPool) {

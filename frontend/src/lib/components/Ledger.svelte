@@ -352,9 +352,16 @@
     else expanded.add(id);
   }
 
-  /** A cancelled sale is struck through, never crimson: it is a correction, not an alarm. */
+  /**
+   * Whether a sale contributes nothing to the running balance.
+   *
+   * It used to also test `row.status === 'cancel' || row.reversed_at !== null`, a
+   * branch **unreachable for the whole life of the system**: nothing ever wrote either
+   * column, and `0015` dropped them. A return is what actually takes a sale out of the
+   * running total, so that is what this asks now.
+   */
   function isAnnulled(row: SaleListItem) {
-    return row.status === 'cancel' || row.reversed_at !== null;
+    return isFullyRefunded(row);
   }
 
   /**
@@ -730,14 +737,18 @@
                    a rename corrects old rows instead of freezing a typo. -->
                 <td class="method">{row.payment_method_name}</td>
                 <td>
-                  {#if isAnnulled(row)}
-                    <Stamp label={lang.t.sales_annulled} tone="annulled" />
-                  {:else if isFullyRefunded(row)}
-                    <!-- A sale that came back whole is not an annulment: nothing
-                       was wrong with it, the customer returned the goods. It
-                       says so, because the two need different follow-ups: one
-                       is a mistake to investigate, the other is a normal
-                       return. Both contribute nothing to the day. -->
+                  {#if isFullyRefunded(row)}
+                    <!-- A sale that came back whole is not an annulment: nothing was
+                       wrong with it, the customer returned the goods. It says so,
+                       because the two need different follow-ups — one is a mistake to
+                       investigate, the other is a normal return. Both contribute
+                       nothing to the day.
+
+                       This branch used to be the SECOND of two, behind
+                       `isAnnulled(row)`, which read `status === 'cancel'`: a state
+                       nothing could ever enter. With the lifecycle dropped (`0015`)
+                       that first branch would have shadowed this one and labelled every
+                       return "Anulada", which is what the e2e caught. -->
                     <Stamp label={lang.t.sales_refunded_state} tone="annulled" />
                   {:else}
                     <Stamp label={lang.t.sales_confirmed} />

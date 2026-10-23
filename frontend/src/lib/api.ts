@@ -101,8 +101,6 @@ export type Sale = {
    */
   payment_method_id: string;
   payment_method_name: string;
-  status: string;
-  reversed_at: string | null;
   created_at: string;
 };
 
@@ -134,7 +132,7 @@ export type CreditNoteItem = {
 /**
  * The compensating document that reverses part or all of a sale.
  *
- * The sale keeps its own status: a corrected sale still reads `confirmed`,
+ * A corrected sale is unchanged on the wire: no lifecycle, no `reversed_at`,
  * because what changed is not the sale but the fact that a second document
  * exists. Whether a sale is annulled is therefore derived from this array, not
  * read off the sale.

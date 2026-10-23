@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT s.id, s.customer_id, round(s.total, 2) AS \"total!\",\n                s.payment_method_id, pm.name AS \"payment_method_name!\", s.status,\n                s.reversed_at, s.created_at\n         FROM sales s\n         JOIN payment_methods pm ON pm.id = s.payment_method_id\n         WHERE s.id = $1",
+  "query": "SELECT s.id, s.customer_id, round(s.total, 2) AS \"total!\",\n                s.payment_method_id, pm.name AS \"payment_method_name!\",\n                s.created_at\n         FROM sales s\n         JOIN payment_methods pm ON pm.id = s.payment_method_id\n         WHERE s.id = $1",
   "describe": {
     "columns": [
       {
@@ -55,28 +55,6 @@
       },
       {
         "ordinal": 5,
-        "name": "status",
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "sales",
-            "name": "status"
-          }
-        }
-      },
-      {
-        "ordinal": 6,
-        "name": "reversed_at",
-        "type_info": "Timestamptz",
-        "origin": {
-          "Table": {
-            "table": "sales",
-            "name": "reversed_at"
-          }
-        }
-      },
-      {
-        "ordinal": 7,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -98,10 +76,8 @@
       null,
       false,
       false,
-      false,
-      true,
       false
     ]
   },
-  "hash": "a020d15d282bb6de8ea811fff78691fdb94d5ede756114d9a4a896f706522739"
+  "hash": "bd155bc828908ddc6e24fda106b2a862c53984be02cfa2d7a2603f2045778ad1"
 }
