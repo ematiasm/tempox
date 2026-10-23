@@ -5735,6 +5735,51 @@ async fn v3_the_credit_seed_keeps_its_identity_in_the_schema(pool: sqlx::PgPool)
         .await
         .expect("renaming the credit method must stay allowed");
 
+    // **And now the same two edits through the handler, which is a different
+    // statement.** This block exists because the two above passed while both requests
+    // answered `500` (review `R3-001`, CRITICAL). `accounts.rs` sends
+    // `account_id = COALESCE($4, account_id)` on every PATCH, so it *names* the column
+    // even when the caller is renaming; `SET name = …` does not, and a trigger declared
+    // `UPDATE OF account_id` therefore never fired in the test but always fired in
+    // production. Measured before the fix: `PATCH {"name":"fiado"}` -> 500 and
+    // `PATCH {"is_active":true}` -> 500.
+    let client = common::client(pool.clone());
+    let renamed = client
+        .patch(
+            "/api/payment-methods/00000000-0000-0000-0000-000000000006",
+            serde_json::json!({ "name": "fiado" }),
+        )
+        .await;
+    assert_eq!(
+        renamed.status(),
+        axum::http::StatusCode::OK,
+        "S6: renaming the seeded credit method through the API must stay allowed; \
+         the handler names account_id on every PATCH and a guard must not read that \
+         as an attempt to move it. body was: {}",
+        renamed.text
+    );
+    assert_eq!(renamed.body["name"], "fiado");
+    assert_eq!(
+        renamed.body["account_id"],
+        "00000000-0000-0000-0000-000000000005",
+        "a rename moves nothing"
+    );
+
+    let reactivated = client
+        .patch(
+            "/api/payment-methods/00000000-0000-0000-0000-000000000006",
+            serde_json::json!({ "is_active": false }),
+        )
+        .await;
+    assert_eq!(
+        reactivated.status(),
+        axum::http::StatusCode::OK,
+        "S6: flipping is_active on the seeded credit method through the API must stay \
+         allowed, for the same reason; body was: {}",
+        reactivated.text
+    );
+    assert_eq!(reactivated.body["is_active"], false);
+
     // And the cash side still moves freely: the guard is about seed identity, not
     // about forbidding the till's own method from being corrected before it has
     // history.

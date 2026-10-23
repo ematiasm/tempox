@@ -47,13 +47,22 @@ FOR EACH ROW
 WHEN (OLD.id = '00000000-0000-0000-0000-000000000006'::uuid)
 EXECUTE FUNCTION guard_credit_method_identity();
 
--- ── Nothing is ever attached to the debt account ────────────────────────────
+-- ── Nothing is ever attached to the debt account ──────────────────────────
 --
 -- The other side of the same rule, and the side that was reachable in practice: a
 -- method moved *onto* `…0005` would answer "a customer's debt was settled by this
--- means", which no v3 document describes. Written as a refusal on the destination
--- rather than on the source, so it also covers `INSERT` — a new method cannot be
--- created on the debt account either.
+-- means", which no v3 document describes.
+--
+-- **Two triggers, because "attached" and "still attached" are different facts.** The
+-- first version was one `BEFORE INSERT OR UPDATE OF account_id` keyed on
+-- `NEW.account_id = …0005`, with no comparison against `OLD`, and it refused a write
+-- that changed nothing: `accounts.rs` always names `account_id` (`COALESCE($4,
+-- account_id)`), so renaming the seeded method or flipping its `is_active` rewrote the
+-- column with its own value, fired the guard, and failed. Found by review (`R3-001`,
+-- CRITICAL) and reproduced — both requests answered `500` — after the schema test had
+-- passed, because that test wrote `UPDATE payment_methods SET name = …`, which does
+-- not name `account_id` and so never fired the trigger. The test and the handler
+-- disagreed about which statement they were making.
 CREATE OR REPLACE FUNCTION guard_credit_account_takes_no_method() RETURNS trigger AS $$
 BEGIN
     RAISE EXCEPTION
@@ -61,11 +70,24 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS payment_methods_credit_account_guard ON payment_methods;
-CREATE TRIGGER payment_methods_credit_account_guard
-BEFORE INSERT OR UPDATE OF account_id ON payment_methods
+-- INSERT: any method born on the debt account is refused.
+DROP TRIGGER IF EXISTS payment_methods_credit_account_insert_guard ON payment_methods;
+CREATE TRIGGER payment_methods_credit_account_insert_guard
+BEFORE INSERT ON payment_methods
 FOR EACH ROW
 WHEN (NEW.account_id = '00000000-0000-0000-0000-000000000005'::uuid)
+EXECUTE FUNCTION guard_credit_account_takes_no_method();
+
+-- UPDATE: only a real change of destination, `IS DISTINCT FROM`, exactly as
+-- `guard_product_unit` (`0003`) and `guard_credit_method_identity` above are written.
+-- A no-op rewrite of the column is a statement about nothing and must pass, or the two
+-- fields `S6` keeps editable stop being editable through the handler that edits them.
+DROP TRIGGER IF EXISTS payment_methods_credit_account_guard ON payment_methods;
+CREATE TRIGGER payment_methods_credit_account_guard
+BEFORE UPDATE OF account_id ON payment_methods
+FOR EACH ROW
+WHEN (NEW.account_id = '00000000-0000-0000-0000-000000000005'::uuid
+      AND NEW.account_id IS DISTINCT FROM OLD.account_id)
 EXECUTE FUNCTION guard_credit_account_takes_no_method();
 
 -- ── The debt account is never the till ──────────────────────────────────────
@@ -96,8 +118,10 @@ EXECUTE FUNCTION guard_credit_account_is_never_default();
 
 COMMENT ON TRIGGER payment_methods_credit_identity_guard ON payment_methods IS
     'Seeded credit method …0006 keeps its account; see odd/tasks/v3-seed-identities.md';
+COMMENT ON TRIGGER payment_methods_credit_account_insert_guard ON payment_methods IS
+    'Nothing may be created on the seeded credit account …0005';
 COMMENT ON TRIGGER payment_methods_credit_account_guard ON payment_methods IS
-    'Nothing may be attached to the seeded credit account …0005';
+    'Nothing may be moved onto the seeded credit account …0005';
 COMMENT ON TRIGGER accounts_credit_never_default_guard ON accounts IS
     'The seeded credit account …0005 is never the shop till';
 
@@ -113,6 +137,7 @@ BEGIN
     SELECT count(*) INTO present
       FROM (VALUES
               ('payment_methods', 'payment_methods_credit_identity_guard'),
+              ('payment_methods', 'payment_methods_credit_account_insert_guard'),
               ('payment_methods', 'payment_methods_credit_account_guard'),
               ('accounts', 'accounts_credit_never_default_guard')
            ) AS wanted(table_name, name)
@@ -122,9 +147,9 @@ BEGIN
                 AND t.tgrelid = wanted.table_name::regclass
                 AND NOT t.tgisinternal
            );
-    IF present <> 3 THEN
+    IF present <> 4 THEN
         RAISE EXCEPTION
-            'expected 3 seed-identity guards, found %; refusing to continue', present;
+            'expected 4 seed-identity guards, found %; refusing to continue', present;
     END IF;
 
     -- The seeded rows are still the rows the guards talk about. A guard on an id
