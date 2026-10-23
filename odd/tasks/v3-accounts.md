@@ -396,7 +396,7 @@ with no other change competing for attention (L49).
 | T5 | Purchases write path (same flat wire as T4), plus inheritance in credit notes (with override) and supplier returns; reject the `credit` method on purchases in the write path | S5, S6b, S9b, S10 | inline | pending | — |
 | T6 | Retire `/api/cash`; the footer reads the default account's derived balance from `/api/accounts` | S8, S13 | inline | done | `6d96958` + `8cc6e73` |
 | T7 | Frontend: `/accounts` screen (5 write actions), rail + v3 chip, method column in both ledgers, `Sale`/`Purchase` migrated to the flat wire, i18n both languages | S6b, S12 | inline | done | `b4a64c5` + `2ff3e44` |
-| T8 | i18n both dictionaries, `architecture.md`/`PRODUCT.md`/`PLAN.md`, e2e over a sale on a non-cash method | S18, S19 | inline | pending | — |
+| T8 | `architecture.md` API table + invariants for the final schema, README, sale method picker, e2e over a non-cash sale | S18, S19 | inline | done | `6d99bf3` |
 | T2 | **Closing commit, alone, after T8.** Migration `0013`: drop `status`/`reversed_at` with pre-check, re-cut `guard_sale_economics`. Risk item 1 — destructive over immutable history | S11 | inline | pending | — |
 
 Deferred work with its reason, so it is not rediscovered as a surprise:
@@ -1168,3 +1168,28 @@ removing a daily endpoint was safe rather than a guess.
 L92 (advisory, 2026-10-23, T6's four, recorded and not fixed): `R1-001` and `R3-001`
 point at the accounts screen's error path — the same surface T7's own review flagged;
 `R3-002` and `R3-003` are suggestions about `reload()` and a test detail. None blocks.
+
+L93 (state, 2026-10-23, T8 done): `architecture.md` documents the six account/method
+routes with their real codes, the destination on all four documents, the view, the
+deferred default constraint, and the two credit rules; its invariants section is written
+for the **final** schema, so T2 executes what the doc already claims. README gained v3
+and stopped promising `/api/cash`. The sale draft gained a method picker — T4 built the
+API field and nothing at the counter could reach it. 22 e2e green including a new one.
+
+L94 (two real defects the e2e found, and this is the argument for the level existing):
+1. **The accounts screen printed the raw wire string.** `{account.balance}` rendered
+   `0.00` where every other money figure in the app goes through `formatMoney` and reads
+   `$ 0,00`. A screen that skips the formatter is the one place `$ 1.234,56` becomes
+   `1234.56`. Fixed by formatting it.
+2. **`SaleDraft` had no method picker at all.** T4 built `payment_method_id`, the server
+   accepted it, the tests exercised it — and the counter had no control to set it. The
+   whole slice's central claim was unreachable from the screen it exists for.
+
+Neither defect was visible to 91 integration tests, 232 unit tests, six native reviews,
+or mutation runs, because all of them test the layer they were written for. The e2e is
+the only level that asserts what a person does with the app and reads off it.
+
+L95 (note, 2026-10-23, the shape of T8's own mistake): the first version of the spec
+looked for a picker labelled "Medio de pago", a `data-sale-id` that does not exist, and
+passed `money('0')` where the helper needs a full `0,00`. Three assumptions about the DOM,
+each caught by running it rather than reading it.
