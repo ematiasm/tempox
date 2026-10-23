@@ -18,6 +18,13 @@ use crate::models::supplier_return::SupplierReturnWithItems;
 pub struct Purchase {
     pub id: Uuid,
     pub supplier_id: Uuid,
+    /// The method the money left through, and its name **joined** — never stored, so
+    /// a rename corrects history instead of freezing a typo. Flat on the wire, the
+    /// same shape a sale uses.
+    #[serde(rename = "payment_method_id")]
+    pub payment_method_id: Uuid,
+    #[serde(rename = "payment_method_name")]
+    pub payment_method_name: String,
     #[serde(serialize_with = "crate::money::serialize_amount")]
     pub total: Decimal,
     pub created_at: DateTime<Utc>,

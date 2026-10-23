@@ -89,6 +89,18 @@ pub struct CreditNoteWithItems {
 /// The body of a refund: how much of each sale line comes back.
 #[derive(Debug, Deserialize)]
 pub struct NewCreditNote {
+    /// Which method the refund goes back through. **Omitted means the corrected
+    /// sale's method**, which is what makes a refund of an unpaid credit sale move no
+    /// money: the note credits the same account the sale debited, so the debt drops.
+    ///
+    /// An explicit method exists for the case inheritance gets wrong: a credit sale
+    /// that was already collected, refunded out of the till instead of leaving a
+    /// balance in the customer's favour.
+    ///
+    /// The client names **the method, never the account** — the server resolves it,
+    /// exactly as a supplier return never sends a price.
+    #[serde(default)]
+    pub payment_method_id: Option<Uuid>,
     pub items: Vec<NewCreditNoteItem>,
 }
 
@@ -431,12 +443,13 @@ async fn create_credit_note(
     }
     note_total.rescale(money::MONEY_SCALE);
 
-    // The note inherits the corrected sale's method. That inheritance is what makes
-    // a refund of an unpaid credit sale move no money: the note credits the same
-    // account the sale debited, so the debt drops instead of a till paying out.
-    // The override (a note naming its own method) is T5's; here the inherited value
-    // is read from the sale, never chosen by the client.
-    let inherited_method: Uuid =
+    // Inherit the corrected sale's method, unless the note names one.
+    //
+    // Inheritance is the default because it is what makes a refund of an unpaid
+    // credit sale move no money: the note credits the same account the sale debited,
+    // so the debt drops instead of a till paying out. The override exists for the
+    // sale that was already collected.
+    let sale_method: Uuid =
         sqlx::query_scalar!("SELECT payment_method_id FROM sales WHERE id = $1", sale_id)
             .fetch_one(&mut *tx)
             .await
@@ -445,11 +458,38 @@ async fn create_credit_note(
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
 
+    let note_method: Uuid = match body.payment_method_id {
+        Some(id) => {
+            let account_id: Option<Uuid> =
+                sqlx::query_scalar!("SELECT account_id FROM payment_methods WHERE id = $1", id)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(|e| {
+                        tracing::error!(?e, "payment method lookup failed");
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    })?;
+            let account_id = account_id.ok_or_else(|| {
+                tracing::error!("METHOD-LOOKUP-404");
+                StatusCode::NOT_FOUND
+            })?;
+            // A note may not target the debt account. Moving debt between customers
+            // is a different document, and a refund is not where that belongs. The
+            // inherited value can legitimately be that account, which is why this
+            // check applies only to an explicit one — that asymmetry is the whole
+            // difference between "the debt drops" and "the debt moved".
+            if account_id == CREDIT_ACCOUNT_ID {
+                return Err(StatusCode::BAD_REQUEST);
+            }
+            id
+        }
+        None => sale_method,
+    };
+
     let note_id = sqlx::query_scalar!(
         "INSERT INTO credit_notes (sale_id, total, payment_method_id) VALUES ($1, $2, $3) RETURNING id",
         sale_id,
         note_total,
-        inherited_method
+        note_method
     )
     .fetch_one(&mut *tx)
     .await

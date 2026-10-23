@@ -5976,3 +5976,343 @@ async fn v3_t4_a_credit_sale_must_name_a_customer(pool: sqlx::PgPool) {
         "the refused credit sale left nothing behind"
     );
 }
+
+// ── v3 T5: purchases, and the two corrections ───────────────────────────────
+//
+// The mirror of T4 for the paying-out side, plus the two things a correction
+// decides: inherit the corrected document's method, or name its own.
+
+#[sqlx::test]
+async fn v3_t5_a_purchase_on_another_method_leaves_that_account(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+    let cash = "00000000-0000-0000-0000-000000000003";
+
+    let account = client
+        .post(
+            "/api/accounts",
+            serde_json::json!({ "name": "banco-pagos" }),
+        )
+        .await;
+    let account_id = account.body["id"].as_str().expect("account id").to_string();
+    let method = client
+        .post(
+            "/api/payment-methods",
+            serde_json::json!({ "name": "debito", "account_id": account_id }),
+        )
+        .await;
+    let method_id = method.body["id"].as_str().expect("method id").to_string();
+
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "t5-probe", "list_price": "40.00" }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("id").to_string();
+
+    let purchase = client
+        .post(
+            "/api/purchases",
+            serde_json::json!({
+                "items": [{ "product_id": product_id, "quantity": 1 }],
+                "payment_method_id": method_id
+            }),
+        )
+        .await;
+    assert_eq!(purchase.status(), axum::http::StatusCode::CREATED);
+    assert_eq!(
+        purchase.body["purchase"]["payment_method_name"], "debito",
+        "the wire is flat, inside the nested purchase header"
+    );
+
+    // Money left the bank, not the till.
+    assert_eq!(balance_of(&client, cash).await, "0.00");
+    assert_eq!(balance_of(&client, &account_id).await, "-40.00");
+}
+
+#[sqlx::test]
+async fn v3_t5_a_purchase_may_never_use_the_credit_method(pool: sqlx::PgPool) {
+    // S9b. The positive case first: a named, ordinary method is accepted, so the
+    // refusal below cannot be an artefact of a broken fixture.
+    let client = common::client(pool.clone());
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "t5-credit", "list_price": "20.00" }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("id").to_string();
+
+    let accepted = client
+        .post(
+            "/api/purchases",
+            serde_json::json!({
+                "items": [{ "product_id": product_id, "quantity": 1 }],
+                "payment_method_id": "00000000-0000-0000-0000-000000000004"
+            }),
+        )
+        .await;
+    assert_eq!(
+        accepted.status(),
+        axum::http::StatusCode::CREATED,
+        "a purchase through a real method is accepted, even though the credit method is inactive"
+    );
+
+    let refused = client
+        .post(
+            "/api/purchases",
+            serde_json::json!({
+                "items": [{ "product_id": product_id, "quantity": 1 }],
+                "payment_method_id": "00000000-0000-0000-0000-000000000006"
+            }),
+        )
+        .await;
+    assert_eq!(
+        refused.status(),
+        axum::http::StatusCode::BAD_REQUEST,
+        "a purchase may not subtract from what customers owe"
+    );
+
+    // The debt account is untouched by the refused purchase.
+    assert_eq!(
+        balance_of(&client, "00000000-0000-0000-0000-000000000005").await,
+        "0.00"
+    );
+}
+
+#[sqlx::test]
+async fn v3_t5_a_credit_note_inherits_the_sales_method_by_default(pool: sqlx::PgPool) {
+    // Inheritance is what makes a refund of a credit sale move no money: the note
+    // credits the account the sale debited, so the debt drops instead of a till
+    // paying out. Asserted on the credit account because that is where the
+    // difference between inheriting and not inheriting is visible.
+    let client = common::client(pool.clone());
+    let credit = "00000000-0000-0000-0000-000000000005";
+
+    let customer = client
+        .post("/api/customers", serde_json::json!({ "name": "T5 Fiado" }))
+        .await;
+    let customer_id = customer.body["id"]
+        .as_str()
+        .expect("customer id")
+        .to_string();
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "t5-inherit", "list_price": "90.00" }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("id").to_string();
+
+    let sale = client
+        .post(
+            "/api/sales",
+            serde_json::json!({
+                "customer_id": customer_id,
+                "items": [{ "product_id": product_id, "quantity": 1 }],
+                "payment_method_id": "00000000-0000-0000-0000-000000000006"
+            }),
+        )
+        .await;
+    let sale_id = sale.body["id"].as_str().expect("sale id").to_string();
+    let item_id = sale.body["items"][0]["id"]
+        .as_str()
+        .expect("item id")
+        .to_string();
+    assert_eq!(balance_of(&client, credit).await, "90.00");
+
+    // Refund with no method named: it inherits `credit`, so the debt drops and no
+    // cash moves.
+    client
+        .post(
+            &format!("/api/sales/{sale_id}/credit-notes"),
+            serde_json::json!({ "items": [{ "sale_item_id": item_id, "quantity": 1 }] }),
+        )
+        .await;
+    assert_eq!(
+        balance_of(&client, credit).await,
+        "0.00",
+        "the refund lowered the debt instead of paying cash out"
+    );
+    assert_eq!(
+        balance_of(&client, "00000000-0000-0000-0000-000000000003").await,
+        "0.00",
+        "and no money left the till"
+    );
+}
+
+#[sqlx::test]
+async fn v3_t5_a_credit_note_may_name_its_own_method_but_never_the_debt(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+    let credit = "00000000-0000-0000-0000-000000000005";
+    // The **account** ids, for reading balances.
+    let cash_account = "00000000-0000-0000-0000-000000000003";
+    // The **method** id. The note names a method, never an account — passing the
+    // account id here returned 404 and cost a debugging round, which is the whole
+    // reason the two names are separated in this test.
+    let cash_method = "00000000-0000-0000-0000-000000000004";
+
+    let customer = client
+        .post(
+            "/api/customers",
+            serde_json::json!({ "name": "T5 Override" }),
+        )
+        .await;
+    let customer_id = customer.body["id"].as_str().expect("id").to_string();
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "t5-override", "list_price": "50.00" }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("id").to_string();
+
+    let sale = client
+        .post(
+            "/api/sales",
+            serde_json::json!({
+                "customer_id": customer_id,
+                "items": [{ "product_id": product_id, "quantity": 1 }],
+                "payment_method_id": "00000000-0000-0000-0000-000000000006"
+            }),
+        )
+        .await;
+    assert_eq!(sale.status(), axum::http::StatusCode::CREATED);
+    let sale_id = sale.body["id"].as_str().expect("sale id").to_string();
+    let item_id = sale.body["items"][0]["id"]
+        .as_str()
+        .expect("item id")
+        .to_string();
+
+    // 1. The override that works: refund out of the till, for the sale that was
+    //    already collected. Money leaves cash; the debt is untouched.
+    let overridden = client
+        .post(
+            &format!("/api/sales/{sale_id}/credit-notes"),
+            serde_json::json!({
+                "items": [{ "sale_item_id": item_id, "quantity": 1 }],
+                "payment_method_id": cash_method
+            }),
+        )
+        .await;
+    assert_eq!(
+        overridden.status(),
+        axum::http::StatusCode::CREATED,
+        "the override refund must be accepted"
+    );
+    assert_eq!(
+        balance_of(&client, cash_account).await,
+        "-50.00",
+        "the override paid the customer out of the till"
+    );
+    assert_eq!(
+        balance_of(&client, credit).await,
+        "50.00",
+        "and left the debt where it was"
+    );
+
+    // 2. The override that must be refused: a note may not target the debt account.
+    //    Moving debt between customers is a different document.
+    let second_sale = client
+        .post(
+            "/api/sales",
+            serde_json::json!({
+                "customer_id": customer_id,
+                "items": [{ "product_id": product_id, "quantity": 1 }],
+                "payment_method_id": "00000000-0000-0000-0000-000000000006"
+            }),
+        )
+        .await;
+    assert_eq!(
+        second_sale.status(),
+        axum::http::StatusCode::CREATED,
+        "the second sale must exist before its refund is attempted; body: {}",
+        second_sale.body
+    );
+    let second_id = second_sale.body["id"]
+        .as_str()
+        .expect("sale id")
+        .to_string();
+    let second_item = second_sale.body["items"][0]["id"]
+        .as_str()
+        .expect("item")
+        .to_string();
+
+    let refused = client
+        .post(
+            &format!("/api/sales/{second_id}/credit-notes"),
+            serde_json::json!({
+                "items": [{ "sale_item_id": second_item, "quantity": 1 }],
+                "payment_method_id": "00000000-0000-0000-0000-000000000006"
+            }),
+        )
+        .await;
+    assert_eq!(
+        refused.status(),
+        axum::http::StatusCode::BAD_REQUEST,
+        "an explicit credit method on a note would move debt, not reduce it"
+    );
+}
+
+#[sqlx::test]
+async fn v3_t5_a_supplier_return_inherits_the_purchases_method(pool: sqlx::PgPool) {
+    // The mirror of the credit note. The supplier gives money back through the same
+    // rail that paid them, so a purchase paid from the bank returns to the bank.
+    let client = common::client(pool.clone());
+    let cash = "00000000-0000-0000-0000-000000000003";
+
+    let account = client
+        .post("/api/accounts", serde_json::json!({ "name": "banco-dev" }))
+        .await;
+    let account_id = account.body["id"].as_str().expect("id").to_string();
+    let method = client
+        .post(
+            "/api/payment-methods",
+            serde_json::json!({ "name": "transferencia-dev", "account_id": account_id }),
+        )
+        .await;
+    let method_id = method.body["id"].as_str().expect("id").to_string();
+
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "t5-return", "list_price": "15.00" }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("id").to_string();
+
+    let purchase = client
+        .post(
+            "/api/purchases",
+            serde_json::json!({
+                "items": [{ "product_id": product_id, "quantity": 4 }],
+                "payment_method_id": method_id
+            }),
+        )
+        .await;
+    let purchase_id = purchase.body["purchase"]["id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+    let item_id = purchase.body["items"][0]["id"]
+        .as_str()
+        .expect("item")
+        .to_string();
+    assert_eq!(balance_of(&client, &account_id).await, "-60.00");
+    assert_eq!(balance_of(&client, cash).await, "0.00");
+
+    client
+        .post(
+            &format!("/api/purchases/{purchase_id}/supplier-returns"),
+            serde_json::json!({ "items": [{ "purchase_item_id": item_id, "quantity": 1 }] }),
+        )
+        .await;
+
+    // The return credited the same account the purchase debited — not the till.
+    assert_eq!(balance_of(&client, &account_id).await, "-45.00");
+    assert_eq!(
+        balance_of(&client, cash).await,
+        "0.00",
+        "a return to the bank must not appear in the till"
+    );
+}

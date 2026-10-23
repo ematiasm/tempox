@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, supplier_id, round(total, 2) AS \"total!\", created_at\n         FROM purchases WHERE id = $1",
+  "query": "SELECT p.id, p.supplier_id, p.payment_method_id,\n                pm.name AS \"payment_method_name!\",\n                round(p.total, 2) AS \"total!\", p.created_at\n         FROM purchases p\n         JOIN payment_methods pm ON pm.id = p.payment_method_id\n         WHERE p.id = $1",
   "describe": {
     "columns": [
       {
@@ -27,12 +27,34 @@
       },
       {
         "ordinal": 2,
+        "name": "payment_method_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "purchases",
+            "name": "payment_method_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "payment_method_name!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "payment_methods",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
         "name": "total!",
         "type_info": "Numeric",
         "origin": "Expression"
       },
       {
-        "ordinal": 3,
+        "ordinal": 5,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -51,9 +73,11 @@
     "nullable": [
       false,
       false,
+      false,
+      false,
       null,
       false
     ]
   },
-  "hash": "629f088c68ceadc30394c4642d0400a8ba1420648efee42a1f58f47f15f6b21d"
+  "hash": "898b58d139708abaf1deebc6c49bd9b3b1894d2ea9e277ea60c62b4dcbf55482"
 }
