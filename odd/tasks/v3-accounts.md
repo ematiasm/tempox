@@ -380,7 +380,7 @@ with no other change competing for attention (L49).
 
 | ID | Task | Specs | Route | Status | Commit |
 |---|---|---|---|---|---|
-| T1 | Migration `0012`: `accounts` (`is_default` + `accounts_one_default_idx` partial unique index), `payment_methods`, cash and inactive credit seeds, `payment_method_id` on four documents, `account_id` + default-account + no-delete guards | S1–S5, S8a, S14 | inline | done | see the verification log |
+| T1 | Migrations `0012` (accounts, payment methods, seeds, guards) and `0013` (four destinations, backfill, drop of `sales.payment_method`) | S1–S5, S8a, S14 | inline | done | `050779b` |
 | T0 | `GET`/`POST /api/accounts` and `GET`/`POST /api/payment-methods`, plus `PATCH` for name, `is_active` and `is_default`; account creation may set `is_default`; PATCH can set it or unset it on another account; at most one true (partial unique index); 409 on duplicate name, 400 on blank (trimmed first). Depends on T1 — it writes the tables T1 creates | S2, S3, S3a, S4 | inline | pending | — |
 | T3 | `VIEW money_movements` + `GET /api/accounts` (accounts including `is_default`, their methods, and each account's derived balance — no aggregate total: see S8a) | S4, S6–S8 | inline | pending | — |
 | T4 | Sales write path and flat wire (S6b): `payment_method_id` + `payment_method_name` side by side at the top level, resolved by join (never `account_id`, never a name column, never a nested object), picker defaults to an active method belonging to the `is_default` account; API accepts inactive methods; enforce S9 walk-in guard | S4, S5, S6b, S8, S9 | inline | pending | — |
@@ -501,6 +501,69 @@ migration run in this slice targeted `tempox_test`.
 cache was regenerated with `make sqlx-prepare HOST_DATABASE_URL=…tempox_test`; the
 crate builds with `SQLX_OFFLINE=true` as CI does; `cargo fmt --check` clean;
 `cargo clippy --all-targets -- -D warnings` clean.
+
+### T1 — native review, and the two critical defects it found (2026-10-23)
+
+The slice went through **three** native review transactions. The first two each found a
+**real, critical, candidate-caused** defect; the third approved. The rate is worth
+recording: 2 of 3 revisions found something my own verification had passed, and in both
+cases the reason is the same — the tests asserted the rule I *believed* was enforced,
+not the rule actually enforced.
+
+**`R3-001` (first occurrence) — over-restriction, a deadlock.**
+
+`guard_default_is_never_unset` refused every true→false on `accounts.is_default`, and
+`accounts_one_default_idx` refused a second true row while the first was still true.
+Together they pinned the default to whichever account was seeded. Measured, no ordering
+worked:
+
+```
+apagar cash primero       → "account …003 cannot stop being the default"
+prender credit primero    → duplicate key on accounts_one_default_idx
+```
+
+The invariant was mis-stated: "the shop always has exactly one till with an active
+method" is a statement about the **table at COMMIT**, and a BEFORE trigger cannot see
+that state. The fix is a `CONSTRAINT TRIGGER ... DEFERRABLE INITIALLY DEFERRED`.
+`CHECK constraints cannot be marked DEFERRABLE` on every Postgres version — only
+UNIQUE/PK/EXCLUDE/FK may defer, and a partial unique index cannot be a deferrable
+constraint at all. **The test that had encoded the bug** asserted that unsetting the
+default was an error; it now asserts that the transition is legal and that ending with
+zero defaults is not.
+
+**`R3-001` (second occurrence) — under-enforcement, a race.**
+
+The deactivation guard used `EXISTS` with no account lock. Two concurrent deactivations
+of different active methods each saw the other as still active, both committed, and the
+default account was left with **zero** active methods. Reproduced with two real `psql`
+sessions before the fix (`count(... is_active)` returned 0); after adding
+`SELECT ... FOR UPDATE` on the account row in **both** directions, the second writer
+blocks, sees the committed state, and is refused. Mutation-proven: removing `FOR UPDATE`
+makes the new test fail with "the second writer completed while the first held the
+account".
+
+The working shape of that test is worth keeping: two transactions driven from one task
+deadlock each other; the shape is `tokio::spawn` for the second writer, hold the first,
+assert the second is **still pending** after a timeout (that *is* the assertion), then
+commit and assert the final state.
+
+**The split.** After the second defect the owner chose to split the file, and the split
+point is a dependency, not a line count: `guard_payment_method_account` queries the four
+documents, so it can only live where `payment_method_id` exists. `0012` = vocabulary and
+the guards about accounts/methods; `0013` = the four destinations, the backfill, the drop
+and that one guard.
+
+**Final state: approved.** Three lenses (`risk`, `resilience`, `reliability`), three
+reviewers, `approved`, no blocking finding, authority burned. Four advisory findings
+carried as later work, none of them a reason to re-review this candidate:
+
+| ID | Lens | Severity | Where |
+|---|---|---|---|
+
+| `R1-001` | risk | SUGGESTION | `0012` guard comments |
+| `R3-001` | reliability | WARNING | `integration.rs` test region |
+| `R3-002` | reliability | WARNING | `integration.rs` test region |
+| `R3-003` | reliability | SUGGESTION | `integration.rs` test region |
 
 ## Log
 
@@ -800,3 +863,30 @@ L54 (discovery during T1, 2026-10-23, and it changed the migration's technique):
 L55 (discovery during T1, 2026-10-23, the mirror of L10 in v2): **two guard tests passed for the wrong reason**, and mutation found both. Mutating `guard_payment_method_account` into a no-op left its test green because the default-account invariant refused the same statement for a different reason; fixed by giving the default account a second active method so only the guard under test can refuse. Separately, the new-default guard and the partial unique index masked each other in both directions; fixed by asserting the **error message** rather than the bare existence of a refusal, and by choosing candidates that leave exactly one guard able to fire. A guard test that only checks `is_err()` measures that *something* refused, which is not the claim.
 
 L56 (state, 2026-10-23, T1 closed): `0012_accounts_payment_methods.sql` applied, 8 new `v3_` integration tests green, full suite 66 integration + 50 unit with 0 failures, 7/7 mutation checks biting after the two masks above were repaired, `sqlx-check` clean, `fmt`/`clippy` clean, the migration applies from scratch on a recreated `tempox_test`, and the differential check on `POST /api/sales` is byte-identical to `bae271c`. The development database is still at migration 11 — untouched, by design. **Known gap carried into T4/T5**: the write paths name the seeded `cash` method instead of accepting a client-supplied one, so the API cannot yet record a non-cash sale; the `payment_method` JSON field still carries the joined name and its shape is unchanged.
+
+L57 (state, 2026-10-23, T1 reviewed and approved): three native review transactions ran.
+The first found `R3-001` — the default-account guard deadlocked against the partial unique
+index, making the till permanently immovable, with a test that had encoded the bug; fixed
+with a DEFERRABLE constraint trigger (Postgres refuses deferrable CHECKs). The second
+found `R3-001` again, a different defect: the deactivation guard had no account lock, so
+two concurrent deactivations could leave the default account with no active method —
+reproduced with two psql sessions, fixed with `SELECT ... FOR UPDATE` in both trigger
+directions, mutation-proven. The owner then chose to split `0012`/`0013`, and the third
+transaction approved with three lenses and zero blocking findings. Authority burned.
+Four advisory findings carried as later work. Commit `050779b`.
+
+L58 (discovery, 2026-10-23, worth more than either fix): **both critical defects were
+invisible to the tests that claimed to cover them**, and for the same reason — the test
+asserted the rule I believed was enforced. The deadlock test asserted that unsetting the
+default was refused (one half of a two-sided rule). The race test exercised the transitions
+in sequence and never concurrently. A guard test that only checks `is_err()` measures that
+*something* refused; a concurrency invariant tested sequentially measures nothing. Both are
+now written to the shape that would have caught the defect: assert the legal transition too,
+and drive the concurrent writers from separate tasks with the interleaving made explicit.
+
+L59 (decision, 2026-10-23, from L57): two review transactions remain open and unreconciled
+— `review-7e70748cd932714a` (its target was replaced by the correction it requested) and
+`review-a9a0b92eff7cdae1` (its target was replaced by the second correction). Neither is
+recoverable by Pi: their authority is bound to candidate hashes that no longer exist, and
+`recover`/`reset` remain destructive operations for the audited native CLI. Reported as open
+authority rather than silently dropped.
