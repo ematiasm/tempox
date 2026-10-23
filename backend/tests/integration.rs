@@ -5780,6 +5780,44 @@ async fn v3_the_credit_seed_keeps_its_identity_in_the_schema(pool: sqlx::PgPool)
     );
     assert_eq!(reactivated.body["is_active"], false);
 
+    // **And the no-op: the destination it already has.** A client that sends a full
+    // object names `account_id` with the value it already holds, and that is a
+    // statement about nothing. The schema says so with `IS DISTINCT FROM`; this
+    // assertion is what makes the handler say the same thing. Measured before the fix:
+    // the API answered `409` while `psql` answered `UPDATE 1` for the same write
+    // (`R3-001`, second occurrence).
+    let same_destination = client
+        .patch(
+            "/api/payment-methods/00000000-0000-0000-0000-000000000006",
+            serde_json::json!({ "account_id": "00000000-0000-0000-0000-000000000005" }),
+        )
+        .await;
+    assert_eq!(
+        same_destination.status(),
+        axum::http::StatusCode::OK,
+        "PATCHing the destination a method already has changes nothing and must be \
+         allowed, exactly as the schema's IS DISTINCT FROM allows it; body was: {}",
+        same_destination.text
+    );
+    assert_eq!(
+        same_destination.body["account_id"],
+        "00000000-0000-0000-0000-000000000005"
+    );
+
+    // The same courtesy for any other method: sending its own account is not a move.
+    let cash_noop = client
+        .patch(
+            "/api/payment-methods/00000000-0000-0000-0000-000000000004",
+            serde_json::json!({ "account_id": "00000000-0000-0000-0000-000000000003" }),
+        )
+        .await;
+    assert_eq!(
+        cash_noop.status(),
+        axum::http::StatusCode::OK,
+        "a no-op move of an ordinary method is allowed too; body was: {}",
+        cash_noop.text
+    );
+
     // And the cash side still moves freely: the guard is about seed identity, not
     // about forbidding the till's own method from being corrected before it has
     // history.

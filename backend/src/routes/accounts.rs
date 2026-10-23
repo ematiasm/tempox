@@ -434,10 +434,19 @@ async fn update_payment_method(
         // is not editable at all, and no method may be moved onto the debt account.
         // Without these the refusals would arrive from `0016`'s triggers at commit
         // time, where they can only surface as a 500.
-        if id == CREDIT_PAYMENT_METHOD_ID {
+        //
+        // **Both are about a change, not about the field being present.** A client that
+        // sends a full object, or `PATCH`es the destination it already has, is making a
+        // statement about nothing; `0016` allows that deliberately (`IS DISTINCT FROM`)
+        // and this file has to say the same thing. Written the other way first — refuse
+        // whenever the id appeared — it answered `409` to a no-op while the schema
+        // answered `UPDATE 1`, so the two layers disagreed about the same write. Found
+        // by review (`R3-001`, second occurrence, CRITICAL) and reproduced: the no-op
+        // answered `409` through the API and succeeded through `psql`.
+        if id == CREDIT_PAYMENT_METHOD_ID && account_id != CREDIT_ACCOUNT_ID {
             return Err(StatusCode::CONFLICT);
         }
-        if account_id == CREDIT_ACCOUNT_ID {
+        if account_id == CREDIT_ACCOUNT_ID && id != CREDIT_PAYMENT_METHOD_ID {
             return Err(StatusCode::CONFLICT);
         }
 
