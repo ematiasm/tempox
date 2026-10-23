@@ -394,7 +394,7 @@ with no other change competing for attention (L49).
 | T3 | Migration `0014`: `VIEW money_movements` + derived `balance` on `GET /api/accounts` | S4, S6–S8 | inline | done | `da53a17` |
 | T4 | Sales write path and flat wire (S6b): `payment_method_id` + `payment_method_name` side by side at the top level, resolved by join (never `account_id`, never a name column, never a nested object), picker defaults to an active method belonging to the `is_default` account; API accepts inactive methods; enforce S9 walk-in guard | S4, S5, S6b, S8, S9 | inline | pending | — |
 | T5 | Purchases write path (same flat wire as T4), plus inheritance in credit notes (with override) and supplier returns; reject the `credit` method on purchases in the write path | S5, S6b, S9b, S10 | inline | pending | — |
-| T6 | Retire `/api/cash`; the footer reads the default account's derived balance from `/api/accounts` | S8, S13 | inline | done | `6d96958` |
+| T6 | Retire `/api/cash`; the footer reads the default account's derived balance from `/api/accounts` | S8, S13 | inline | done | `6d96958` + `8cc6e73` |
 | T7 | Frontend: `/accounts` screen (5 write actions), rail + v3 chip, method column in both ledgers, `Sale`/`Purchase` migrated to the flat wire, i18n both languages | S6b, S12 | inline | done | `b4a64c5` + `2ff3e44` |
 | T8 | i18n both dictionaries, `architecture.md`/`PRODUCT.md`/`PLAN.md`, e2e over a sale on a non-cash method | S18, S19 | inline | pending | — |
 | T2 | **Closing commit, alone, after T8.** Migration `0013`: drop `status`/`reversed_at` with pre-check, re-cut `guard_sale_economics`. Risk item 1 — destructive over immutable history | S11 | inline | pending | — |
@@ -1153,3 +1153,18 @@ candidates, six verdicts — T1 (two critical), T0 (one critical), T3 clean, T4 
 T7 clean with one real defect in the advisory set, T5 deferred by the owner. Every
 critical finding was a concurrency rule or a surface no test exercised; every clean
 pass had its mutations run first. The two are complements, not substitutes.
+
+L90 (state, 2026-10-23, T6 reviewed and approved): lineage `review-3a3880749c9d0fa1`
+isolated against T5's close (13 files, 1116 lines) returned `approved` with two lenses
+and four advisory findings; authority burned. The candidate was the largest isolated
+review of the slice because it rewrote twelve backend call sites and two on the client.
+
+L91 (what the reviewers did NOT dispute, and it was the point of asking): the
+equivalence assertion that justified the retirement — the view reproduces exactly the
+figure `/api/cash` computed by hand — survived review. That was the one argument in T6
+written by me and load-bearing for the whole change, and its correctness was the reason
+removing a daily endpoint was safe rather than a guess.
+
+L92 (advisory, 2026-10-23, T6's four, recorded and not fixed): `R1-001` and `R3-001`
+point at the accounts screen's error path — the same surface T7's own review flagged;
+`R3-002` and `R3-003` are suggestions about `reload()` and a test detail. None blocks.
