@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT (\n                 (SELECT count(*) FROM sales            WHERE payment_method_id = $1)\n               + (SELECT count(*) FROM credit_notes     WHERE payment_method_id = $1)\n               + (SELECT count(*) FROM purchases        WHERE payment_method_id = $1)\n               + (SELECT count(*) FROM supplier_returns WHERE payment_method_id = $1)\n               )::bigint AS \"count!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "c60549448f74e14abc2318b7492e6a582750a11f35d8fdfb5292c9ddf2cde5b2"
+}

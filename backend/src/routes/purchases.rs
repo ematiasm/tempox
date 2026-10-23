@@ -10,6 +10,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::AppState;
+use crate::models::account::CASH_PAYMENT_METHOD_ID;
 use crate::models::purchase::{Purchase, PurchaseItem, PurchaseWithItems};
 use crate::models::supplier_return::{SupplierReturn, SupplierReturnItem, SupplierReturnWithItems};
 use crate::money;
@@ -18,11 +19,6 @@ use crate::money;
 /// `WALK_IN_CUSTOMER_ID` is a constant in `sales.rs`: an omitted supplier must
 /// resolve without a lookup, and the migration seeds exactly this row.
 const ONE_OFF_SUPPLIER_ID: Uuid = Uuid::from_u128(2);
-
-/// The seeded `cash` payment method; see `sales::CASH_PAYMENT_METHOD_ID`. A
-/// purchase is cash terms until the payable document exists, so this is the
-/// destination the migration backfilled history with.
-use crate::routes::sales::CASH_PAYMENT_METHOD_ID;
 
 pub fn routes() -> Router<AppState> {
     Router::new()

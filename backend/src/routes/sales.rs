@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::AppState;
+use crate::models::account::CASH_PAYMENT_METHOD_ID;
 use crate::models::{
     credit_note::CreditNote, credit_note_item::CreditNoteItem, sale::Sale, sale_item::SaleItem,
 };
@@ -18,16 +19,6 @@ use crate::money::{self, LineInput};
 /// The customer seeded by the migration: the default for sales with no named
 /// customer. Must match the fixed id in `0002_v1_sales_stock.sql`.
 const WALK_IN_CUSTOMER_ID: Uuid = Uuid::from_u128(1);
-
-/// The seeded `cash` payment method (`00000000-0000-0000-0000-000000000004`,
-/// migration `0012`).
-///
-/// v3's migration made `payment_method_id` NOT NULL on all four documents while
-/// nothing in the API sends one yet, so the write paths name the seeded method —
-/// the same destination `0002`'s `DEFAULT 'cash'` produced. The client-supplied
-/// field arrives with the sales/purchases write paths; until then this constant is
-/// what keeps every recorded document saying where its money moved.
-pub const CASH_PAYMENT_METHOD_ID: Uuid = Uuid::from_u128(4);
 
 /// Upper bound for a single list query, whatever the client asks for.
 const MAX_LIST_LIMIT: i64 = 200;

@@ -5110,3 +5110,346 @@ async fn v3_the_till_guard_locks_the_account_row_so_a_racing_writer_waits(pool: 
          deactivations race; B's outcome was {b_outcome:?}"
     );
 }
+
+// ── v3 T0: accounts and payment methods write path ──────────────────────────
+//
+// The endpoints v3 cannot work without. Without them `cash` would be the only
+// method in the system and a sale on a bank transfer would be untestable — the
+// central claim of the slice would have no way to be expressed.
+//
+// Every refusal asserted here is also enforced in `0012`'s schema. The API check
+// exists for the status code; the schema check is the one that holds when a psql
+// session bypasses this file, which is why the same rule is measured twice.
+
+#[sqlx::test]
+async fn v3_t0_lists_the_seeded_accounts_with_their_methods(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+
+    let response = client.get("/api/accounts").await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let accounts = response.body.as_array().expect("array");
+
+    // The default first, then by name: the till is what the sales footer reads and
+    // the common case must not depend on the shop's language ordering.
+    assert_eq!(accounts.len(), 2);
+    assert_eq!(accounts[0]["name"], "cash");
+    assert_eq!(accounts[0]["is_default"], true);
+    assert_eq!(accounts[1]["name"], "credit");
+    assert_eq!(accounts[1]["is_default"], false);
+
+    // Each carries its methods nested, and an account's methods are complete even
+    // when the account itself has none.
+    let cash_methods = accounts[0]["methods"].as_array().expect("methods array");
+    assert_eq!(cash_methods.len(), 1);
+    assert_eq!(cash_methods[0]["name"], "cash");
+    assert_eq!(cash_methods[0]["is_active"], true);
+
+    let credit_methods = accounts[1]["methods"].as_array().expect("methods array");
+    assert_eq!(
+        credit_methods[0]["is_active"], false,
+        "credit is seeded inactive: v3 cannot collect a credit sale"
+    );
+}
+
+#[sqlx::test]
+async fn v3_t0_creates_an_account_and_refuses_a_duplicate_or_blank_name(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+
+    let created = client
+        .post(
+            "/api/accounts",
+            serde_json::json!({ "name": "  Banco Galicia  " }),
+        )
+        .await;
+    assert_eq!(created.status(), axum::http::StatusCode::CREATED);
+    assert_eq!(
+        created.body["name"], "Banco Galicia",
+        "the name is trimmed before it is stored"
+    );
+    assert_eq!(
+        created.body["is_default"], false,
+        "creating an account does not move the shop's till unless the caller says so"
+    );
+
+    let duplicate = client
+        .post(
+            "/api/accounts",
+            serde_json::json!({ "name": "Banco Galicia" }),
+        )
+        .await;
+    assert_eq!(
+        duplicate.status(),
+        axum::http::StatusCode::CONFLICT,
+        "names are globally unique"
+    );
+
+    let blank = client
+        .post("/api/accounts", serde_json::json!({ "name": "   " }))
+        .await;
+    assert_eq!(
+        blank.status(),
+        axum::http::StatusCode::BAD_REQUEST,
+        "a name of spaces is empty"
+    );
+}
+
+#[sqlx::test]
+async fn v3_t0_creates_a_method_and_refuses_an_unknown_account(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+
+    let created = client
+        .post(
+            "/api/payment-methods",
+            serde_json::json!({
+                "name": "transfer",
+                "account_id": "00000000-0000-0000-0000-000000000003"
+            }),
+        )
+        .await;
+    assert_eq!(created.status(), axum::http::StatusCode::CREATED);
+    assert_eq!(created.body["name"], "transfer");
+    assert_eq!(
+        created.body["is_active"], true,
+        "creating a method is how the shop starts using it"
+    );
+
+    // A blank name is refused here as well as in `accounts`. Measured while mutating
+    // this file: with the trim removed from THIS handler the test stayed green,
+    // because the only blank-name assertion was the account one. A rule asserted on
+    // one endpoint is not a rule asserted on both.
+    let blank = client
+        .post(
+            "/api/payment-methods",
+            serde_json::json!({
+                "name": "   ",
+                "account_id": "00000000-0000-0000-0000-000000000003"
+            }),
+        )
+        .await;
+    assert_eq!(
+        blank.status(),
+        axum::http::StatusCode::BAD_REQUEST,
+        "a method name of spaces is empty"
+    );
+
+    let unknown = client
+        .post(
+            "/api/payment-methods",
+            serde_json::json!({
+                "name": "orphan",
+                "account_id": "00000000-0000-0000-0000-0000000000ff"
+            }),
+        )
+        .await;
+    assert_eq!(
+        unknown.status(),
+        axum::http::StatusCode::NOT_FOUND,
+        "an unknown account is a 404, not a 500 from the foreign key"
+    );
+
+    // Global uniqueness across accounts, not per account: the picker must never show
+    // two entries the cashier cannot tell apart.
+    let cross_account_duplicate = client
+        .post(
+            "/api/payment-methods",
+            serde_json::json!({
+                "name": "transfer",
+                "account_id": "00000000-0000-0000-0000-000000000005"
+            }),
+        )
+        .await;
+    assert_eq!(
+        cross_account_duplicate.status(),
+        axum::http::StatusCode::CONFLICT,
+        "a name is unique across the whole table, not per account"
+    );
+}
+
+#[sqlx::test]
+async fn v3_t0_a_rename_corrects_the_name_everywhere_and_moves_no_balance(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+
+    // A sale naming the cash method, so the rename has history to act on.
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "rename-probe", "list_price": "10.00" }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("product id");
+    client
+        .post(
+            "/api/sales",
+            serde_json::json!({ "items": [{ "product_id": product_id, "quantity": 1 }] }),
+        )
+        .await;
+
+    let before = client.get("/api/sales").await;
+    assert_eq!(before.body[0]["payment_method"], "cash");
+
+    let renamed = client
+        .patch(
+            "/api/payment-methods/00000000-0000-0000-0000-000000000004",
+            serde_json::json!({ "name": "MervadoPago" }),
+        )
+        .await;
+    assert_eq!(renamed.status(), axum::http::StatusCode::OK);
+
+    let after = client.get("/api/sales").await;
+    assert_eq!(
+        after.body[0]["payment_method"], "MervadoPago",
+        "renaming CORRECTS history: documents store the id, so the typo is fixed everywhere"
+    );
+}
+
+#[sqlx::test]
+async fn v3_t0_a_referenced_method_cannot_move_but_an_unreferenced_one_can(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+
+    // Positive case first: an unreferenced method is a typo and must be correctable.
+    let free = client
+        .post(
+            "/api/payment-methods",
+            serde_json::json!({
+                "name": "free-method",
+                "account_id": "00000000-0000-0000-0000-000000000003"
+            }),
+        )
+        .await;
+    let free_id = free.body["id"].as_str().expect("id").to_string();
+    let moved = client
+        .patch(
+            &format!("/api/payment-methods/{free_id}"),
+            serde_json::json!({ "account_id": "00000000-0000-0000-0000-000000000005" }),
+        )
+        .await;
+    assert_eq!(
+        moved.status(),
+        axum::http::StatusCode::OK,
+        "an unreferenced method may move: it is a typo, not history"
+    );
+
+    // Then the refusal: the cash method is named by the sale above only if one
+    // exists, so create it here.
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "move-probe", "list_price": "5.00" }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("product id");
+    client
+        .post(
+            "/api/sales",
+            serde_json::json!({ "items": [{ "product_id": product_id, "quantity": 1 }] }),
+        )
+        .await;
+
+    let refused = client
+        .patch(
+            "/api/payment-methods/00000000-0000-0000-0000-000000000004",
+            serde_json::json!({ "account_id": "00000000-0000-0000-0000-000000000005" }),
+        )
+        .await;
+    assert_eq!(
+        refused.status(),
+        axum::http::StatusCode::CONFLICT,
+        "a referenced method must not move accounts: yesterday's balance would change today"
+    );
+}
+
+#[sqlx::test]
+async fn v3_t0_moving_the_till_is_a_single_operation_not_a_deadlock(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+
+    // The deadlock T1's first review found: with a BEFORE trigger forbidding every
+    // true→false, no ordering could move the default. The API path must be able to
+    // do it in one call.
+    //
+    // The candidate needs an ACTIVE method first, and that is the rule working
+    // rather than an obstacle to it: `credit` is seeded inactive because v3 cannot
+    // collect a credit sale, so promoting it without activating its method is a
+    // till nobody can take money at. Asserted as a prerequisite so the test cannot
+    // be read as "the till moves freely".
+    let activated = client
+        .patch(
+            "/api/payment-methods/00000000-0000-0000-0000-000000000006",
+            serde_json::json!({ "is_active": true }),
+        )
+        .await;
+    assert_eq!(
+        activated.status(),
+        axum::http::StatusCode::OK,
+        "the new till must be able to accept money"
+    );
+
+    let promoted = client
+        .patch(
+            "/api/accounts/00000000-0000-0000-0000-000000000005",
+            serde_json::json!({ "is_default": true }),
+        )
+        .await;
+    assert_eq!(
+        promoted.status(),
+        axum::http::StatusCode::OK,
+        "moving the till must be a legal, single operation"
+    );
+
+    let accounts = client.get("/api/accounts").await;
+    let defaults: Vec<&str> = accounts
+        .body
+        .as_array()
+        .expect("array")
+        .iter()
+        .filter(|a| a["is_default"].as_bool().unwrap_or(false))
+        .map(|a| a["name"].as_str().unwrap_or(""))
+        .collect();
+    assert_eq!(defaults.len(), 1, "exactly one default at commit");
+    assert_eq!(defaults[0], "credit", "the till moved where it was told");
+
+    // Demoting without promoting another is refused by the deferred constraint, and
+    // the caller sees a 500 rather than a silent zero-till state. Asserted as "not
+    // 2xx" because the mapping from a deferred-constraint violation to a status code
+    // is the framework's, and what matters is that it does not succeed.
+    let demoted = client
+        .patch(
+            "/api/accounts/00000000-0000-0000-0000-000000000005",
+            serde_json::json!({ "is_default": false }),
+        )
+        .await;
+    assert!(
+        demoted.status().is_server_error() || demoted.status().is_client_error(),
+        "ending with no default must not succeed, got {}",
+        demoted.status()
+    );
+}
+
+#[sqlx::test]
+async fn v3_t0_patch_with_nothing_to_change_is_refused(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+
+    // An empty PATCH would be a 200 that changed nothing while looking like it did.
+    let empty_account = client
+        .patch(
+            "/api/accounts/00000000-0000-0000-0000-000000000003",
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(empty_account.status(), axum::http::StatusCode::BAD_REQUEST);
+
+    let empty_method = client
+        .patch(
+            "/api/payment-methods/00000000-0000-0000-0000-000000000004",
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(empty_method.status(), axum::http::StatusCode::BAD_REQUEST);
+
+    let missing = client
+        .patch(
+            "/api/accounts/00000000-0000-0000-0000-0000000000ff",
+            serde_json::json!({ "name": "nope" }),
+        )
+        .await;
+    assert_eq!(missing.status(), axum::http::StatusCode::NOT_FOUND);
+}
