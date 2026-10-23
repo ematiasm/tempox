@@ -1272,3 +1272,43 @@ in one. Across all of them: 3 critical defects found by review (two in T1, one i
 2 real defects found by the e2e, 1 spec/code contradiction found by the owner asking a
 question, and roughly a dozen weakened assertions found by mutation. No defect was ever
 found twice by the same tool.
+
+L105 (state, 2026-10-23, **T5 reviewed, approved, and NOT sealed — with the reason
+measured rather than guessed**): lineage `review-6d889c5d6ea7253d` was resumed from its
+deferral, ran both lenses, and returned `approved`. The acknowledgement then failed with
+`native-approved-acknowledgement-not-current`, and the cause is mechanical: the frozen
+target was `e77b2c9` (T5 alone, 9 files), while the workspace had advanced 15 commits to
+`eb6b2bd` (30 files) with T6, T7, T8 and T2 on top. **A seal means "this, exactly this,
+was reviewed", so it cannot certify a tree that is no longer the current one.** The
+alternative the provider offered — a new lineage over the whole branch — was tried and
+refused with `lens_context_budget_exceeded`, no authority created. This is not a process
+defect: it is the order. T5 was deferred while it was HEAD and reviewed after four tasks
+had landed on it.
+
+L106 (what the approval is still worth): the review judged T5's code against T5's tree,
+which is the thing it was asked to judge, and found no blocking issue. What is missing is
+the receipt, not the judgement. The distinction is recorded so a future session does not
+read T5 as unexamined — and does not read it as sealed either.
+
+L107 (**debt named for the collections slice**, measured): T5's one advisory,
+`R1-credit-note-cash-override-no-settlement-check`, is a real hole and it belongs to the
+slice that will own `customer_collections`, not to v3.
+
+The code accepts any explicit note method except the credit account
+(`sales.rs`, the `note_method` block). Nothing asks whether the sale was ever paid. So:
+
+```
+sale on credit, 100.00, never collected      credit +100.00   cash   0.00
+refund naming `cash` (nobody paid anything)  credit +100.00   cash -100.00
+```
+
+Reproduced end to end against a migrated database: the refund returned **201**, the till
+went to **−100.00**, and the debt stayed at **+100.00**. The shop paid a customer who had
+not paid it, and still believes it is owed the money.
+
+v3 cannot fix this because v3 has no notion of "this sale was collected" — that is what
+`customer_collections` introduces. The requirement for that slice is therefore explicit:
+**an explicit method on a credit note must be checked against the sale's settlement
+state**, and the check belongs beside the existing "a note may not target the debt
+account" rule, which enforces the mirror case. Until then the hole is reachable through
+the API and not through the screen: the UI never offers a method override on a refund.
