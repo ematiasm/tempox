@@ -1216,3 +1216,33 @@ L98 (fix, 2026-10-23, R3-002): a failed method read in `SaleDraft` was swallowed
 empty `catch`, leaving the picker with only its default entry and no hint why. It now
 reports the degraded state in the pending tone, because the sale can still be
 recorded — the difference between "this control is unusable" and "the page failed".
+
+L99 (state, 2026-10-23, **T2 done — v3 is closed**): `0015_drop_sale_lifecycle.sql`
+drops `sales.status` and `sales.reversed_at`, recreates `money_movements` without the
+`confirmed` predicate, and re-cuts `guard_sale_economics` to the three columns that
+remain. The migration asserts its own safety: per-account totals captured before the
+drop and compared after, refusing if any figure moved; and two pre-checks that refuse
+rather than erase a fact if any row still used the lifecycle. Suite at 91 integration
++ 50 unit, 232 frontend unit, 22 e2e. The mutation on the pre-check bites: with one
+`draft` row planted, the guard raises; with `IF false`, it does not.
+
+L100 (three failures on the way, all measured — the T2 version of the slice's habit):
+1. **`money_movements` depends on `sales.status`**, so PostgreSQL refused the drop with
+   `cannot drop column status of table sales because other objects depend on it`. Found
+   by asking `pg_depend` which objects referenced the column, not by guessing. The view
+   must be recreated *before* the `DROP`, in the same transaction.
+2. **`CREATE OR REPLACE VIEW` refuses a column rename.** The first rewrite omitted the
+   aliases, and PostgreSQL took the first branch's third column to be named `text`.
+3. **`UPDATE sales SET total = total` does not fire the guard at all.** PostgreSQL skips
+   rewriting a row when nothing changes, so the assertion "no column is writable" passed
+   for the wrong reason until the update actually changed a value.
+And one the e2e caught: with the dead `status === 'cancel'` branch removed, every
+returned sale started rendering "Anulada" instead of "Devuelta", because the branch that
+was second had been shadowed. The rendering now checks the return first.
+
+L101 (closing note, 2026-10-23): v3 is complete — nine tasks, eight reviewed and
+approved (T5's review was deferred by the owner and its authority is still open), and
+every task's mutations run before its review. The slice's own record of what it cost:
+three review transactions found real critical defects in T1 and one in T0, T7's review
+found a real defect in an advisory, and the e2e found two more that no other level
+could see. Nothing in that list was found by the same tool twice.
