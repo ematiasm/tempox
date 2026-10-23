@@ -45,9 +45,13 @@
     // **`reading` is only for the FIRST read.** It used to be set on every call, so
     // every write — create, rename, promote, retire — replaced the whole list with
     // "reading" for the length of its round-trip. Two consequences, both real: the
-    // screen flashed on every action, and the `<ul>` unmounted and remounted, which
-    // is what made the e2e flake — the locator was valid, then detached, then valid
-    // again, and Playwright lost it mid-wait.
+    // screen flashed on every action, and the `<ul>` unmounted and remounted, so any
+    // locator aimed at a row became detached and reattached mid-wait.
+    //
+    // **This is not claimed as the cause of the e2e flake.** It was a plausible one,
+    // and reverting it did not reproduce the failure — the same non-reproduction that
+    // `playwright.config.ts` records about `workers: 1`. Stated as a defect fixed on
+    // its own terms: a screen should not unmount its content to reload it.
     //
     // The `busy` key already says an action is in flight, per row. A refresh after a
     // write keeps the previous list on screen and swaps it when the new one arrives.
