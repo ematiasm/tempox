@@ -1046,3 +1046,28 @@ candidates, two found real critical defects (T1 twice, T0 once) and two passed c
 code offered and no test exercised** — never an assertion that existed and was wrong.
 That is why the mutation runs and the independent review are both kept for the
 remaining tasks: they do not overlap.
+
+L78 (state, 2026-10-23, T5 done): purchases accept `payment_method_id` (omitted = cash,
+404 unknown), S9b refuses the credit account on any purchase, a credit note inherits
+the sale's method or names its own (an explicit credit one is refused), a supplier
+return inherits the purchase's, and the purchases wire is flat. 5 new tests, suite at
+89. Four mutations bite: removing S9b, removing the note override, removing the
+note's credit refusal, and replacing the return's inheritance with cash.
+
+L79 (design point, 2026-10-23, worth naming because an asymmetry looks like a bug
+until it is stated): an **inherited** credit method on a note is legal and an
+**explicit** one is not. The inherited case is the refund of an unpaid credit sale,
+where crediting the debt account is the whole mechanism — the debt drops and no money
+moves. The explicit case would move debt between customers, which is a different
+document that does not exist yet. The rule therefore checks the account only on the
+explicit branch, and that is deliberate rather than an oversight.
+
+L80 (incident, 2026-10-23, mine, recorded because it cost a debugging round): a T5
+test passed a payment **account** id where the note expects a payment **method** id,
+and the 404 it produced looked like a code defect. Time went into instrumenting the
+handler — with `eprintln!`, because `tracing` is not observable in the in-process test
+harness — and into a raw `curl` against a spawned backend, which worked first try and
+proved the handler correct. The names are the fix: the test now declares
+`cash_account` and `cash_method` separately. **A 404 on a write route is as likely to
+be a wrong id in the fixture as a wrong branch in the handler**, and the cheapest
+discriminator is the out-of-process request, not instrumentation.
