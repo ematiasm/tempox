@@ -59,14 +59,19 @@ S6 **Everything else about both rows stays editable.** `name` on either row, and
 
 | ID | Spec | Route | Commit |
 | --- | --- | --- | --- |
-| T1 | S1-S4 | RED: integration tests proving the guarded moves, and a new account to keep the existing "unreferenced method may move" case alive | — |
-| T2 | S1-S4 | GREEN: migration adding the guard trigger, with the trigger-present proof block | — |
-| T3 | S5 | GREEN: `accounts.rs` pre-checks returning `409` for both refusals | — |
-| T4 | S6 | Existing rename and `is_active` tests must still pass unchanged; the refusal tests must also show the *unrelated* field still works | — |
+| T1 | S1-S4 | RED: integration tests proving the guarded moves, and a new account to keep the existing "unreferenced method may move" case alive | `94702f7` |
+| T2 | S1-S4 | GREEN: migration `0016` adding the three guards, with the trigger-present proof block | `94702f7` |
+| T3 | S5 | GREEN: `accounts.rs` pre-checks returning `409` for both refusals | `94702f7` |
+| T4 | S6 | Existing rename and `is_active` tests still pass unchanged; the schema test also proves both stay editable | `94702f7` |
 | T5 | S3 | Screen: `/accounts` stops offering "make till" for the credit account | — |
 
-T1-T4 land on `feat/v3-backend` (PR #80). T5 touches the screen and lands on
-`feat/v3-frontend-close` (PR #81).
+T1-T4 landed together in `94702f7` because they are one behaviour: the schema guard,
+its RED tests and the status code that reports it. Splitting them would have produced
+a commit whose tests fail. The delivered work unit is 185 non-test/non-doc lines
+(`0016` plus `accounts.rs`); the remaining lines are the two new tests and the three
+migrated ones, which is where the evidence lives.
+
+T5 touches the screen and lands on `feat/v3-frontend-close` (PR #81).
 
 ## Log
 
@@ -177,3 +182,11 @@ The migration is `0016`, applied on boot like every other one; nothing here touc
 `0015`, the `DROP`, or the `money_movements` view — so this is not the candidate that
 needed its own transaction for that reason, only the one that had to be a candidate
 of its own because of what a migration does to seeded rows.
+
+L10 **Slice boundary, recorded because the tool asked.** `feat/v3-backend` is 17
+commits and ~6.2k authored lines from `main` — but that is the branch, and it is
+already published as PR #80 with its own review ledger; the delivery strategy for
+this feature is the two chained PRs, not one commit series. This work unit is
+`94702f7`, 185 non-test lines of behaviour plus its evidence. Nothing new is
+proposed here: if #80 ever needs to be reviewed as slices rather than as a chain,
+that is a decision about the branch, and it was made before this commit existed.
