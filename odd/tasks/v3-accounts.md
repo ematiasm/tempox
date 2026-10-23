@@ -1312,3 +1312,35 @@ v3 cannot fix this because v3 has no notion of "this sale was collected" — tha
 state**, and the check belongs beside the existing "a note may not target the debt
 account" rule, which enforces the mirror case. Until then the hole is reachable through
 the API and not through the screen: the UI never offers a method override on a refund.
+
+L108 (state, 2026-10-23, **three review lineages left open on purpose, and the decision
+recorded rather than the tidiness**): the inventory holds three authorities bound to
+candidate hashes that no longer exist —
+
+| lineage | froze | what killed it |
+|---|---|---|
+| `review-7e70748cd932714a` | `0d4e6006…` | `R3-001` fixed with `--amend` |
+| `review-a9a0b92eff7cdae1` | `af5db1a8…` | the second correction, same cause |
+| `review-2b406848e8df8fdd` | `247c13fe…` | T0's fix, same cause |
+
+The cause is one line and is already `L64`: **correcting with `--amend` after a review
+has opened authority**. Each one is in `correction_required` waiting for a correction
+plan that names a target which cannot be reconstructed, so no binding can satisfy it —
+tried twice, rejected with `capture-binding-rejected` both times.
+
+**The owner decided to leave them open.** The reasoning is worth keeping because it is
+the answer to a question that will be asked again: closing them improves nothing
+objective. All three reviewed trees that no later foundation used; their findings were
+fixed and re-reviewed in the transactions that did close. `ABANDON` would need three
+interactive approvals for an internal store, and `RECOVER` would open a live authority
+over the current tree — which the provider has already refused twice for context budget.
+A stranded receipt is a record, not a hazard, and it is reported here rather than
+silently cleaned.
+
+L109 (closing, 2026-10-23): v3 is complete. Nine tasks, nine reviews, eight sealed. The
+one unsealed review (T5) is unsealed because of **order, not quality** — it was deferred
+while it was HEAD and reviewed after four tasks had landed on it (`L105`). Its single
+real finding is reproduced and handed to the collections slice as a requirement
+(`L107`). What the slice leaves behind: 91 integration tests, 50 backend unit tests, 232
+frontend unit tests, 22 e2e, five migrations, and a system where a sale can name a bank
+transfer and the till stops claiming money it never received.
