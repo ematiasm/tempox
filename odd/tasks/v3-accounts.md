@@ -385,7 +385,7 @@ with no other change competing for attention (L49).
 | T3 | Migration `0014`: `VIEW money_movements` + derived `balance` on `GET /api/accounts` | S4, S6–S8 | inline | done | `da53a17` |
 | T4 | Sales write path and flat wire (S6b): `payment_method_id` + `payment_method_name` side by side at the top level, resolved by join (never `account_id`, never a name column, never a nested object), picker defaults to an active method belonging to the `is_default` account; API accepts inactive methods; enforce S9 walk-in guard | S4, S5, S6b, S8, S9 | inline | pending | — |
 | T5 | Purchases write path (same flat wire as T4), plus inheritance in credit notes (with override) and supplier returns; reject the `credit` method on purchases in the write path | S5, S6b, S9b, S10 | inline | pending | — |
-| T6 | Retire `/api/cash` and move the `/sales` footer to `/api/accounts` (`is_default`) | S8, S13 | inline | pending | — |
+| T6 | Retire `/api/cash`; the footer reads the default account's derived balance from `/api/accounts` | S8, S13 | inline | done | `6d96958` |
 | T7 | Frontend: `/accounts` screen, method column in both ledgers, annulment derived from notes only | S12 | inline | pending | — |
 | T8 | i18n both dictionaries, `architecture.md`/`PRODUCT.md`/`PLAN.md`, e2e over a sale on a non-cash method | S18, S19 | inline | pending | — |
 | T2 | **Closing commit, alone, after T8.** Migration `0013`: drop `status`/`reversed_at` with pre-check, re-cut `guard_sale_economics`. Risk item 1 — destructive over immutable history | S11 | inline | pending | — |
@@ -1071,3 +1071,25 @@ proved the handler correct. The names are the fix: the test now declares
 `cash_account` and `cash_method` separately. **A 404 on a write route is as likely to
 be a wrong id in the fixture as a wrong branch in the handler**, and the cheapest
 discriminator is the out-of-process request, not instrumentation.
+
+L81 (state, 2026-10-23, T6 done): `/api/cash` is removed and the till is the default
+account's derived balance. Twelve test call sites and two frontend call sites were
+rewired to read `/api/accounts`; the two frontend unit tests that covered the old
+endpoint now assert the new path AND that the pick is by `is_default`, with a second
+test proving there is no `0.00` fallback when no account is the default. Suite at 91
+integration + 227 frontend unit, eslint/prettier/rustfmt/clippy clean.
+
+L82 (why the retirement was safe rather than a leap, recorded because it is the whole
+justification): T3 asserted that the view reproduces the figure `/api/cash` computed by
+hand. That assertion did not disappear with the endpoint — it became the agreement
+between the view and the same arithmetic read straight from the documents, so the claim
+still holds and now has no endpoint to depend on. An endpoint can retire safely when its
+number is already reproduced elsewhere and the reproduction is asserted; without that,
+removing it would be a guess.
+
+L83 (disposition, 2026-10-23, T5's review): the owner saw T5's reviewer forecast and chose
+to continue with T6 instead of spending the two runs. Lineage `review-6d889c5d6ea7253d`
+is therefore **open but not stranded** — it was created against the correct base and never
+amended, so it can still be run later as-is. Recorded so a future session does not read
+an unapproved candidate as approved: T5's code has 5 tests and 4/4 mutations, and no
+independent review.
