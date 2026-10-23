@@ -1246,3 +1246,29 @@ every task's mutations run before its review. The slice's own record of what it 
 three review transactions found real critical defects in T1 and one in T0, T7's review
 found a real defect in an advisory, and the e2e found two more that no other level
 could see. Nothing in that list was found by the same tool twice.
+
+L102 (state, 2026-10-23, **T2 reviewed and approved — v3's last candidate**): lineage
+`review-7e0f9995b2616e0d` isolated against T8's close with **three lenses** (risk,
+resilience, reliability), 13 files, 1023 lines. `approved`, four advisory findings,
+authority burned. This is the first candidate to carry `resilience`, added because this
+migration is the one that asserts its own safety — behaviour under failure is exactly
+what that lens reads.
+
+L103 (three warnings fixed in `d27cbe7`, all of the kind that rots quietly):
+- `R3-001`: the totals snapshot was an unguarded `CREATE TEMP TABLE`. A TEMP table
+  lives for the session, so a retry within one connection fails on the name — the shape
+  of `0009`'s re-run defect. Guarded with `DROP IF EXISTS`.
+- `R3-002`: the "no writable column" assertion accepted **any** error. It had already
+  been caught once passing for the wrong reason; the fix then used `total + 0.01`,
+  which is still whole cents, but the assertion still did not say why it failed. It now
+  requires the message to come from the sale guard.
+- `R3-003`: `isAnnulled` had become a pure alias of `isFullyRefunded` and every call
+  site ORed the two — one question under two names. The alias is gone.
+
+L104 (the slice's review ledger, complete): **nine candidates, seven approved, one
+deferred by the owner (T5), and this one.** T1 needed three transactions because the
+first two each found a real critical defect; T0, T3, T4, T6, T7, T8 and T2 each closed
+in one. Across all of them: 3 critical defects found by review (two in T1, one in T0),
+2 real defects found by the e2e, 1 spec/code contradiction found by the owner asking a
+question, and roughly a dozen weakened assertions found by mutation. No defect was ever
+found twice by the same tool.
