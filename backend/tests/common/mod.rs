@@ -90,6 +90,13 @@ impl Client {
         self.send(Method::DELETE, uri, None).await
     }
 
+    /// A partial update. `PATCH` with `Some(body)`, because an empty body is itself
+    /// a case worth measuring: v3's account and method routes refuse it with 400
+    /// rather than returning a 200 that changed nothing.
+    pub async fn patch(&self, uri: &str, body: serde_json::Value) -> TestResponse {
+        self.send(Method::PATCH, uri, Some(body)).await
+    }
+
     async fn send(
         &self,
         method: Method,

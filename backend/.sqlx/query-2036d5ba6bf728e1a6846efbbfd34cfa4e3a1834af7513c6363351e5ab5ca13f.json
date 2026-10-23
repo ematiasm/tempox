@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO sales (customer_id, total) VALUES ($1, $2) RETURNING id",
+  "query": "INSERT INTO supplier_returns (purchase_id, total, payment_method_id) VALUES ($1, $2, $3) RETURNING id",
   "describe": {
     "columns": [
       {
@@ -9,7 +9,7 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "sales",
+            "table": "supplier_returns",
             "name": "id"
           }
         }
@@ -18,12 +18,13 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Numeric"
+        "Numeric",
+        "Uuid"
       ]
     },
     "nullable": [
       false
     ]
   },
-  "hash": "ec4b9b95491e811226984d64252f82105b614df1770c7ca18566bad46ba92e1d"
+  "hash": "2036d5ba6bf728e1a6846efbbfd34cfa4e3a1834af7513c6363351e5ab5ca13f"
 }

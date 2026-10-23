@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::AppState;
+use crate::models::account::{CASH_ACCOUNT_ID, CASH_PAYMENT_METHOD_ID, CREDIT_ACCOUNT_ID};
 use crate::models::{
     credit_note::CreditNote, credit_note_item::CreditNoteItem, sale::Sale, sale_item::SaleItem,
 };
@@ -27,7 +28,6 @@ pub fn routes() -> Router<AppState> {
         .route("/sales", post(create_sale).get(list_sales))
         .route("/sales/{id}/credit-notes", post(create_credit_note))
         .route("/sales/summary", get(sales_summary))
-        .route("/cash", get(cash_total))
 }
 
 #[derive(Debug, Deserialize)]
@@ -35,6 +35,14 @@ pub struct NewSale {
     /// Omitted means the seeded walk-in customer.
     #[serde(default)]
     pub customer_id: Option<Uuid>,
+    /// Where the money went. Omitted means the seeded `cash` method, which is what
+    /// every sale meant before this existed — so an older client keeps its exact
+    /// behaviour rather than breaking.
+    ///
+    /// An unknown id is a 404, and a method whose account is the debt account is
+    /// refused when the sale names `walk-in` (S9): anonymous debt is not debt.
+    #[serde(default)]
+    pub payment_method_id: Option<Uuid>,
     pub items: Vec<NewSaleItem>,
 }
 
@@ -80,6 +88,18 @@ pub struct CreditNoteWithItems {
 /// The body of a refund: how much of each sale line comes back.
 #[derive(Debug, Deserialize)]
 pub struct NewCreditNote {
+    /// Which method the refund goes back through. **Omitted means the corrected
+    /// sale's method**, which is what makes a refund of an unpaid credit sale move no
+    /// money: the note credits the same account the sale debited, so the debt drops.
+    ///
+    /// An explicit method exists for the case inheritance gets wrong: a credit sale
+    /// that was already collected, refunded out of the till instead of leaving a
+    /// balance in the customer's favour.
+    ///
+    /// The client names **the method, never the account** — the server resolves it,
+    /// exactly as a supplier return never sends a price.
+    #[serde(default)]
+    pub payment_method_id: Option<Uuid>,
     pub items: Vec<NewCreditNoteItem>,
 }
 
@@ -90,13 +110,6 @@ pub struct NewCreditNoteItem {
     /// How many units come back. May be less than the quantity sold: a partial
     /// refund is the normal case, and several notes may follow.
     pub quantity: i32,
-}
-
-/// The cash balance: the sum of confirmed sales, as a currency amount.
-#[derive(Debug, Serialize)]
-pub struct Cash {
-    #[serde(serialize_with = "crate::money::serialize_amount")]
-    pub total: Decimal,
 }
 
 #[derive(Debug, Deserialize)]
@@ -151,6 +164,39 @@ async fn create_sale(
         None => WALK_IN_CUSTOMER_ID,
     };
 
+    // Resolve the destination before any write, the same way the customer is
+    // resolved: an unknown method is a 404 rather than a foreign-key 500, and the
+    // account it points at is read here because the credit rule below needs it.
+    //
+    // This reads the method's account rather than trusting the client to send one:
+    // the client names the method, the method knows its account. That is the whole
+    // point of the direction chosen in v3.
+    let (payment_method_id, method_account_id) = match body.payment_method_id {
+        Some(id) => {
+            let row = sqlx::query!("SELECT account_id FROM payment_methods WHERE id = $1", id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|e| {
+                    tracing::error!(?e, "payment method lookup failed");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?;
+            let row = row.ok_or(StatusCode::NOT_FOUND)?;
+            (id, row.account_id)
+        }
+        None => (CASH_PAYMENT_METHOD_ID, CASH_ACCOUNT_ID),
+    };
+
+    // S9: a sale paid on credit must name a real customer. The check is written
+    // **positively first** in the tests — a credit sale to a named customer is
+    // accepted — because a refusal on its own could pass for the wrong reason.
+    //
+    // `is_active` is deliberately NOT consulted: it is a picker concern, and gating
+    // writes on it would make this refusal fire because the seeded `credit` method is
+    // inactive rather than because the customer is anonymous.
+    if method_account_id == CREDIT_ACCOUNT_ID && customer_id == WALK_IN_CUSTOMER_ID {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
     // Resolve every line against the product: snapshot name and unit, resolve
     // the price (override or list price), and build the money input.
     let mut lines: Vec<LineInput> = Vec::with_capacity(body.items.len());
@@ -186,9 +232,10 @@ async fn create_sale(
 
     // The sale header.
     let sale_id = sqlx::query_scalar!(
-        "INSERT INTO sales (customer_id, total) VALUES ($1, $2) RETURNING id",
+        "INSERT INTO sales (customer_id, total, payment_method_id) VALUES ($1, $2, $3) RETURNING id",
         customer_id,
-        total
+        total,
+        payment_method_id
     )
     .fetch_one(&mut *tx)
     .await
@@ -256,9 +303,16 @@ async fn create_sale(
         // round(...,2): the column declares scale 6 and returns its value at that
         // scale, so an amount would leave as `3750.000000`. See 0006 for why the
         // column declares 6, and `money::MONEY_SCALE` for the contract.
-        "SELECT id, customer_id, round(total, 2) AS \"total!\", payment_method, status,
-                reversed_at, created_at
-         FROM sales WHERE id = $1",
+        //
+        // `payment_method` is joined, not read off `sales`: 0012 dropped the TEXT
+        // column and the name lives on `payment_methods`. Joining by id is what
+        // lets a rename correct history instead of freezing a typo.
+        "SELECT s.id, s.customer_id, round(s.total, 2) AS \"total!\",
+                s.payment_method_id, pm.name AS \"payment_method_name!\", s.status,
+                s.reversed_at, s.created_at
+         FROM sales s
+         JOIN payment_methods pm ON pm.id = s.payment_method_id
+         WHERE s.id = $1",
         sale_id
     )
     .fetch_one(&mut *tx)
@@ -381,10 +435,53 @@ async fn create_credit_note(
     }
     note_total.rescale(money::MONEY_SCALE);
 
+    // Inherit the corrected sale's method, unless the note names one.
+    //
+    // Inheritance is the default because it is what makes a refund of an unpaid
+    // credit sale move no money: the note credits the same account the sale debited,
+    // so the debt drops instead of a till paying out. The override exists for the
+    // sale that was already collected.
+    let sale_method: Uuid =
+        sqlx::query_scalar!("SELECT payment_method_id FROM sales WHERE id = $1", sale_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| {
+                tracing::error!(?e, "sale payment method read failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+
+    let note_method: Uuid = match body.payment_method_id {
+        Some(id) => {
+            let account_id: Option<Uuid> =
+                sqlx::query_scalar!("SELECT account_id FROM payment_methods WHERE id = $1", id)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(|e| {
+                        tracing::error!(?e, "payment method lookup failed");
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    })?;
+            let account_id = account_id.ok_or_else(|| {
+                tracing::error!("METHOD-LOOKUP-404");
+                StatusCode::NOT_FOUND
+            })?;
+            // A note may not target the debt account. Moving debt between customers
+            // is a different document, and a refund is not where that belongs. The
+            // inherited value can legitimately be that account, which is why this
+            // check applies only to an explicit one — that asymmetry is the whole
+            // difference between "the debt drops" and "the debt moved".
+            if account_id == CREDIT_ACCOUNT_ID {
+                return Err(StatusCode::BAD_REQUEST);
+            }
+            id
+        }
+        None => sale_method,
+    };
+
     let note_id = sqlx::query_scalar!(
-        "INSERT INTO credit_notes (sale_id, total) VALUES ($1, $2) RETURNING id",
+        "INSERT INTO credit_notes (sale_id, total, payment_method_id) VALUES ($1, $2, $3) RETURNING id",
         sale_id,
-        note_total
+        note_total,
+        note_method
     )
     .fetch_one(&mut *tx)
     .await
@@ -534,10 +631,13 @@ async fn list_sales(
     // With both bounds absent the WHERE clause is vacuously true, which is the
     // unscoped behaviour v1 shipped.
     let rows = sqlx::query!(
-        "SELECT s.id, s.customer_id, round(s.total, 2) AS \"total!\", s.payment_method, s.status,
+        // `payment_method` is the method's name, joined on the FK that 0012 added.
+        "SELECT s.id, s.customer_id, round(s.total, 2) AS \"total!\",
+                s.payment_method_id, pm.name AS \"payment_method_name!\", s.status,
                 s.reversed_at, s.created_at, c.name AS customer_name
          FROM sales s
          JOIN customers c ON c.id = s.customer_id
+         JOIN payment_methods pm ON pm.id = s.payment_method_id
          WHERE ($1::timestamptz IS NULL OR s.created_at >= $1)
            AND ($2::timestamptz IS NULL OR s.created_at < $2)
          ORDER BY s.created_at DESC
@@ -577,7 +677,8 @@ async fn list_sales(
                 id: row.id,
                 customer_id: row.customer_id,
                 total: row.total,
-                payment_method: row.payment_method,
+                payment_method_id: row.payment_method_id,
+                payment_method_name: row.payment_method_name,
                 status: row.status,
                 reversed_at: row.reversed_at,
                 created_at: row.created_at,
@@ -687,37 +788,6 @@ async fn sales_summary(
         net: row.net,
         documents: row.documents,
     }))
-}
-
-async fn cash_total(State(state): State<AppState>) -> Result<Json<Cash>, StatusCode> {
-    // Net of the corrections. A refund is money leaving the till, and a figure
-    // called "cash on hand" that ignored it would be wrong in the one direction
-    // that matters. Both sums are `numeric` and both are COALESCEd, so an empty
-    // ledger and a ledger with no notes behave identically.
-    let total = sqlx::query_scalar!(
-        // Money in the till: what came in from sales, minus what was refunded to
-        // customers, minus what was spent buying stock, **plus** what suppliers
-        // gave back on returns. The shape of the answer never changes — one
-        // two-decimal string — but its meaning has changed twice, so the comment
-        // says what the figure is rather than what it used to be.
-        //
-        // `sales` filters `status = 'confirmed'` and the other three filter
-        // nothing. That asymmetry is the design, not an oversight: a sale carries
-        // a reserved lifecycle whose `cancel` must not count, while a purchase, a
-        // credit note and a supplier return have no status at all — if the row
-        // exists, it counts.
-        "SELECT (COALESCE((SELECT SUM(total) FROM sales WHERE status = 'confirmed'), 0)
-               - COALESCE((SELECT SUM(total) FROM credit_notes), 0)
-               - COALESCE((SELECT SUM(total) FROM purchases), 0)
-               + COALESCE((SELECT SUM(total) FROM supplier_returns), 0))::numeric AS \"total!\""
-    )
-    .fetch_one(&state.db)
-    .await
-    .map_err(|e| {
-        tracing::error!(?e, "cash total failed");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-    Ok(Json(Cash { total }))
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO purchases (supplier_id, total) VALUES ($1, $2) RETURNING id",
+  "query": "SELECT id FROM accounts WHERE id = $1 FOR UPDATE",
   "describe": {
     "columns": [
       {
@@ -9,7 +9,7 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "purchases",
+            "table": "accounts",
             "name": "id"
           }
         }
@@ -17,13 +17,12 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid",
-        "Numeric"
+        "Uuid"
       ]
     },
     "nullable": [
       false
     ]
   },
-  "hash": "592a83bb9e83ee7671d381040d721725c8455e9c628fb177668f0cda2539db62"
+  "hash": "030c9fb372cbb63d978dadf227f8b07743721aa505ff293dc0a561c457935fbb"
 }

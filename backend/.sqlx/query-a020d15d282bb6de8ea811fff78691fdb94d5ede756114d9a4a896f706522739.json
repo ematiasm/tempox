@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, customer_id, round(total, 2) AS \"total!\", payment_method, status,\n                reversed_at, created_at\n         FROM sales WHERE id = $1",
+  "query": "SELECT s.id, s.customer_id, round(s.total, 2) AS \"total!\",\n                s.payment_method_id, pm.name AS \"payment_method_name!\", s.status,\n                s.reversed_at, s.created_at\n         FROM sales s\n         JOIN payment_methods pm ON pm.id = s.payment_method_id\n         WHERE s.id = $1",
   "describe": {
     "columns": [
       {
@@ -33,17 +33,28 @@
       },
       {
         "ordinal": 3,
-        "name": "payment_method",
-        "type_info": "Text",
+        "name": "payment_method_id",
+        "type_info": "Uuid",
         "origin": {
           "Table": {
             "table": "sales",
-            "name": "payment_method"
+            "name": "payment_method_id"
           }
         }
       },
       {
         "ordinal": 4,
+        "name": "payment_method_name!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "payment_methods",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
         "name": "status",
         "type_info": "Text",
         "origin": {
@@ -54,7 +65,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "reversed_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -65,7 +76,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -87,9 +98,10 @@
       null,
       false,
       false,
+      false,
       true,
       false
     ]
   },
-  "hash": "4bb542308a4d733db7d6f64db24f4b2390a3579d8fbf6d562e2485858f6efac8"
+  "hash": "a020d15d282bb6de8ea811fff78691fdb94d5ede756114d9a4a896f706522739"
 }

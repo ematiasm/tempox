@@ -236,8 +236,8 @@ async fn v1_units_and_history_guards(pool: sqlx::PgPool) {
     .await
     .expect("insert product");
     let sid: (uuid::Uuid,) = sqlx::query_as(
-        "INSERT INTO sales (customer_id, total)
-         VALUES ('00000000-0000-0000-0000-000000000001', 3750.00) RETURNING id",
+        "INSERT INTO sales (customer_id, total, payment_method_id)
+         VALUES ('00000000-0000-0000-0000-000000000001', 3750.00, '00000000-0000-0000-0000-000000000004') RETURNING id",
     )
     .fetch_one(&mut *tx)
     .await
@@ -302,8 +302,8 @@ async fn v1_units_and_history_guards(pool: sqlx::PgPool) {
             .await
             .expect("savepoint");
         let result = sqlx::query(
-            "INSERT INTO sales (customer_id, total)
-             VALUES ('00000000-0000-0000-0000-000000000001', 1.235)",
+            "INSERT INTO sales (customer_id, total, payment_method_id)
+             VALUES ('00000000-0000-0000-0000-000000000001', 1.235, '00000000-0000-0000-0000-000000000004')",
         )
         .execute(&mut *tx)
         .await;
@@ -358,8 +358,8 @@ async fn v1_ledger_is_append_only_and_reason_coherent(pool: sqlx::PgPool) {
     .await
     .expect("insert initial movement");
     let sid: (uuid::Uuid,) = sqlx::query_as(
-        "INSERT INTO sales (customer_id, total)
-         VALUES ('00000000-0000-0000-0000-000000000001', 3750) RETURNING id",
+        "INSERT INTO sales (customer_id, total, payment_method_id)
+         VALUES ('00000000-0000-0000-0000-000000000001', 3750, '00000000-0000-0000-0000-000000000004') RETURNING id",
     )
     .fetch_one(&mut *tx)
     .await
@@ -803,11 +803,20 @@ async fn v1_read_endpoints_reflect_writes(pool: sqlx::PgPool) {
     .fetch_one(&pool)
     .await
     .expect("cash arithmetic");
-    let cash_resp = client.get("/api/cash").await;
+    // `T6` retired `/api/cash`; the same figure is now the default account's
+    // derived balance.
+    let cash_resp = client.get("/api/accounts").await;
     cash_resp.expect_status(axum::http::StatusCode::OK);
-    let cash = cash_resp.json().clone();
+    let accounts = cash_resp.json().clone();
+    let till = accounts
+        .as_array()
+        .expect("accounts array")
+        .iter()
+        .find(|a| a["is_default"].as_bool().unwrap_or(false))
+        .expect("a default account")
+        .clone();
     assert_eq!(
-        cash["total"],
+        till["balance"],
         format!(
             "{:.2}",
             cash_before.0 + rust_decimal::Decimal::new(300300, 2)
@@ -877,8 +886,8 @@ async fn v1a_sales_list_is_scoped_by_date_and_offset(pool: sqlx::PgPool) {
         let pool = pool.clone();
         async move {
             let row: (uuid::Uuid,) = sqlx::query_as(
-                "INSERT INTO sales (customer_id, total, created_at)
-                 VALUES ('00000000-0000-0000-0000-000000000001', 1.00, $1::timestamptz) RETURNING id",
+                "INSERT INTO sales (customer_id, total, created_at, payment_method_id)
+                 VALUES ('00000000-0000-0000-0000-000000000001', 1.00, $1::timestamptz, '00000000-0000-0000-0000-000000000004') RETURNING id",
             )
             .bind(created_at)
             .fetch_one(&pool)
@@ -1176,13 +1185,25 @@ struct Reversal {
     lines: Vec<(uuid::Uuid, uuid::Uuid, i64, String)>,
 }
 
-/// Reads the cash figure the screen shows, straight from its endpoint.
+/// Reads the till's balance: the account whose `is_default` is true, from
+/// `GET /api/accounts`, which is where the figure lives since `T6` retired
+/// `/api/cash`.
+///
+/// The replacement is deliberately the *same number* by a different route: `0014`'s
+/// view sums what that endpoint used to sum, and `v3_t3_the_four_documents…` asserts
+/// the agreement directly, which is what made the retirement safe rather than a leap.
 async fn cash(client: &common::Client) -> rust_decimal::Decimal {
-    let response = client.get("/api/cash").await;
+    let response = client.get("/api/accounts").await;
     response.expect_status(axum::http::StatusCode::OK);
     let body = response.json();
-    rust_decimal::Decimal::from_str_exact(body["total"].as_str().expect("cash total string"))
-        .expect("cash total is a decimal")
+    let till = body
+        .as_array()
+        .expect("accounts array")
+        .iter()
+        .find(|a| a["is_default"].as_bool().unwrap_or(false))
+        .expect("exactly one account is the default");
+    rust_decimal::Decimal::from_str_exact(till["balance"].as_str().expect("balance string"))
+        .expect("balance is a decimal")
 }
 
 /// Refunds part of a sale through the API and returns the response, whatever
@@ -2490,7 +2511,7 @@ async fn v2_a_purchase_is_immutable_after_it_exists(pool: sqlx::PgPool) {
     .expect("insert product");
 
     let purchase_id: (uuid::Uuid,) = sqlx::query_as(
-        "INSERT INTO purchases (supplier_id, total) VALUES ($1, 20.00) RETURNING id",
+        "INSERT INTO purchases (supplier_id, total, payment_method_id) VALUES ($1, 20.00, '00000000-0000-0000-0000-000000000004') RETURNING id",
     )
     .bind(uuid::Uuid::parse_str(ONE_OFF_SUPPLIER_ID).expect("fixed uuid"))
     .fetch_one(&mut *tx)
@@ -2566,7 +2587,7 @@ async fn v2_a_purchase_is_immutable_after_it_exists(pool: sqlx::PgPool) {
     // A finer-than-a-cent amount is refused on both new money columns.
     probe_denied!(
         "a purchase total finer than a cent",
-        "INSERT INTO purchases (supplier_id, total) VALUES ($1, 20.005)",
+        "INSERT INTO purchases (supplier_id, total, payment_method_id) VALUES ($1, 20.005, '00000000-0000-0000-0000-000000000004')",
         uuid::Uuid::parse_str(ONE_OFF_SUPPLIER_ID).expect("fixed uuid")
     );
 
@@ -2584,7 +2605,7 @@ async fn v2_the_ledger_refuses_a_purchase_movement_without_its_document(pool: sq
     .expect("insert product");
 
     let purchase_id: (uuid::Uuid,) =
-        sqlx::query_as("INSERT INTO purchases (supplier_id, total) VALUES ($1, 0.00) RETURNING id")
+        sqlx::query_as("INSERT INTO purchases (supplier_id, total, payment_method_id) VALUES ($1, 0.00, '00000000-0000-0000-0000-000000000004') RETURNING id")
             .bind(uuid::Uuid::parse_str(ONE_OFF_SUPPLIER_ID).expect("fixed uuid"))
             .fetch_one(&mut *tx)
             .await
@@ -2669,7 +2690,7 @@ async fn v2_the_ledger_refuses_a_purchase_movement_without_its_document(pool: sq
     // one-sided `purchase => purchase_id` check would let this through, which is
     // exactly what a mutation run measured.
     let sale_id: (uuid::Uuid,) = sqlx::query_as(
-        "INSERT INTO sales (customer_id, total) VALUES ('00000000-0000-0000-0000-000000000001', 0.00) RETURNING id",
+        "INSERT INTO sales (customer_id, total, payment_method_id) VALUES ('00000000-0000-0000-0000-000000000001', 0.00, '00000000-0000-0000-0000-000000000004') RETURNING id",
     )
     .fetch_one(&mut *tx)
     .await
@@ -3230,11 +3251,19 @@ async fn v2_cash_nets_purchases_and_still_counts_sales(pool: sqlx::PgPool) {
             .expect("insert product");
 
     async fn cash(client: &common::Client) -> String {
-        let response = client.get("/api/cash").await;
+        // `T6` retired `/api/cash`; the till's balance is the default account's
+        // derived balance, and it is the same number by the same view.
+        let response = client.get("/api/accounts").await;
         response.expect_status(axum::http::StatusCode::OK);
-        response.json()["total"]
+        response
+            .json()
+            .as_array()
+            .expect("accounts array")
+            .iter()
+            .find(|a| a["is_default"].as_bool().unwrap_or(false))
+            .expect("a default account")["balance"]
             .as_str()
-            .expect("cash total is a decimal string")
+            .expect("balance string")
             .to_string()
     }
     fn cents(s: &str) -> i64 {
@@ -3315,7 +3344,7 @@ async fn v2_purchase_tables_refuse_truncate_and_keep_their_state(pool: sqlx::PgP
             .await
             .expect("insert product");
     let purchase_id: (uuid::Uuid,) =
-        sqlx::query_as("INSERT INTO purchases (supplier_id, total) VALUES ($1, 1.00) RETURNING id")
+        sqlx::query_as("INSERT INTO purchases (supplier_id, total, payment_method_id) VALUES ($1, 1.00, '00000000-0000-0000-0000-000000000004') RETURNING id")
             .bind(uuid::Uuid::parse_str(ONE_OFF_SUPPLIER_ID).expect("fixed uuid"))
             .fetch_one(&mut *tx)
             .await
@@ -3449,7 +3478,7 @@ async fn v2_5_fixture(
             .await
             .expect("insert product");
     let purchase_id: (uuid::Uuid,) = sqlx::query_as(
-        "INSERT INTO purchases (supplier_id, total) VALUES ($1, 30.00) RETURNING id",
+        "INSERT INTO purchases (supplier_id, total, payment_method_id) VALUES ($1, 30.00, '00000000-0000-0000-0000-000000000004') RETURNING id",
     )
     .bind(uuid::Uuid::parse_str(ONE_OFF_SUPPLIER_ID).expect("fixed uuid"))
     .fetch_one(&mut **tx)
@@ -3491,7 +3520,7 @@ async fn v2_5_a_return_takes_stock_out_and_names_both_documents(pool: sqlx::PgPo
     let (pid, purchase_id, item_id) = v2_5_fixture(&mut tx, "happy").await;
 
     let return_id: (uuid::Uuid,) = sqlx::query_as(
-        "INSERT INTO supplier_returns (purchase_id, total) VALUES ($1, 10.00) RETURNING id",
+        "INSERT INTO supplier_returns (purchase_id, total, payment_method_id) VALUES ($1, 10.00, '00000000-0000-0000-0000-000000000004') RETURNING id",
     )
     .bind(purchase_id)
     .fetch_one(&mut *tx)
@@ -3534,14 +3563,14 @@ async fn v2_5_the_ledger_refuses_incoherent_supplier_return_movements(pool: sqlx
 
     let (pid, purchase_id, _item_id) = v2_5_fixture(&mut tx, "coherence").await;
     let return_id: (uuid::Uuid,) = sqlx::query_as(
-        "INSERT INTO supplier_returns (purchase_id, total) VALUES ($1, 10.00) RETURNING id",
+        "INSERT INTO supplier_returns (purchase_id, total, payment_method_id) VALUES ($1, 10.00, '00000000-0000-0000-0000-000000000004') RETURNING id",
     )
     .bind(purchase_id)
     .fetch_one(&mut *tx)
     .await
     .expect("insert return");
     let sale_id: (uuid::Uuid,) = sqlx::query_as(
-        "INSERT INTO sales (customer_id, total) VALUES ('00000000-0000-0000-0000-000000000001', 0.00) RETURNING id",
+        "INSERT INTO sales (customer_id, total, payment_method_id) VALUES ('00000000-0000-0000-0000-000000000001', 0.00, '00000000-0000-0000-0000-000000000004') RETURNING id",
     )
     .fetch_one(&mut *tx)
     .await
@@ -3602,7 +3631,7 @@ async fn v2_5_the_return_tables_are_immutable(pool: sqlx::PgPool) {
 
     let (pid, purchase_id, item_id) = v2_5_fixture(&mut tx, "immutable").await;
     let return_id: (uuid::Uuid,) = sqlx::query_as(
-        "INSERT INTO supplier_returns (purchase_id, total) VALUES ($1, 10.00) RETURNING id",
+        "INSERT INTO supplier_returns (purchase_id, total, payment_method_id) VALUES ($1, 10.00, '00000000-0000-0000-0000-000000000004') RETURNING id",
     )
     .bind(purchase_id)
     .fetch_one(&mut *tx)
@@ -3661,7 +3690,7 @@ async fn v2_5_the_return_tables_are_immutable(pool: sqlx::PgPool) {
     // A finer-than-a-cent amount is refused on the new money columns.
     probe_denied!(
         "a supplier_return total finer than a cent",
-        "INSERT INTO supplier_returns (purchase_id, total) VALUES ($1, 10.005)",
+        "INSERT INTO supplier_returns (purchase_id, total, payment_method_id) VALUES ($1, 10.005, '00000000-0000-0000-0000-000000000004')",
         purchase_id
     );
 
@@ -4096,11 +4125,19 @@ async fn v2_5_cash_adds_returns_back_and_still_counts_sales_and_purchases(pool: 
     let product = v2_5_product(&pool, "cash").await;
 
     async fn cash(client: &common::Client) -> String {
-        let response = client.get("/api/cash").await;
+        // `T6` retired `/api/cash`; the till's balance is the default account's
+        // derived balance, and it is the same number by the same view.
+        let response = client.get("/api/accounts").await;
         response.expect_status(axum::http::StatusCode::OK);
-        response.json()["total"]
+        response
+            .json()
+            .as_array()
+            .expect("accounts array")
+            .iter()
+            .find(|a| a["is_default"].as_bool().unwrap_or(false))
+            .expect("a default account")["balance"]
             .as_str()
-            .expect("cash total is a decimal string")
+            .expect("balance string")
             .to_string()
     }
     fn cents(s: &str) -> i64 {
@@ -4227,7 +4264,7 @@ async fn ledger_fixture(
     let stranger = product_ids[2];
 
     let sale_id: (uuid::Uuid,) = sqlx::query_as(
-        "INSERT INTO sales (customer_id, total) VALUES ('00000000-0000-0000-0000-000000000001', 10.00) RETURNING id",
+        "INSERT INTO sales (customer_id, total, payment_method_id) VALUES ('00000000-0000-0000-0000-000000000001', 10.00, '00000000-0000-0000-0000-000000000004') RETURNING id",
     )
     .fetch_one(&mut **tx)
     .await
@@ -4243,7 +4280,7 @@ async fn ledger_fixture(
     .expect("insert sale item");
 
     let purchase_id: (uuid::Uuid,) = sqlx::query_as(
-        "INSERT INTO purchases (supplier_id, total) VALUES ('00000000-0000-0000-0000-000000000002', 10.00) RETURNING id",
+        "INSERT INTO purchases (supplier_id, total, payment_method_id) VALUES ('00000000-0000-0000-0000-000000000002', 10.00, '00000000-0000-0000-0000-000000000004') RETURNING id",
     )
     .fetch_one(&mut **tx)
     .await
@@ -4275,13 +4312,13 @@ async fn ledger_refuses_a_movement_whose_product_is_not_in_its_document(pool: sq
     let f = ledger_fixture(&mut tx, "belongs").await;
 
     let cn: (uuid::Uuid,) =
-        sqlx::query_as("INSERT INTO credit_notes (sale_id, total) VALUES ($1, 10.00) RETURNING id")
+        sqlx::query_as("INSERT INTO credit_notes (sale_id, total, payment_method_id) VALUES ($1, 10.00, '00000000-0000-0000-0000-000000000004') RETURNING id")
             .bind(f.sale_id)
             .fetch_one(&mut *tx)
             .await
             .expect("insert credit note");
     let ret: (uuid::Uuid,) = sqlx::query_as(
-        "INSERT INTO supplier_returns (purchase_id, total) VALUES ($1, 10.00) RETURNING id",
+        "INSERT INTO supplier_returns (purchase_id, total, payment_method_id) VALUES ($1, 10.00, '00000000-0000-0000-0000-000000000004') RETURNING id",
     )
     .bind(f.purchase_id)
     .fetch_one(&mut *tx)
@@ -4387,13 +4424,13 @@ async fn ledger_still_refuses_everything_the_old_constraints_refused(pool: sqlx:
     let f = ledger_fixture(&mut tx, "equivalence").await;
 
     let cn: (uuid::Uuid,) =
-        sqlx::query_as("INSERT INTO credit_notes (sale_id, total) VALUES ($1, 10.00) RETURNING id")
+        sqlx::query_as("INSERT INTO credit_notes (sale_id, total, payment_method_id) VALUES ($1, 10.00, '00000000-0000-0000-0000-000000000004') RETURNING id")
             .bind(f.sale_id)
             .fetch_one(&mut *tx)
             .await
             .expect("insert credit note");
     let ret: (uuid::Uuid,) = sqlx::query_as(
-        "INSERT INTO supplier_returns (purchase_id, total) VALUES ($1, 10.00) RETURNING id",
+        "INSERT INTO supplier_returns (purchase_id, total, payment_method_id) VALUES ($1, 10.00, '00000000-0000-0000-0000-000000000004') RETURNING id",
     )
     .bind(f.purchase_id)
     .fetch_one(&mut *tx)
@@ -4521,13 +4558,13 @@ async fn ledger_refuses_a_document_from_another_transaction(pool: sqlx::PgPool) 
 
     // A credit note on sale B, used on a movement naming sale A.
     let cn_on_b: (uuid::Uuid,) =
-        sqlx::query_as("INSERT INTO credit_notes (sale_id, total) VALUES ($1, 10.00) RETURNING id")
+        sqlx::query_as("INSERT INTO credit_notes (sale_id, total, payment_method_id) VALUES ($1, 10.00, '00000000-0000-0000-0000-000000000004') RETURNING id")
             .bind(b.sale_id)
             .fetch_one(&mut *tx)
             .await
             .expect("insert credit note");
     let ret_on_b: (uuid::Uuid,) = sqlx::query_as(
-        "INSERT INTO supplier_returns (purchase_id, total) VALUES ($1, 10.00) RETURNING id",
+        "INSERT INTO supplier_returns (purchase_id, total, payment_method_id) VALUES ($1, 10.00, '00000000-0000-0000-0000-000000000004') RETURNING id",
     )
     .bind(b.purchase_id)
     .fetch_one(&mut *tx)
@@ -4564,4 +4601,2176 @@ async fn ledger_refuses_a_document_from_another_transaction(pool: sqlx::PgPool) 
     );
 
     tx.rollback().await.expect("rollback");
+}
+
+// ── v3: accounts, payment methods and the four destinations (0012) ──────────
+//
+// The migration's own claims, measured. Every assertion here is about something
+// `0012` created: the seeds, the backfill, the four `NOT NULL`s, and the four
+// guards that make "where the money moved" an invariant instead of a convention.
+//
+// The guard tests assert the **positive** case first, on purpose. `v2`'s T1
+// recorded why: a guard test that only checks refusals can pass before the feature
+// exists, because the refusal comes from a missing table or a narrower vocabulary
+// rather than from the rule under test.
+
+#[sqlx::test]
+async fn v3_seeds_cash_and_an_inactive_credit_account_and_method(pool: sqlx::PgPool) {
+    let accounts: Vec<(uuid::Uuid, String, bool)> =
+        sqlx::query_as("SELECT id, name, is_default FROM accounts ORDER BY name")
+            .fetch_all(&pool)
+            .await
+            .expect("read accounts");
+
+    assert_eq!(accounts.len(), 2, "exactly the two seeded accounts");
+    let (cash_id, cash_name, cash_default) = &accounts[0];
+    let (credit_id, credit_name, credit_default) = &accounts[1];
+    assert_eq!(cash_name, "cash");
+    assert!(cash_default, "the till is the default account");
+    assert_eq!(credit_name, "credit");
+    assert!(!credit_default, "the debt account is not the till");
+
+    // Fixed ids, the mechanism walk-in and one-off-supplier established.
+    assert_eq!(*cash_id, uuid::Uuid::from_u128(3));
+    assert_eq!(*credit_id, uuid::Uuid::from_u128(5));
+
+    let methods: Vec<(String, bool, uuid::Uuid)> =
+        sqlx::query_as("SELECT name, is_active, account_id FROM payment_methods ORDER BY name")
+            .fetch_all(&pool)
+            .await
+            .expect("read methods");
+    assert_eq!(methods.len(), 2);
+    assert_eq!(methods[0].0, "cash");
+    assert!(methods[0].1, "cash is offered at the counter");
+    assert_eq!(methods[0].2, *cash_id);
+    assert_eq!(methods[1].0, "credit");
+    assert!(
+        !methods[1].1,
+        "credit is seeded INACTIVE: v3 has no way to collect a credit sale, so the \
+         picker must not offer a debt nothing can settle"
+    );
+    assert_eq!(methods[1].2, *credit_id);
+}
+
+#[sqlx::test]
+async fn v3_every_existing_document_names_where_its_money_moved(pool: sqlx::PgPool) {
+    // The backfill could not invent a destination, so it records the only one that
+    // existed. `0002`'s DEFAULT 'cash' is the evidence that every existing row means
+    // "the till". What is asserted here is the outcome: no document is stranded.
+    let cash_method = uuid::Uuid::from_u128(4);
+    // Literal statements rather than a formatted loop: sqlx 0.9 requires
+    // `&'static str` for queries, and building the table name at runtime defeats the
+    // compile-time checking this crate relies on everywhere else anyway.
+    const STRANDED: [(&str, &str); 4] = [
+        (
+            "sales",
+            "SELECT count(*) FROM sales WHERE payment_method_id IS DISTINCT FROM $1",
+        ),
+        (
+            "credit_notes",
+            "SELECT count(*) FROM credit_notes WHERE payment_method_id IS DISTINCT FROM $1",
+        ),
+        (
+            "purchases",
+            "SELECT count(*) FROM purchases WHERE payment_method_id IS DISTINCT FROM $1",
+        ),
+        (
+            "supplier_returns",
+            "SELECT count(*) FROM supplier_returns WHERE payment_method_id IS DISTINCT FROM $1",
+        ),
+    ];
+    for (table, statement) in STRANDED {
+        let stranded: i64 = sqlx::query_scalar(statement)
+            .bind(cash_method)
+            .fetch_one(&pool)
+            .await
+            .unwrap_or_else(|e| panic!("count {table}: {e}"));
+        assert_eq!(
+            stranded, 0,
+            "{table} rows must be backfilled to the cash method"
+        );
+    }
+
+    // And the old TEXT column is gone, with the guard that froze it re-cut to the
+    // foreign key. Dropping the column without re-cutting the function would leave a
+    // plpgsql body that resolves only at the next UPDATE.
+    let old_column: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM information_schema.columns
+          WHERE table_name = 'sales' AND column_name = 'payment_method'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read columns");
+    assert_eq!(old_column, 0, "sales.payment_method must be dropped");
+}
+
+#[sqlx::test]
+async fn v3_the_economics_guard_follows_the_destination_to_its_new_column(pool: sqlx::PgPool) {
+    // The regression this closes: a recorded sale's destination must not be
+    // rewritable. Before the re-cut, the guard compared a column that no longer
+    // exists; after it, the comparison follows the foreign key.
+    let (sale_id,): (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO sales (customer_id, total, payment_method_id)
+         VALUES ('00000000-0000-0000-0000-000000000001', 10.00,
+                 '00000000-0000-0000-0000-000000000004') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("insert sale");
+
+    let moved = sqlx::query("UPDATE sales SET payment_method_id = $1 WHERE id = $2")
+        .bind(uuid::Uuid::from_u128(6))
+        .bind(sale_id)
+        .execute(&pool)
+        .await;
+    assert!(
+        moved.is_err(),
+        "a sale's payment method must be immutable: moving it rewrites which account \
+         the money reached"
+    );
+
+    // The status transition the guard deliberately still permits stays permitted.
+    sqlx::query("UPDATE sales SET status = 'done' WHERE id = $1")
+        .bind(sale_id)
+        .execute(&pool)
+        .await
+        .expect("the guard permits a status write and nothing else");
+}
+
+#[sqlx::test]
+async fn v3_a_referenced_method_cannot_move_between_accounts(pool: sqlx::PgPool) {
+    // Positive case first: an UNREFERENCED method is a typo and must be correctable.
+    let (free_id,): (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO payment_methods (account_id, name)
+         VALUES ('00000000-0000-0000-0000-000000000003', 'transfer') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("insert an unreferenced method");
+
+    // The destination is a fresh account. It used to be the seeded `credit` account,
+    // which `S2` of `odd/tasks/v3-seed-identities.md` now forbids: nothing may be
+    // attached to the debt account. What this case covers — an unreferenced method is
+    // a typo and may be corrected — needs some real destination and keeps it.
+    let (destination,): (uuid::Uuid,) =
+        sqlx::query_as("INSERT INTO accounts (name) VALUES ('destino') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .expect("insert a destination account");
+
+    sqlx::query("UPDATE payment_methods SET account_id = $1 WHERE id = $2")
+        .bind(destination)
+        .bind(free_id)
+        .execute(&pool)
+        .await
+        .expect("an unreferenced method may move: it is a typo, not history");
+
+    // Now the refusal. The cash method is named by the seeded history of this test
+    // database only after a document exists, so create one.
+    sqlx::query(
+        "INSERT INTO sales (customer_id, total, payment_method_id)
+         VALUES ('00000000-0000-0000-0000-000000000001', 5.00,
+                 '00000000-0000-0000-0000-000000000004')",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert sale naming the cash method");
+
+    // **A second active method on the same account, deliberately.** Without it, the
+    // move below would also be refused by the *default-account* invariant (the till
+    // would be left with no active method), and this test would pass while the guard
+    // under test was absent — measured by mutating `guard_payment_method_account`
+    // into a no-op and watching the test stay green. With the second method present
+    // the default-account rule is satisfied, so the only thing left to refuse the
+    // move is the rule this test is about.
+    sqlx::query(
+        "INSERT INTO payment_methods (account_id, name)
+         VALUES ('00000000-0000-0000-0000-000000000003', 'card')",
+    )
+    .execute(&pool)
+    .await
+    .expect("give the default account another active method");
+
+    let moved = sqlx::query("UPDATE payment_methods SET account_id = $1 WHERE id = $2")
+        .bind(uuid::Uuid::from_u128(5))
+        .bind(uuid::Uuid::from_u128(4))
+        .execute(&pool)
+        .await;
+    assert!(
+        moved.is_err(),
+        "a referenced method must not move accounts: yesterday's balance would change today"
+    );
+}
+
+#[sqlx::test]
+async fn v3_a_rename_corrects_history_instead_of_freezing_a_typo(pool: sqlx::PgPool) {
+    // The whole reason the name is a join and not a snapshot. Renaming is one UPDATE
+    // of one row, and the document's rendered name follows it.
+    sqlx::query(
+        "INSERT INTO sales (customer_id, total, payment_method_id)
+         VALUES ('00000000-0000-0000-0000-000000000001', 7.00,
+                 '00000000-0000-0000-0000-000000000004')",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert sale");
+
+    sqlx::query("UPDATE payment_methods SET name = 'MervadoPago' WHERE id = $1")
+        .bind(uuid::Uuid::from_u128(4))
+        .execute(&pool)
+        .await
+        .expect("a rename is allowed: the id is the identity, the name is a label");
+
+    let (rendered,): (String,) = sqlx::query_as(
+        "SELECT pm.name FROM sales s JOIN payment_methods pm ON pm.id = s.payment_method_id
+          WHERE s.customer_id = '00000000-0000-0000-0000-000000000001'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read the joined name");
+    assert_eq!(
+        rendered, "MervadoPago",
+        "the typo is corrected everywhere, because the document stores the id"
+    );
+
+    // And the other half of the trade, stated as a test: the balance did not move.
+    let (cash_total, credit_total): (rust_decimal::Decimal, rust_decimal::Decimal) =
+        sqlx::query_as(
+            "SELECT (SELECT COALESCE(SUM(total), 0) FROM sales s
+                  JOIN payment_methods pm ON pm.id = s.payment_method_id
+                  JOIN accounts a ON a.id = pm.account_id WHERE a.name = 'cash'),
+                (SELECT COALESCE(SUM(total), 0) FROM sales s
+                  JOIN payment_methods pm ON pm.id = s.payment_method_id
+                  JOIN accounts a ON a.id = pm.account_id WHERE a.name = 'credit')",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("read both balances");
+    assert_eq!(cash_total, rust_decimal::Decimal::from(7));
+    assert_eq!(credit_total, rust_decimal::Decimal::ZERO);
+}
+
+#[sqlx::test]
+async fn v3_the_default_account_always_keeps_an_active_method(pool: sqlx::PgPool) {
+    // The owner's invariant, and it is the interesting one because no CHECK can
+    // express a statement about other rows. Three paths are measured.
+    let cash_method = uuid::Uuid::from_u128(4);
+    let cash_account = uuid::Uuid::from_u128(3);
+    // No `credit_account`: the till-move case below uses a fresh account, because the
+    // seeded debt account can never be the default (`S3`,
+    // `odd/tasks/v3-seed-identities.md`). A binding left here would be an unused one.
+
+    // Positive case: a second active method on the default account is fine, and so is
+    // deactivating one of two.
+    let (second,): (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO payment_methods (account_id, name) VALUES ($1, 'card') RETURNING id",
+    )
+    .bind(cash_account)
+    .fetch_one(&pool)
+    .await
+    .expect("insert a second active method");
+    sqlx::query("UPDATE payment_methods SET is_active = false WHERE id = $1")
+        .bind(cash_method)
+        .execute(&pool)
+        .await
+        .expect("deactivating one of two active methods is allowed");
+
+    // Restore, then measure the three refusals.
+    sqlx::query("UPDATE payment_methods SET is_active = true WHERE id = $1")
+        .bind(cash_method)
+        .execute(&pool)
+        .await
+        .expect("reactivate");
+
+    // (1) the last active method of the default account may not be deactivated
+    sqlx::query("UPDATE payment_methods SET is_active = false WHERE id = $1")
+        .bind(second)
+        .execute(&pool)
+        .await
+        .expect("deactivate the second");
+    let refusal = sqlx::query("UPDATE payment_methods SET is_active = false WHERE id = $1")
+        .bind(cash_method)
+        .execute(&pool)
+        .await;
+    assert!(
+        refusal.is_err(),
+        "the default account would be left with no active payment method"
+    );
+
+    // (2) an account with no active method may not become the default.
+    //
+    // **Asserted by the failure's MESSAGE, not merely by its existence.** Two
+    // guards can refuse this statement — the trigger under test and the partial
+    // unique index, since the till is already the default — so a bare `is_err()`
+    // passes when either one is present. Measured: mutating this trigger into a
+    // no-op left the test green, because the unique index answered instead. Pinning
+    // the message is what makes the assertion belong to one guard.
+    let (bare,): (uuid::Uuid,) =
+        sqlx::query_as("INSERT INTO accounts (name) VALUES ('bare') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .expect("insert an account with no methods");
+    let refusal = sqlx::query("UPDATE accounts SET is_default = true WHERE id = $1")
+        .bind(bare)
+        .execute(&pool)
+        .await
+        .expect_err("an account with no active method cannot be the till");
+    let message = refusal
+        .as_database_error()
+        .map(|e| e.message().to_string())
+        .unwrap_or_default();
+    assert!(
+        message.contains("no active payment method"),
+        "the refusal must come from the default-account rule, got: {message}"
+    );
+
+    // (3) the shop may never END a transaction with no till at all — but it MAY
+    //     move the default, which is what the deferred constraint exists for.
+    //
+    // **This case was originally written the other way round, and the test encoded
+    // the bug.** It asserted that unsetting the default was refused, which is only
+    // half of a rule; combined with the partial unique index (which refuses a second
+    // true row while the first is still true) it made the default permanently fixed
+    // to the seeded account, with no ordering able to move it. Native review found
+    // it (`R3-001`, critical) and both failure modes were reproduced by hand.
+    //
+    // So the assertion is now about the *state at COMMIT*, which is what the rule
+    // really says: two statements in one transaction always work, and ending with
+    // zero defaults never does.
+    let mut tx = pool.begin().await.expect("begin");
+    sqlx::query("UPDATE accounts SET is_default = false WHERE id = $1")
+        .bind(cash_account)
+        .execute(&mut *tx)
+        .await
+        .expect("unsetting the default inside a transaction is allowed");
+    let refusal = tx.commit().await;
+    assert!(
+        refusal.is_err(),
+        "ending a transaction with no default must be refused at COMMIT"
+    );
+
+    // And the legal move: unset one and set another in the same transaction, which
+    // is the operation the shop needs if the till ever changes hands.
+    //
+    // The candidate is a **fresh account**, not the seeded `credit` one. It used to be
+    // `credit`, and `S3` of `odd/tasks/v3-seed-identities.md` now forbids the debt
+    // account from ever being the till. The case this paragraph covers — moving the
+    // default is one transaction ending with exactly one `true` — is unchanged, and it
+    // needs a candidate that is allowed to hold the flag.
+    //
+    // It needs an ACTIVE method first, which is the other half of the rule: a
+    // candidate with no active method would be refused for that reason instead.
+    let (candidate,): (uuid::Uuid,) =
+        sqlx::query_as("INSERT INTO accounts (name) VALUES ('caja-nueva') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .expect("insert the candidate account");
+    sqlx::query("INSERT INTO payment_methods (account_id, name) VALUES ($1, 'efectivo-nuevo')")
+        .bind(candidate)
+        .execute(&pool)
+        .await
+        .expect("the new till needs an active payment method");
+
+    let mut tx = pool.begin().await.expect("begin");
+    sqlx::query("UPDATE accounts SET is_default = false WHERE id = $1")
+        .bind(cash_account)
+        .execute(&mut *tx)
+        .await
+        .expect("unset the old default");
+    sqlx::query("UPDATE accounts SET is_default = true WHERE id = $1")
+        .bind(candidate)
+        .execute(&mut *tx)
+        .await
+        .expect("set the new default");
+    tx.commit()
+        .await
+        .expect("a transaction that ends with exactly one default must commit");
+    let (now_default,): (uuid::Uuid,) = sqlx::query_as("SELECT id FROM accounts WHERE is_default")
+        .fetch_one(&pool)
+        .await
+        .expect("read the default");
+    assert_eq!(now_default, candidate, "the till moved, as allowed");
+
+    // Put it back so the rest of the assertions below read the seeded state.
+    let mut tx = pool.begin().await.expect("begin");
+    sqlx::query("UPDATE accounts SET is_default = false WHERE id = $1")
+        .bind(candidate)
+        .execute(&mut *tx)
+        .await
+        .expect("unset");
+    sqlx::query("UPDATE accounts SET is_default = true WHERE id = $1")
+        .bind(cash_account)
+        .execute(&mut *tx)
+        .await
+        .expect("restore");
+    tx.commit().await.expect("restore commits");
+
+    // (4) a second default is refused by the partial unique index.
+    //
+    // The candidate here HAS an active method on purpose: with an account that had
+    // none, the trigger of (2) would refuse it first and this assertion would pass
+    // while the index was absent — the same masking, in the other direction. Its
+    // message is the index's own, which is what identifies the cause. For the same
+    // reason the candidate is not the seeded `credit` account: its own guard would
+    // answer first and the index would go unmeasured.
+    sqlx::query("INSERT INTO payment_methods (account_id, name) VALUES ($1, 'credit-card')")
+        .bind(candidate)
+        .execute(&pool)
+        .await
+        .expect("give the candidate a second active method");
+    let refusal = sqlx::query("UPDATE accounts SET is_default = true WHERE id = $1")
+        .bind(candidate)
+        .execute(&pool)
+        .await
+        .expect_err("at most one account may be the default");
+    let message = refusal
+        .as_database_error()
+        .map(|e| e.message().to_string())
+        .unwrap_or_default();
+    assert!(
+        message.contains("accounts_one_default_idx"),
+        "the second default must be refused by the partial unique index, got: {message}"
+    );
+}
+
+#[sqlx::test]
+async fn v3_accounts_and_methods_are_never_deleted(pool: sqlx::PgPool) {
+    // Deletion would erase the explanation of a balance. `is_active` is the only
+    // retirement either table needs, and TRUNCATE needs its own statement-level
+    // guard because it does not fire FOR EACH ROW — the mistake `0007` shipped and
+    // `0008` repaired.
+    for (description, statement) in [
+        (
+            "delete a method",
+            "DELETE FROM payment_methods WHERE id = '00000000-0000-0000-0000-000000000006'",
+        ),
+        (
+            "delete an account",
+            "DELETE FROM accounts WHERE id = '00000000-0000-0000-0000-000000000005'",
+        ),
+    ] {
+        let result = sqlx::query(statement).execute(&pool).await;
+        assert!(result.is_err(), "{description} must be refused");
+    }
+
+    // TRUNCATE is blocked by the foreign key before the trigger is even reached, so
+    // this asserts the effect: the rows survive.
+    let _ = sqlx::query("TRUNCATE accounts CASCADE")
+        .execute(&pool)
+        .await;
+    let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM accounts")
+        .fetch_one(&pool)
+        .await
+        .expect("count accounts");
+    assert!(remaining >= 2, "TRUNCATE must not empty the accounts table");
+}
+
+#[sqlx::test]
+async fn v3_names_are_unique_across_the_board(pool: sqlx::PgPool) {
+    // Global uniqueness, so the picker can never show two entries the cashier cannot
+    // tell apart. Measured on both tables.
+    let dup_account = sqlx::query("INSERT INTO accounts (name) VALUES ('cash')")
+        .execute(&pool)
+        .await;
+    assert!(dup_account.is_err(), "two accounts may not share a name");
+
+    let dup_method = sqlx::query(
+        "INSERT INTO payment_methods (account_id, name)
+         VALUES ('00000000-0000-0000-0000-000000000005', 'cash')",
+    )
+    .execute(&pool)
+    .await;
+    assert!(
+        dup_method.is_err(),
+        "two methods may not share a name, not even on different accounts"
+    );
+
+    // A blank name is refused after trimming, on both tables.
+    let blank_method = sqlx::query(
+        "INSERT INTO payment_methods (account_id, name)
+         VALUES ('00000000-0000-0000-0000-000000000003', '   ')",
+    )
+    .execute(&pool)
+    .await;
+    assert!(blank_method.is_err(), "a blank method name is refused");
+}
+
+#[sqlx::test]
+async fn v3_the_till_guard_locks_the_account_row_so_a_racing_writer_waits(pool: sqlx::PgPool) {
+    // **The race this closes, reproduced before the fix.** The invariant "the default
+    // account always has an active method" was an `EXISTS` check in a BEFORE trigger,
+    // which cannot see another transaction's uncommitted work. Measured with two real
+    // sessions on the pre-fix schema: A deactivated `m1`, B deactivated `m2`
+    // concurrently, each saw the other method as still active, both committed, and the
+    // default account was left with **zero** active methods.
+    //
+    // The fix is `SELECT ... FOR UPDATE` on the account row. This test asserts the
+    // observable consequence of that lock rather than the SQL: a second writer's
+    // statement cannot complete while the first holds the account, and the state it
+    // then judges is the committed one.
+    let cash_account = uuid::Uuid::from_u128(3);
+    sqlx::query("INSERT INTO payment_methods (account_id, name) VALUES ($1, 'm1'), ($1, 'm2')")
+        .bind(cash_account)
+        .execute(&pool)
+        .await
+        .expect("insert two active methods");
+    sqlx::query("UPDATE payment_methods SET is_active = false WHERE name = 'cash'")
+        .execute(&pool)
+        .await
+        .expect("retire the seeded method");
+
+    // A takes the account lock by deactivating m1, and holds it.
+    let mut a = pool.begin().await.expect("begin A");
+    sqlx::query("UPDATE payment_methods SET is_active = false WHERE name = 'm1'")
+        .execute(&mut *a)
+        .await
+        .expect("A deactivates m1");
+
+    // B tries to deactivate m2 through a second connection. With the lock it cannot
+    // complete; without it, it would sail through in milliseconds.
+    let pool_b = pool.clone();
+    let mut b_task = tokio::spawn(async move {
+        let mut b = pool_b.begin().await.expect("begin B");
+        let result = sqlx::query("UPDATE payment_methods SET is_active = false WHERE name = 'm2'")
+            .execute(&mut *b)
+            .await;
+        match result {
+            Ok(_) => b.commit().await.map(|_| ()).map_err(|e| e.to_string()),
+            Err(e) => {
+                let _ = b.rollback().await;
+                Err(e.to_string())
+            }
+        }
+    });
+
+    // If B finishes while A still holds the account, there was no lock and the race
+    // is open. That is the assertion: it must still be pending.
+    let raced = tokio::time::timeout(std::time::Duration::from_millis(500), &mut b_task).await;
+    assert!(
+        raced.is_err(),
+        "the second writer completed while the first held the account: the guard does \
+         not serialize them, so two concurrent deactivations could empty the till"
+    );
+
+    // Release: A commits. B now proceeds against the committed state and must refuse,
+    // because m1 is already inactive and m2 is the last one left.
+    a.commit().await.expect("commit A");
+    let b_outcome = b_task.await.expect("B finished");
+
+    let active: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM payment_methods WHERE account_id = $1 AND is_active",
+    )
+    .bind(cash_account)
+    .fetch_one(&pool)
+    .await
+    .expect("count active methods");
+
+    assert!(
+        active >= 1,
+        "the default account must never be left with no active method, even when two \
+         deactivations race; B's outcome was {b_outcome:?}"
+    );
+}
+
+// ── v3 T0: accounts and payment methods write path ──────────────────────────
+//
+// The endpoints v3 cannot work without. Without them `cash` would be the only
+// method in the system and a sale on a bank transfer would be untestable — the
+// central claim of the slice would have no way to be expressed.
+//
+// Every refusal asserted here is also enforced in `0012`'s schema. The API check
+// exists for the status code; the schema check is the one that holds when a psql
+// session bypasses this file, which is why the same rule is measured twice.
+
+#[sqlx::test]
+async fn v3_t0_lists_the_seeded_accounts_with_their_methods(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+
+    let response = client.get("/api/accounts").await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let accounts = response.body.as_array().expect("array");
+
+    // The default first, then by name: the till is what the sales footer reads and
+    // the common case must not depend on the shop's language ordering.
+    assert_eq!(accounts.len(), 2);
+    assert_eq!(accounts[0]["name"], "cash");
+    assert_eq!(accounts[0]["is_default"], true);
+    assert_eq!(accounts[1]["name"], "credit");
+    assert_eq!(accounts[1]["is_default"], false);
+
+    // Each carries its methods nested, and an account's methods are complete even
+    // when the account itself has none.
+    let cash_methods = accounts[0]["methods"].as_array().expect("methods array");
+    assert_eq!(cash_methods.len(), 1);
+    assert_eq!(cash_methods[0]["name"], "cash");
+    assert_eq!(cash_methods[0]["is_active"], true);
+
+    let credit_methods = accounts[1]["methods"].as_array().expect("methods array");
+    assert_eq!(
+        credit_methods[0]["is_active"], false,
+        "credit is seeded inactive: v3 cannot collect a credit sale"
+    );
+}
+
+#[sqlx::test]
+async fn v3_t0_creates_an_account_and_refuses_a_duplicate_or_blank_name(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+
+    let created = client
+        .post(
+            "/api/accounts",
+            serde_json::json!({ "name": "  Banco Galicia  " }),
+        )
+        .await;
+    assert_eq!(created.status(), axum::http::StatusCode::CREATED);
+    assert_eq!(
+        created.body["name"], "Banco Galicia",
+        "the name is trimmed before it is stored"
+    );
+    assert_eq!(
+        created.body["is_default"], false,
+        "creating an account does not move the shop's till unless the caller says so"
+    );
+
+    let duplicate = client
+        .post(
+            "/api/accounts",
+            serde_json::json!({ "name": "Banco Galicia" }),
+        )
+        .await;
+    assert_eq!(
+        duplicate.status(),
+        axum::http::StatusCode::CONFLICT,
+        "names are globally unique"
+    );
+
+    let blank = client
+        .post("/api/accounts", serde_json::json!({ "name": "   " }))
+        .await;
+    assert_eq!(
+        blank.status(),
+        axum::http::StatusCode::BAD_REQUEST,
+        "a name of spaces is empty"
+    );
+}
+
+#[sqlx::test]
+async fn v3_t0_creates_a_method_and_refuses_an_unknown_account(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+
+    let created = client
+        .post(
+            "/api/payment-methods",
+            serde_json::json!({
+                "name": "transfer",
+                "account_id": "00000000-0000-0000-0000-000000000003"
+            }),
+        )
+        .await;
+    assert_eq!(created.status(), axum::http::StatusCode::CREATED);
+    assert_eq!(created.body["name"], "transfer");
+    assert_eq!(
+        created.body["is_active"], true,
+        "creating a method is how the shop starts using it"
+    );
+
+    // A blank name is refused here as well as in `accounts`. Measured while mutating
+    // this file: with the trim removed from THIS handler the test stayed green,
+    // because the only blank-name assertion was the account one. A rule asserted on
+    // one endpoint is not a rule asserted on both.
+    let blank = client
+        .post(
+            "/api/payment-methods",
+            serde_json::json!({
+                "name": "   ",
+                "account_id": "00000000-0000-0000-0000-000000000003"
+            }),
+        )
+        .await;
+    assert_eq!(
+        blank.status(),
+        axum::http::StatusCode::BAD_REQUEST,
+        "a method name of spaces is empty"
+    );
+
+    let unknown = client
+        .post(
+            "/api/payment-methods",
+            serde_json::json!({
+                "name": "orphan",
+                "account_id": "00000000-0000-0000-0000-0000000000ff"
+            }),
+        )
+        .await;
+    assert_eq!(
+        unknown.status(),
+        axum::http::StatusCode::NOT_FOUND,
+        "an unknown account is a 404, not a 500 from the foreign key"
+    );
+
+    // Global uniqueness across accounts, not per account: the picker must never show
+    // two entries the cashier cannot tell apart. The second account is created here
+    // rather than borrowed from the seeds — the seeded `credit` account refuses every
+    // method now (`S2`, `odd/tasks/v3-seed-identities.md`), which would make this a
+    // test of that rule instead of this one.
+    let other = client
+        .post("/api/accounts", serde_json::json!({ "name": "otra" }))
+        .await;
+    assert_eq!(other.status(), axum::http::StatusCode::CREATED);
+    let other_id = other.body["id"].as_str().expect("id").to_string();
+
+    let cross_account_duplicate = client
+        .post(
+            "/api/payment-methods",
+            serde_json::json!({
+                "name": "transfer",
+                "account_id": other_id
+            }),
+        )
+        .await;
+    assert_eq!(
+        cross_account_duplicate.status(),
+        axum::http::StatusCode::CONFLICT,
+        "a name is unique across the whole table, not per account"
+    );
+}
+
+#[sqlx::test]
+async fn v3_t0_a_rename_corrects_the_name_everywhere_and_moves_no_balance(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+
+    // A sale naming the cash method, so the rename has history to act on.
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "rename-probe", "list_price": "10.00" }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("product id");
+    client
+        .post(
+            "/api/sales",
+            serde_json::json!({ "items": [{ "product_id": product_id, "quantity": 1 }] }),
+        )
+        .await;
+
+    let before = client.get("/api/sales").await;
+    // The wire is flat since T4: an id and a joined name, no `account_id`.
+    assert_eq!(
+        before.body[0]["payment_method_id"],
+        "00000000-0000-0000-0000-000000000004"
+    );
+    assert_eq!(before.body[0]["payment_method_name"], "cash");
+
+    let renamed = client
+        .patch(
+            "/api/payment-methods/00000000-0000-0000-0000-000000000004",
+            serde_json::json!({ "name": "MervadoPago" }),
+        )
+        .await;
+    assert_eq!(renamed.status(), axum::http::StatusCode::OK);
+
+    let after = client.get("/api/sales").await;
+    assert_eq!(
+        after.body[0]["payment_method_name"], "MervadoPago",
+        "renaming CORRECTS history: documents store the id, so the typo is fixed everywhere"
+    );
+    assert_eq!(
+        after.body[0]["payment_method_id"], "00000000-0000-0000-0000-000000000004",
+        "and the identity is unchanged by the rename"
+    );
+}
+
+#[sqlx::test]
+async fn v3_t0_a_referenced_method_cannot_move_but_an_unreferenced_one_can(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+
+    // The destination is a fresh account, not the seeded credit one. It used to be
+    // `…0005`, which `S2` of `odd/tasks/v3-seed-identities.md` now forbids: no method
+    // may be attached to the debt account. The case this test was written for — an
+    // unreferenced method is a typo and must be movable — is unchanged, and it needs
+    // *some* real destination, so it creates one.
+    let destination = client
+        .post("/api/accounts", serde_json::json!({ "name": "destino" }))
+        .await;
+    assert_eq!(destination.status(), axum::http::StatusCode::CREATED);
+    let destination_id = destination.body["id"].as_str().expect("id").to_string();
+
+    // Positive case first: an unreferenced method is a typo and must be correctable.
+    let free = client
+        .post(
+            "/api/payment-methods",
+            serde_json::json!({
+                "name": "free-method",
+                "account_id": "00000000-0000-0000-0000-000000000003"
+            }),
+        )
+        .await;
+    let free_id = free.body["id"].as_str().expect("id").to_string();
+    let moved = client
+        .patch(
+            &format!("/api/payment-methods/{free_id}"),
+            serde_json::json!({ "account_id": destination_id }),
+        )
+        .await;
+    assert_eq!(
+        moved.status(),
+        axum::http::StatusCode::OK,
+        "an unreferenced method may move: it is a typo, not history"
+    );
+
+    // Then the refusal: the cash method is named by the sale above only if one
+    // exists, so create it here.
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "move-probe", "list_price": "5.00" }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("product id");
+    client
+        .post(
+            "/api/sales",
+            serde_json::json!({ "items": [{ "product_id": product_id, "quantity": 1 }] }),
+        )
+        .await;
+
+    let refused = client
+        .patch(
+            "/api/payment-methods/00000000-0000-0000-0000-000000000004",
+            serde_json::json!({ "account_id": "00000000-0000-0000-0000-000000000005" }),
+        )
+        .await;
+    assert_eq!(
+        refused.status(),
+        axum::http::StatusCode::CONFLICT,
+        "a referenced method must not move accounts: yesterday's balance would change today"
+    );
+}
+
+#[sqlx::test]
+async fn v3_t0_moving_the_till_is_a_single_operation_not_a_deadlock(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+
+    // The deadlock T1's first review found: with a BEFORE trigger forbidding every
+    // true→false, no ordering could move the default. The API path must be able to
+    // do it in one call.
+    //
+    // The destination is a fresh account with an active method, not the seeded
+    // `credit` one. It used to be `credit`, and `S3` of
+    // `odd/tasks/v3-seed-identities.md` now forbids the debt account from ever being
+    // the till — so that destination can no longer express "the till moved" and the
+    // case needs one that can. The rule being tested is unchanged: the move is a
+    // single legal operation, whatever the destination.
+    let candidate = client
+        .post("/api/accounts", serde_json::json!({ "name": "caja-nueva" }))
+        .await;
+    assert_eq!(candidate.status(), axum::http::StatusCode::CREATED);
+    let candidate_id = candidate.body["id"].as_str().expect("id").to_string();
+
+    // The candidate needs an ACTIVE method first, and that is the rule working rather
+    // than an obstacle to it: a till nobody can take money at is not a till. Asserted
+    // as a prerequisite so the test cannot be read as "the till moves freely".
+    let activated = client
+        .post(
+            "/api/payment-methods",
+            serde_json::json!({ "name": "efectivo-nuevo", "account_id": candidate_id }),
+        )
+        .await;
+    assert_eq!(
+        activated.status(),
+        axum::http::StatusCode::CREATED,
+        "the new till must be able to accept money"
+    );
+
+    let promoted = client
+        .patch(
+            &format!("/api/accounts/{candidate_id}"),
+            serde_json::json!({ "is_default": true }),
+        )
+        .await;
+    assert_eq!(
+        promoted.status(),
+        axum::http::StatusCode::OK,
+        "moving the till must be a legal, single operation"
+    );
+
+    let accounts = client.get("/api/accounts").await;
+    let defaults: Vec<&str> = accounts
+        .body
+        .as_array()
+        .expect("array")
+        .iter()
+        .filter(|a| a["is_default"].as_bool().unwrap_or(false))
+        .map(|a| a["name"].as_str().unwrap_or(""))
+        .collect();
+    assert_eq!(defaults.len(), 1, "exactly one default at commit");
+    assert_eq!(
+        defaults[0], "caja-nueva",
+        "the till moved where it was told"
+    );
+
+    // Demoting without promoting another is refused by the deferred constraint, and
+    // the caller sees an error rather than a silent zero-till state. Asserted as "not
+    // 2xx" because the mapping from a deferred-constraint violation to a status code
+    // is the framework's, and what matters is that it does not succeed.
+    let demoted = client
+        .patch(
+            &format!("/api/accounts/{candidate_id}"),
+            serde_json::json!({ "is_default": false }),
+        )
+        .await;
+    assert!(
+        demoted.status().is_server_error() || demoted.status().is_client_error(),
+        "ending with no default must not succeed, got {}",
+        demoted.status()
+    );
+}
+
+#[sqlx::test]
+async fn v3_t0_patch_with_nothing_to_change_is_refused(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+
+    // An empty PATCH would be a 200 that changed nothing while looking like it did.
+    let empty_account = client
+        .patch(
+            "/api/accounts/00000000-0000-0000-0000-000000000003",
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(empty_account.status(), axum::http::StatusCode::BAD_REQUEST);
+
+    let empty_method = client
+        .patch(
+            "/api/payment-methods/00000000-0000-0000-0000-000000000004",
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(empty_method.status(), axum::http::StatusCode::BAD_REQUEST);
+
+    let missing = client
+        .patch(
+            "/api/accounts/00000000-0000-0000-0000-0000000000ff",
+            serde_json::json!({ "name": "nope" }),
+        )
+        .await;
+    assert_eq!(missing.status(), axum::http::StatusCode::NOT_FOUND);
+}
+
+#[sqlx::test]
+async fn v3_t0_creating_an_account_as_default_fails_because_it_has_no_method_yet(
+    pool: sqlx::PgPool,
+) {
+    // **Found by native review, and the gap was a missing assertion.**
+    //
+    // `POST /api/accounts` accepts `is_default: true`, and a freshly inserted account
+    // has no payment methods — so the schema's `guard_new_default_account_has_active_method`
+    // refuses it. That is the invariant working, but the route offered an option that
+    // could never succeed, and no test ever passed `is_default: true` to `POST`, so
+    // nothing said so.
+    //
+    // What the assertion pins is the **status code**: a caller asking for something
+    // the schema forbids must get a refusal it can act on, not a 500 that reads as a
+    // server fault. The positive path exists in `PATCH` (create the account, attach a
+    // method, then promote), and `v3_t0_moving_the_till_is_a_single_operation…` covers
+    // it.
+    let client = common::client(pool.clone());
+
+    let refused = client
+        .post(
+            "/api/accounts",
+            serde_json::json!({ "name": "nueva-caja", "is_default": true }),
+        )
+        .await;
+
+    assert!(
+        refused.status().is_client_error(),
+        "creating a default account with no method must be refused as a client error, \
+         not reported as a server fault; got {}",
+        refused.status()
+    );
+
+    // And nothing was written: the refusal is total, not partial.
+    let accounts = client.get("/api/accounts").await;
+    let names: Vec<&str> = accounts
+        .body
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|a| a["name"].as_str().unwrap_or(""))
+        .collect();
+    assert!(
+        !names.contains(&"nueva-caja"),
+        "a refused creation must not leave an account behind: {names:?}"
+    );
+
+    // The supported path, stated so the refusal above cannot be read as "cannot ever
+    // promote": create without the flag, attach a method, then PATCH the default.
+    let created = client
+        .post("/api/accounts", serde_json::json!({ "name": "caja-2" }))
+        .await;
+    assert_eq!(created.status(), axum::http::StatusCode::CREATED);
+    let id = created.body["id"].as_str().expect("id").to_string();
+    client
+        .post(
+            "/api/payment-methods",
+            serde_json::json!({ "name": "efectivo-2", "account_id": id }),
+        )
+        .await;
+    let promoted = client
+        .patch(
+            &format!("/api/accounts/{id}"),
+            serde_json::json!({ "is_default": true }),
+        )
+        .await;
+    assert_eq!(
+        promoted.status(),
+        axum::http::StatusCode::OK,
+        "the supported sequence must work: create, attach a method, promote"
+    );
+}
+
+// ── v3 T3: `money_movements` and derived balances ───────────────────────────
+//
+// The view is the single definition of "money moved", and `GET /api/accounts`
+// carries its sum. What these tests pin is the SIGN of every document and the fact
+// that a balance is a sum over documents rather than a stored field — the same
+// property `stock = SUM(movements)` already has.
+
+#[sqlx::test]
+async fn v3_the_credit_seed_keeps_its_identity_in_the_schema(pool: sqlx::PgPool) {
+    // `odd/tasks/v3-seed-identities.md`, S1-S4. The server names these two rows by
+    // fixed id (`CREDIT_ACCOUNT_ID`, `CREDIT_PAYMENT_METHOD_ID`) without a lookup, so
+    // the rows holding those ids have to keep meaning what the constants say. What is
+    // pinned here is the schema's verdict, because a `psql` session never passes
+    // through `accounts.rs`.
+    //
+    // Measured on the tree this test was written against: both statements succeeded.
+    const CREDIT_ACCOUNT: &str = "00000000-0000-0000-0000-000000000005";
+    const CREDIT_METHOD: &str = "00000000-0000-0000-0000-000000000006";
+    const CASH_ACCOUNT: &str = "00000000-0000-0000-0000-000000000003";
+
+    // S1: the seeded method never leaves its account.
+    let moved_away = sqlx::query("UPDATE payment_methods SET account_id = $1 WHERE id = $2")
+        .bind(uuid::Uuid::from_u128(3))
+        .bind(uuid::Uuid::from_u128(6))
+        .execute(&pool)
+        .await;
+    assert!(
+        moved_away.is_err(),
+        "the seeded credit method must never change account: the server resolves it \
+         by fixed id and a move makes the constant and the row disagree"
+    );
+
+    // S2: nothing may be attached to the debt account later either. This is the same
+    // rule from the other side, and the side that was reachable in practice —
+    // measured as `PATCH /api/payment-methods/…0006 {{"account_id":"…0003"}}` -> 200.
+    let moved_onto =
+        sqlx::query("INSERT INTO payment_methods (account_id, name) VALUES ($1, 'onto-credit')")
+            .bind(uuid::Uuid::from_u128(5))
+            .execute(&pool)
+            .await;
+    assert!(
+        moved_onto.is_err(),
+        "no method may be attached to the seeded credit account: a method there would \
+         mean 'a customer debt was settled this way', which no v3 document says"
+    );
+
+    // S3: the debt account is never the shop's till. `getCash()` reads `is_default`,
+    // so promoting it makes the counter show the debt balance while an omitted-method
+    // sale still posts to cash.
+    //
+    // The credit method is activated first on purpose: without that the promotion is
+    // refused for a *different* reason (`the default account always has an active
+    // method`), and the assertion would pass while proving the wrong rule.
+    sqlx::query("UPDATE payment_methods SET is_active = true WHERE id = $1")
+        .bind(uuid::Uuid::from_u128(6))
+        .execute(&pool)
+        .await
+        .expect("activating the seeded method is allowed and must stay allowed");
+    let promoted = sqlx::query("UPDATE accounts SET is_default = true WHERE id = $1")
+        .bind(uuid::Uuid::from_u128(5))
+        .execute(&pool)
+        .await;
+    assert!(
+        promoted.is_err(),
+        "the seeded credit account must never be the shop's till"
+    );
+
+    // S4's other half: the seeded rows are still the seeded rows, unchanged by any of
+    // the refusals above.
+    let still: Vec<(uuid::Uuid, String, bool)> =
+        sqlx::query_as("SELECT id, name, is_default FROM accounts ORDER BY name")
+            .fetch_all(&pool)
+            .await
+            .expect("read accounts");
+    assert_eq!(still.len(), 2, "the refusals wrote nothing");
+    assert_eq!(still[1].0, uuid::Uuid::from_u128(5));
+    assert_eq!(still[1].1, "credit");
+    assert!(!still[1].2, "credit is not the till");
+    assert_eq!(still[0].0, uuid::Uuid::from_u128(3));
+    assert!(still[0].2, "cash is still the till");
+
+    let method: (uuid::Uuid, bool) =
+        sqlx::query_as("SELECT account_id, is_active FROM payment_methods WHERE id = $1")
+            .bind(uuid::Uuid::from_u128(6))
+            .fetch_one(&pool)
+            .await
+            .expect("read the seeded method");
+    assert_eq!(
+        method.0,
+        uuid::Uuid::from_u128(5),
+        "the seeded method still belongs to the seeded account"
+    );
+    assert!(
+        method.1,
+        "S6: activating it is not this work's business, so the UPDATE above stands"
+    );
+
+    // S6: the two things that *are* editable still are, so the new guard cannot be
+    // satisfied by freezing the rows. `name` corrects a typo; documents store the id.
+    sqlx::query("UPDATE accounts SET name = 'Crédito' WHERE id = $1")
+        .bind(uuid::Uuid::from_u128(5))
+        .execute(&pool)
+        .await
+        .expect("renaming the credit account must stay allowed");
+    sqlx::query("UPDATE payment_methods SET name = 'fiado' WHERE id = $1")
+        .bind(uuid::Uuid::from_u128(6))
+        .execute(&pool)
+        .await
+        .expect("renaming the credit method must stay allowed");
+
+    // **And now the same two edits through the handler, which is a different
+    // statement.** This block exists because the two above passed while both requests
+    // answered `500` (review `R3-001`, CRITICAL). `accounts.rs` sends
+    // `account_id = COALESCE($4, account_id)` on every PATCH, so it *names* the column
+    // even when the caller is renaming; `SET name = …` does not, and a trigger declared
+    // `UPDATE OF account_id` therefore never fired in the test but always fired in
+    // production. Measured before the fix: `PATCH {"name":"fiado"}` -> 500 and
+    // `PATCH {"is_active":true}` -> 500.
+    let client = common::client(pool.clone());
+    let renamed = client
+        .patch(
+            "/api/payment-methods/00000000-0000-0000-0000-000000000006",
+            serde_json::json!({ "name": "fiado" }),
+        )
+        .await;
+    assert_eq!(
+        renamed.status(),
+        axum::http::StatusCode::OK,
+        "S6: renaming the seeded credit method through the API must stay allowed; \
+         the handler names account_id on every PATCH and a guard must not read that \
+         as an attempt to move it. body was: {}",
+        renamed.text
+    );
+    assert_eq!(renamed.body["name"], "fiado");
+    assert_eq!(
+        renamed.body["account_id"], "00000000-0000-0000-0000-000000000005",
+        "a rename moves nothing"
+    );
+
+    let reactivated = client
+        .patch(
+            "/api/payment-methods/00000000-0000-0000-0000-000000000006",
+            serde_json::json!({ "is_active": false }),
+        )
+        .await;
+    assert_eq!(
+        reactivated.status(),
+        axum::http::StatusCode::OK,
+        "S6: flipping is_active on the seeded credit method through the API must stay \
+         allowed, for the same reason; body was: {}",
+        reactivated.text
+    );
+    assert_eq!(reactivated.body["is_active"], false);
+
+    // **And the no-op: the destination it already has.** A client that sends a full
+    // object names `account_id` with the value it already holds, and that is a
+    // statement about nothing. The schema says so with `IS DISTINCT FROM`; this
+    // assertion is what makes the handler say the same thing. Measured before the fix:
+    // the API answered `409` while `psql` answered `UPDATE 1` for the same write
+    // (`R3-001`, second occurrence).
+    let same_destination = client
+        .patch(
+            "/api/payment-methods/00000000-0000-0000-0000-000000000006",
+            serde_json::json!({ "account_id": "00000000-0000-0000-0000-000000000005" }),
+        )
+        .await;
+    assert_eq!(
+        same_destination.status(),
+        axum::http::StatusCode::OK,
+        "PATCHing the destination a method already has changes nothing and must be \
+         allowed, exactly as the schema's IS DISTINCT FROM allows it; body was: {}",
+        same_destination.text
+    );
+    assert_eq!(
+        same_destination.body["account_id"],
+        "00000000-0000-0000-0000-000000000005"
+    );
+
+    // The same courtesy for any other method: sending its own account is not a move.
+    let cash_noop = client
+        .patch(
+            "/api/payment-methods/00000000-0000-0000-0000-000000000004",
+            serde_json::json!({ "account_id": "00000000-0000-0000-0000-000000000003" }),
+        )
+        .await;
+    assert_eq!(
+        cash_noop.status(),
+        axum::http::StatusCode::OK,
+        "a no-op move of an ordinary method is allowed too; body was: {}",
+        cash_noop.text
+    );
+
+    // And the cash side still moves freely: the guard is about seed identity, not
+    // about forbidding the till's own method from being corrected before it has
+    // history.
+    sqlx::query("UPDATE payment_methods SET account_id = $1 WHERE id = $2")
+        .bind(uuid::Uuid::from_u128(3))
+        .bind(uuid::Uuid::from_u128(4))
+        .execute(&pool)
+        .await
+        .expect("the cash method is already on the cash account; a no-op update must pass");
+    let _ = (CREDIT_ACCOUNT, CREDIT_METHOD, CASH_ACCOUNT);
+}
+
+#[sqlx::test]
+async fn v3_the_credit_seed_answers_with_a_cause_not_a_server_fault(pool: sqlx::PgPool) {
+    // `odd/tasks/v3-seed-identities.md`, S5. Both refusals are the caller's mistake,
+    // understood and refused, so both are 409 with a body naming the rule. Measured
+    // before the fix: moving the method answered 200, and promoting the account while
+    // its method was inactive answered 500 — `conflict_or_500` maps only `23505`, so
+    // any `RAISE EXCEPTION` from a guard trigger read as an internal error.
+    let client = common::client(pool.clone());
+
+    let moved = client
+        .patch(
+            "/api/payment-methods/00000000-0000-0000-0000-000000000006",
+            serde_json::json!({ "account_id": "00000000-0000-0000-0000-000000000003" }),
+        )
+        .await;
+    assert_eq!(
+        moved.status(),
+        axum::http::StatusCode::CONFLICT,
+        "moving the seeded credit method must be a refusal the caller can act on, \
+         not a success and not a server fault; body was: {}",
+        moved.text
+    );
+
+    let promoted_while_inactive = client
+        .patch(
+            "/api/accounts/00000000-0000-0000-0000-000000000005",
+            serde_json::json!({ "is_default": true }),
+        )
+        .await;
+    assert_eq!(
+        promoted_while_inactive.status(),
+        axum::http::StatusCode::CONFLICT,
+        "promoting the debt account must be refused as a client error, not reported \
+         as a server fault; body was: {}",
+        promoted_while_inactive.text
+    );
+
+    // Nothing was written by either refusal: the state the seeds describe is intact.
+    let accounts = client.get("/api/accounts").await;
+    let till = accounts
+        .body
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|a| a["is_default"].as_bool() == Some(true))
+        .expect("a till");
+    assert_eq!(
+        till["name"].as_str(),
+        Some("cash"),
+        "cash is still the till after two refused writes"
+    );
+
+    let methods = client.get("/api/payment-methods").await;
+    let credit = methods
+        .body
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|m| m["name"].as_str() == Some("credit"))
+        .expect("the credit method");
+    assert_eq!(
+        credit["account_id"].as_str(),
+        Some("00000000-0000-0000-0000-000000000005"),
+        "the credit method still belongs to the credit account"
+    );
+}
+
+#[sqlx::test]
+async fn v3_t3_a_fresh_ledger_balances_to_zero_on_every_account(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+    let response = client.get("/api/accounts").await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+    // COALESCE, not NULL: an account with no movements must read `0.00` so the client
+    // has one shape to render, and the string must carry two decimals like every
+    // other amount in this API.
+    for account in response.body.as_array().expect("array") {
+        assert_eq!(
+            account["balance"], "0.00",
+            "every account starts at zero, as a two-decimal string"
+        );
+    }
+}
+
+#[sqlx::test]
+async fn v3_t3_the_four_documents_move_money_with_the_right_sign(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+    let cash = "00000000-0000-0000-0000-000000000003";
+
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "sign-probe", "list_price": "100.00" }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("product id").to_string();
+
+    // A sale brings 100 in.
+    let sale = client
+        .post(
+            "/api/sales",
+            serde_json::json!({ "items": [{ "product_id": product_id, "quantity": 1 }] }),
+        )
+        .await;
+    assert_eq!(sale.status(), axum::http::StatusCode::CREATED);
+    let sale_id = sale.body["id"].as_str().expect("sale id").to_string();
+    let sale_item = sale.body["items"][0]["id"]
+        .as_str()
+        .expect("item id")
+        .to_string();
+
+    assert_eq!(
+        balance_of(&client, cash).await,
+        "100.00",
+        "a sale puts money INTO the account its method names"
+    );
+
+    // A purchase takes 40 out.
+    client
+        .post(
+            "/api/purchases",
+            serde_json::json!({ "items": [{ "product_id": product_id, "quantity": 2, "unit_price": "20.00" }] }),
+        )
+        .await;
+    assert_eq!(
+        balance_of(&client, cash).await,
+        "60.00",
+        "a purchase takes money OUT"
+    );
+
+    // A refund of 100 gives it back to the customer: 60 - 100 = -40.
+    client
+        .post(
+            &format!("/api/sales/{sale_id}/credit-notes"),
+            serde_json::json!({ "items": [{ "sale_item_id": sale_item, "quantity": 1 }] }),
+        )
+        .await;
+    assert_eq!(
+        balance_of(&client, cash).await,
+        "-40.00",
+        "a credit note takes money OUT, and a balance may go negative"
+    );
+
+    // The figure the retired `/api/cash` computed by hand, checked against the same
+    // arithmetic read straight from the documents. That agreement is what made the
+    // retirement safe: `T6` removed an endpoint whose number the view already
+    // reproduces, not one whose number changed.
+    let (hand_computed,): (rust_decimal::Decimal,) = sqlx::query_as(
+        "SELECT (COALESCE((SELECT SUM(total) FROM sales WHERE status = 'confirmed'), 0)
+               - COALESCE((SELECT SUM(total) FROM credit_notes), 0)
+               - COALESCE((SELECT SUM(total) FROM purchases), 0)
+               + COALESCE((SELECT SUM(total) FROM supplier_returns), 0))::numeric",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("hand-computed till");
+    assert_eq!(
+        hand_computed,
+        rust_decimal::Decimal::from_str_exact("-40.00").expect("decimal"),
+        "the view must reproduce the figure /api/cash computed by hand"
+    );
+}
+
+#[sqlx::test]
+async fn v3_t3_a_supplier_return_brings_money_back(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+    let cash = "00000000-0000-0000-0000-000000000003";
+
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "return-probe", "list_price": "10.00" }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("id").to_string();
+
+    let purchase = client
+        .post(
+            "/api/purchases",
+            serde_json::json!({ "items": [{ "product_id": product_id, "quantity": 3, "unit_price": "10.00" }] }),
+        )
+        .await;
+    // The purchase response nests the header under `purchase` (`PurchaseWithItems`),
+    // where a sale flattens it. Measured here rather than assumed: reading the root
+    // gave no id at all.
+    let purchase_id = purchase.body["purchase"]["id"]
+        .as_str()
+        .expect("purchase id")
+        .to_string();
+    let purchase_item = purchase.body["items"][0]["id"]
+        .as_str()
+        .expect("item id")
+        .to_string();
+    assert_eq!(balance_of(&client, cash).await, "-30.00");
+
+    client
+        .post(
+            &format!("/api/purchases/{purchase_id}/supplier-returns"),
+            serde_json::json!({ "items": [{ "purchase_item_id": purchase_item, "quantity": 1 }] }),
+        )
+        .await;
+    assert_eq!(
+        balance_of(&client, cash).await,
+        "-20.00",
+        "a supplier return brings money BACK, the mirror of a purchase"
+    );
+}
+
+#[sqlx::test]
+async fn v3_t3_a_second_account_keeps_its_own_balance(pool: sqlx::PgPool) {
+    // The whole reason a destination is derivable: two accounts, one sale each, and
+    // neither balance is the other's. This is what `T6` will use to show the till's
+    // footer no longer means "every sale".
+    let client = common::client(pool.clone());
+    let cash = "00000000-0000-0000-0000-000000000003";
+    let bank = "00000000-0000-0000-0000-000000000005";
+
+    let created = client
+        .post(
+            "/api/payment-methods",
+            serde_json::json!({ "name": "transferencia", "account_id": cash }),
+        )
+        .await;
+    let method_id = created.body["id"].as_str().expect("method id").to_string();
+
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "split-probe", "list_price": "50.00" }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("id").to_string();
+
+    // A sale through the new method still lands in `cash`, because that is the
+    // account the method points at.
+    client
+        .post(
+            "/api/sales",
+            serde_json::json!({
+                "items": [{ "product_id": product_id, "quantity": 1 }],
+                "payment_method_id": method_id
+            }),
+        )
+        .await;
+    assert_eq!(balance_of(&client, cash).await, "50.00");
+    assert_eq!(
+        balance_of(&client, bank).await,
+        "0.00",
+        "the credit account is untouched by a sale that names a cash method"
+    );
+}
+
+/// Reads one account's balance from `GET /api/accounts`.
+async fn balance_of(client: &common::Client, account_id: &str) -> String {
+    let response = client.get("/api/accounts").await;
+    response
+        .body
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|a| a["id"] == account_id)
+        .unwrap_or_else(|| panic!("account {account_id} missing from /api/accounts"))["balance"]
+        .as_str()
+        .expect("balance string")
+        .to_string()
+}
+
+#[sqlx::test]
+async fn v3_t3_the_view_counts_only_confirmed_sales(pool: sqlx::PgPool) {
+    // The `status = 'confirmed'` predicate survived from `/api/cash`, and `T2` will
+    // delete the column so that "the row exists" and "it counts" become one
+    // statement. Until then the filter has to be there, and nothing else in this
+    // slice exercises it: every sale these tests create is `confirmed` by default, so
+    // removing the predicate left the whole suite green.
+    //
+    // Measured by mutation: `WHERE s.status = 'confirmed'` -> `WHERE true` passed
+    // every other v3 test. This is the assertion that makes the predicate observable.
+    let client = common::client(pool.clone());
+    let cash = "00000000-0000-0000-0000-000000000003";
+
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "status-probe", "list_price": "70.00" }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("id").to_string();
+    client
+        .post(
+            "/api/sales",
+            serde_json::json!({ "items": [{ "product_id": product_id, "quantity": 1 }] }),
+        )
+        .await;
+    assert_eq!(balance_of(&client, cash).await, "70.00");
+
+    // Move the sale out of the counted state directly: no API route writes `status`,
+    // which is exactly why the view's filter is easy to forget.
+    let (sale_id,): (uuid::Uuid,) = sqlx::query_as(
+        "SELECT id FROM sales WHERE customer_id = '00000000-0000-0000-0000-000000000001'
+          ORDER BY created_at DESC LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read the sale");
+    sqlx::query("UPDATE sales SET status = 'draft' WHERE id = $1")
+        .bind(sale_id)
+        .execute(&pool)
+        .await
+        .expect("move the sale out of confirmed");
+
+    assert_eq!(
+        balance_of(&client, cash).await,
+        "0.00",
+        "a sale whose status is not confirmed must not move the balance"
+    );
+}
+
+// ── v3 T4: a sale names where the money went ────────────────────────────────
+//
+// Until this task, every sale wrote the seeded `cash` method no matter what the
+// client said. Now the destination is the client's, defaulted to cash so an older
+// caller keeps its exact behaviour.
+
+#[sqlx::test]
+async fn v3_t4_a_sale_on_another_method_lands_in_that_account(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+    let cash = "00000000-0000-0000-0000-000000000003";
+
+    // A real bank account with its own method, which is the whole point of v3: a
+    // sale whose money did not go to the till.
+    let account = client
+        .post("/api/accounts", serde_json::json!({ "name": "banco" }))
+        .await;
+    let account_id = account.body["id"].as_str().expect("account id").to_string();
+    let method = client
+        .post(
+            "/api/payment-methods",
+            serde_json::json!({ "name": "transferencia", "account_id": account_id }),
+        )
+        .await;
+    let method_id = method.body["id"].as_str().expect("method id").to_string();
+
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "t4-probe", "list_price": "80.00" }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("product id").to_string();
+
+    let sale = client
+        .post(
+            "/api/sales",
+            serde_json::json!({
+                "items": [{ "product_id": product_id, "quantity": 1 }],
+                "payment_method_id": method_id
+            }),
+        )
+        .await;
+    assert_eq!(sale.status(), axum::http::StatusCode::CREATED);
+    assert_eq!(sale.body["payment_method_name"], "transferencia");
+
+    // The money is in the bank, NOT in the till. Before T4 this assertion was
+    // impossible to write, and the till would have read 80.00 it never saw.
+    assert_eq!(balance_of(&client, cash).await, "0.00");
+    assert_eq!(balance_of(&client, &account_id).await, "80.00");
+}
+
+#[sqlx::test]
+async fn v3_t4_an_omitted_method_still_means_the_till(pool: sqlx::PgPool) {
+    // The differential guarantee: an older client sends no method and must keep
+    // exactly the behaviour it had. This is the one assertion that makes the new
+    // field additive rather than a breaking change.
+    let client = common::client(pool.clone());
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "t4-default", "list_price": "25.00" }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("id").to_string();
+
+    let sale = client
+        .post(
+            "/api/sales",
+            serde_json::json!({ "items": [{ "product_id": product_id, "quantity": 2 }] }),
+        )
+        .await;
+    assert_eq!(sale.status(), axum::http::StatusCode::CREATED);
+    assert_eq!(
+        sale.body["payment_method_id"], "00000000-0000-0000-0000-000000000004",
+        "an omitted method resolves to the seeded cash method"
+    );
+    assert_eq!(
+        balance_of(&client, "00000000-0000-0000-0000-000000000003").await,
+        "50.00"
+    );
+}
+
+#[sqlx::test]
+async fn v3_t4_an_unknown_method_is_a_404_and_writes_nothing(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "t4-unknown", "list_price": "10.00" }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("id").to_string();
+
+    // Positive case first: the same body with a real method succeeds, so the refusal
+    // below cannot be an artefact of a broken fixture.
+    let ok = client
+        .post(
+            "/api/sales",
+            serde_json::json!({
+                "items": [{ "product_id": product_id, "quantity": 1 }],
+                "payment_method_id": "00000000-0000-0000-0000-000000000004"
+            }),
+        )
+        .await;
+    assert_eq!(ok.status(), axum::http::StatusCode::CREATED);
+
+    let refused = client
+        .post(
+            "/api/sales",
+            serde_json::json!({
+                "items": [{ "product_id": product_id, "quantity": 1 }],
+                "payment_method_id": "00000000-0000-0000-0000-0000000000ff"
+            }),
+        )
+        .await;
+    assert_eq!(
+        refused.status(),
+        axum::http::StatusCode::NOT_FOUND,
+        "an unknown method is a 404, not a foreign-key 500"
+    );
+
+    // Nothing was written by the refusal: the till still holds exactly one sale.
+    assert_eq!(
+        balance_of(&client, "00000000-0000-0000-0000-000000000003").await,
+        "10.00"
+    );
+}
+
+#[sqlx::test]
+async fn v3_t4_a_credit_sale_must_name_a_customer(pool: sqlx::PgPool) {
+    // S9, and it is written positive-first on purpose: a refusal alone could pass
+    // because the `credit` method is seeded inactive, rather than because the
+    // customer is anonymous.
+    let client = common::client(pool.clone());
+    let credit_method = "00000000-0000-0000-0000-000000000006";
+
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "t4-credit", "list_price": "30.00" }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("id").to_string();
+
+    // 1. Accepted with a named customer — and note the method is INACTIVE, which
+    //    proves `is_active` is a picker concern and not a write gate.
+    let customer = client
+        .post(
+            "/api/customers",
+            serde_json::json!({ "name": "T4 Cliente" }),
+        )
+        .await;
+    let customer_id = customer.body["id"]
+        .as_str()
+        .expect("customer id")
+        .to_string();
+    let accepted = client
+        .post(
+            "/api/sales",
+            serde_json::json!({
+                "customer_id": customer_id,
+                "items": [{ "product_id": product_id, "quantity": 1 }],
+                "payment_method_id": credit_method
+            }),
+        )
+        .await;
+    assert_eq!(
+        accepted.status(),
+        axum::http::StatusCode::CREATED,
+        "a credit sale to a named customer is accepted, even with an inactive method"
+    );
+
+    // 2. Refused for the anonymous one.
+    let refused = client
+        .post(
+            "/api/sales",
+            serde_json::json!({
+                "items": [{ "product_id": product_id, "quantity": 1 }],
+                "payment_method_id": credit_method
+            }),
+        )
+        .await;
+    assert_eq!(
+        refused.status(),
+        axum::http::StatusCode::BAD_REQUEST,
+        "anonymous debt is not debt"
+    );
+
+    // 3. And the credit account holds only the accepted one.
+    assert_eq!(
+        balance_of(&client, "00000000-0000-0000-0000-000000000005").await,
+        "30.00",
+        "the refused credit sale left nothing behind"
+    );
+}
+
+// ── v3 T5: purchases, and the two corrections ───────────────────────────────
+//
+// The mirror of T4 for the paying-out side, plus the two things a correction
+// decides: inherit the corrected document's method, or name its own.
+
+#[sqlx::test]
+async fn v3_t5_a_purchase_on_another_method_leaves_that_account(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+    let cash = "00000000-0000-0000-0000-000000000003";
+
+    let account = client
+        .post(
+            "/api/accounts",
+            serde_json::json!({ "name": "banco-pagos" }),
+        )
+        .await;
+    let account_id = account.body["id"].as_str().expect("account id").to_string();
+    let method = client
+        .post(
+            "/api/payment-methods",
+            serde_json::json!({ "name": "debito", "account_id": account_id }),
+        )
+        .await;
+    let method_id = method.body["id"].as_str().expect("method id").to_string();
+
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "t5-probe", "list_price": "40.00" }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("id").to_string();
+
+    let purchase = client
+        .post(
+            "/api/purchases",
+            serde_json::json!({
+                "items": [{ "product_id": product_id, "quantity": 1 }],
+                "payment_method_id": method_id
+            }),
+        )
+        .await;
+    assert_eq!(purchase.status(), axum::http::StatusCode::CREATED);
+    assert_eq!(
+        purchase.body["purchase"]["payment_method_name"], "debito",
+        "the wire is flat, inside the nested purchase header"
+    );
+
+    // Money left the bank, not the till.
+    assert_eq!(balance_of(&client, cash).await, "0.00");
+    assert_eq!(balance_of(&client, &account_id).await, "-40.00");
+}
+
+#[sqlx::test]
+async fn v3_t5_a_purchase_may_never_use_the_credit_method(pool: sqlx::PgPool) {
+    // S9b. The positive case first: a named, ordinary method is accepted, so the
+    // refusal below cannot be an artefact of a broken fixture.
+    let client = common::client(pool.clone());
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "t5-credit", "list_price": "20.00" }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("id").to_string();
+
+    let accepted = client
+        .post(
+            "/api/purchases",
+            serde_json::json!({
+                "items": [{ "product_id": product_id, "quantity": 1 }],
+                "payment_method_id": "00000000-0000-0000-0000-000000000004"
+            }),
+        )
+        .await;
+    assert_eq!(
+        accepted.status(),
+        axum::http::StatusCode::CREATED,
+        "a purchase through a real method is accepted, even though the credit method is inactive"
+    );
+
+    let refused = client
+        .post(
+            "/api/purchases",
+            serde_json::json!({
+                "items": [{ "product_id": product_id, "quantity": 1 }],
+                "payment_method_id": "00000000-0000-0000-0000-000000000006"
+            }),
+        )
+        .await;
+    assert_eq!(
+        refused.status(),
+        axum::http::StatusCode::BAD_REQUEST,
+        "a purchase may not subtract from what customers owe"
+    );
+
+    // The debt account is untouched by the refused purchase.
+    assert_eq!(
+        balance_of(&client, "00000000-0000-0000-0000-000000000005").await,
+        "0.00"
+    );
+}
+
+#[sqlx::test]
+async fn v3_t5_a_credit_note_inherits_the_sales_method_by_default(pool: sqlx::PgPool) {
+    // Inheritance is what makes a refund of a credit sale move no money: the note
+    // credits the account the sale debited, so the debt drops instead of a till
+    // paying out. Asserted on the credit account because that is where the
+    // difference between inheriting and not inheriting is visible.
+    let client = common::client(pool.clone());
+    let credit = "00000000-0000-0000-0000-000000000005";
+
+    let customer = client
+        .post("/api/customers", serde_json::json!({ "name": "T5 Fiado" }))
+        .await;
+    let customer_id = customer.body["id"]
+        .as_str()
+        .expect("customer id")
+        .to_string();
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "t5-inherit", "list_price": "90.00" }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("id").to_string();
+
+    let sale = client
+        .post(
+            "/api/sales",
+            serde_json::json!({
+                "customer_id": customer_id,
+                "items": [{ "product_id": product_id, "quantity": 1 }],
+                "payment_method_id": "00000000-0000-0000-0000-000000000006"
+            }),
+        )
+        .await;
+    let sale_id = sale.body["id"].as_str().expect("sale id").to_string();
+    let item_id = sale.body["items"][0]["id"]
+        .as_str()
+        .expect("item id")
+        .to_string();
+    assert_eq!(balance_of(&client, credit).await, "90.00");
+
+    // Refund with no method named: it inherits `credit`, so the debt drops and no
+    // cash moves.
+    client
+        .post(
+            &format!("/api/sales/{sale_id}/credit-notes"),
+            serde_json::json!({ "items": [{ "sale_item_id": item_id, "quantity": 1 }] }),
+        )
+        .await;
+    assert_eq!(
+        balance_of(&client, credit).await,
+        "0.00",
+        "the refund lowered the debt instead of paying cash out"
+    );
+    assert_eq!(
+        balance_of(&client, "00000000-0000-0000-0000-000000000003").await,
+        "0.00",
+        "and no money left the till"
+    );
+}
+
+#[sqlx::test]
+async fn v3_t5_a_credit_note_may_name_its_own_method_but_never_the_debt(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+    let credit = "00000000-0000-0000-0000-000000000005";
+    // The **account** ids, for reading balances.
+    let cash_account = "00000000-0000-0000-0000-000000000003";
+    // The **method** id. The note names a method, never an account — passing the
+    // account id here returned 404 and cost a debugging round, which is the whole
+    // reason the two names are separated in this test.
+    let cash_method = "00000000-0000-0000-0000-000000000004";
+
+    let customer = client
+        .post(
+            "/api/customers",
+            serde_json::json!({ "name": "T5 Override" }),
+        )
+        .await;
+    let customer_id = customer.body["id"].as_str().expect("id").to_string();
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "t5-override", "list_price": "50.00" }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("id").to_string();
+
+    let sale = client
+        .post(
+            "/api/sales",
+            serde_json::json!({
+                "customer_id": customer_id,
+                "items": [{ "product_id": product_id, "quantity": 1 }],
+                "payment_method_id": "00000000-0000-0000-0000-000000000006"
+            }),
+        )
+        .await;
+    assert_eq!(sale.status(), axum::http::StatusCode::CREATED);
+    let sale_id = sale.body["id"].as_str().expect("sale id").to_string();
+    let item_id = sale.body["items"][0]["id"]
+        .as_str()
+        .expect("item id")
+        .to_string();
+
+    // 1. The override that works: refund out of the till, for the sale that was
+    //    already collected. Money leaves cash; the debt is untouched.
+    let overridden = client
+        .post(
+            &format!("/api/sales/{sale_id}/credit-notes"),
+            serde_json::json!({
+                "items": [{ "sale_item_id": item_id, "quantity": 1 }],
+                "payment_method_id": cash_method
+            }),
+        )
+        .await;
+    assert_eq!(
+        overridden.status(),
+        axum::http::StatusCode::CREATED,
+        "the override refund must be accepted"
+    );
+    assert_eq!(
+        balance_of(&client, cash_account).await,
+        "-50.00",
+        "the override paid the customer out of the till"
+    );
+    assert_eq!(
+        balance_of(&client, credit).await,
+        "50.00",
+        "and left the debt where it was"
+    );
+
+    // 2. The override that must be refused: a note may not target the debt account.
+    //    Moving debt between customers is a different document.
+    let second_sale = client
+        .post(
+            "/api/sales",
+            serde_json::json!({
+                "customer_id": customer_id,
+                "items": [{ "product_id": product_id, "quantity": 1 }],
+                "payment_method_id": "00000000-0000-0000-0000-000000000006"
+            }),
+        )
+        .await;
+    assert_eq!(
+        second_sale.status(),
+        axum::http::StatusCode::CREATED,
+        "the second sale must exist before its refund is attempted; body: {}",
+        second_sale.body
+    );
+    let second_id = second_sale.body["id"]
+        .as_str()
+        .expect("sale id")
+        .to_string();
+    let second_item = second_sale.body["items"][0]["id"]
+        .as_str()
+        .expect("item")
+        .to_string();
+
+    let refused = client
+        .post(
+            &format!("/api/sales/{second_id}/credit-notes"),
+            serde_json::json!({
+                "items": [{ "sale_item_id": second_item, "quantity": 1 }],
+                "payment_method_id": "00000000-0000-0000-0000-000000000006"
+            }),
+        )
+        .await;
+    assert_eq!(
+        refused.status(),
+        axum::http::StatusCode::BAD_REQUEST,
+        "an explicit credit method on a note would move debt, not reduce it"
+    );
+}
+
+#[sqlx::test]
+async fn v3_t5_a_supplier_return_inherits_the_purchases_method(pool: sqlx::PgPool) {
+    // The mirror of the credit note. The supplier gives money back through the same
+    // rail that paid them, so a purchase paid from the bank returns to the bank.
+    let client = common::client(pool.clone());
+    let cash = "00000000-0000-0000-0000-000000000003";
+
+    let account = client
+        .post("/api/accounts", serde_json::json!({ "name": "banco-dev" }))
+        .await;
+    let account_id = account.body["id"].as_str().expect("id").to_string();
+    let method = client
+        .post(
+            "/api/payment-methods",
+            serde_json::json!({ "name": "transferencia-dev", "account_id": account_id }),
+        )
+        .await;
+    let method_id = method.body["id"].as_str().expect("id").to_string();
+
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "t5-return", "list_price": "15.00" }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("id").to_string();
+
+    let purchase = client
+        .post(
+            "/api/purchases",
+            serde_json::json!({
+                "items": [{ "product_id": product_id, "quantity": 4 }],
+                "payment_method_id": method_id
+            }),
+        )
+        .await;
+    let purchase_id = purchase.body["purchase"]["id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+    let item_id = purchase.body["items"][0]["id"]
+        .as_str()
+        .expect("item")
+        .to_string();
+    assert_eq!(balance_of(&client, &account_id).await, "-60.00");
+    assert_eq!(balance_of(&client, cash).await, "0.00");
+
+    client
+        .post(
+            &format!("/api/purchases/{purchase_id}/supplier-returns"),
+            serde_json::json!({ "items": [{ "purchase_item_id": item_id, "quantity": 1 }] }),
+        )
+        .await;
+
+    // The return credited the same account the purchase debited — not the till.
+    assert_eq!(balance_of(&client, &account_id).await, "-45.00");
+    assert_eq!(
+        balance_of(&client, cash).await,
+        "0.00",
+        "a return to the bank must not appear in the till"
+    );
+}
+
+// ── v3 T6: `/api/cash` is retired; the till is the default account ──────────
+
+#[sqlx::test]
+async fn v3_t6_the_cash_endpoint_is_gone(pool: sqlx::PgPool) {
+    // Retiring an endpoint is a contract change, and the test says so rather than
+    // leaving a stale caller to discover it: a request to the old path must not
+    // answer with a balance.
+    let client = common::client(pool.clone());
+    let gone = client.get("/api/cash").await;
+    assert_eq!(
+        gone.status(),
+        axum::http::StatusCode::NOT_FOUND,
+        "/api/cash was retired in T6; its figure now lives on /api/accounts"
+    );
+}
+
+#[sqlx::test]
+async fn v3_t6_the_till_is_the_default_account_not_every_sale(pool: sqlx::PgPool) {
+    // **The behaviour this task exists to change.** Before v3, a footer labelled
+    // "cash on hand" summed every confirmed sale and nothing else. Once a sale can
+    // name a bank transfer, that label is a lie: the sale happened, the money never
+    // reached the till.
+    let client = common::client(pool.clone());
+    let till = "00000000-0000-0000-0000-000000000003";
+
+    let account = client
+        .post(
+            "/api/accounts",
+            serde_json::json!({ "name": "banco-cobros" }),
+        )
+        .await;
+    let account_id = account.body["id"].as_str().expect("account id").to_string();
+    let method = client
+        .post(
+            "/api/payment-methods",
+            serde_json::json!({ "name": "cobro-transf", "account_id": account_id }),
+        )
+        .await;
+    let method_id = method.body["id"].as_str().expect("method id").to_string();
+
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "t6-probe", "list_price": "100.00" }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("product id").to_string();
+
+    // One sale into the till, one into the bank.
+    client
+        .post(
+            "/api/sales",
+            serde_json::json!({ "items": [{ "product_id": product_id, "quantity": 1 }] }),
+        )
+        .await;
+    client
+        .post(
+            "/api/sales",
+            serde_json::json!({
+                "items": [{ "product_id": product_id, "quantity": 1 }],
+                "payment_method_id": method_id
+            }),
+        )
+        .await;
+
+    // The till holds the first only; the bank holds the second.
+    assert_eq!(
+        balance_of(&client, till).await,
+        "100.00",
+        "the till must count only the money that reached it"
+    );
+    assert_eq!(balance_of(&client, &account_id).await, "100.00");
+
+    // And the footer's new source agrees with the till, not with "every sale".
+    let response = client.get("/api/accounts").await;
+    let accounts = response.body.as_array().expect("accounts array");
+    let defaults: Vec<&str> = accounts
+        .iter()
+        .filter(|a| a["is_default"].as_bool().unwrap_or(false))
+        .map(|a| a["name"].as_str().unwrap_or(""))
+        .collect();
+    assert_eq!(
+        defaults,
+        vec!["cash"],
+        "exactly one account is the till, so the footer has one number to show"
+    );
 }

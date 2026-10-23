@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, supplier_id, round(total, 2) AS \"total!\", created_at\n         FROM purchases WHERE id = $1",
+  "query": "SELECT id, name, is_default, created_at FROM accounts\n          ORDER BY is_default DESC, name",
   "describe": {
     "columns": [
       {
@@ -9,27 +9,32 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "purchases",
+            "table": "accounts",
             "name": "id"
           }
         }
       },
       {
         "ordinal": 1,
-        "name": "supplier_id",
-        "type_info": "Uuid",
+        "name": "name",
+        "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "purchases",
-            "name": "supplier_id"
+            "table": "accounts",
+            "name": "name"
           }
         }
       },
       {
         "ordinal": 2,
-        "name": "total!",
-        "type_info": "Numeric",
-        "origin": "Expression"
+        "name": "is_default",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "accounts",
+            "name": "is_default"
+          }
+        }
       },
       {
         "ordinal": 3,
@@ -37,23 +42,21 @@
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
-            "table": "purchases",
+            "table": "accounts",
             "name": "created_at"
           }
         }
       }
     ],
     "parameters": {
-      "Left": [
-        "Uuid"
-      ]
+      "Left": []
     },
     "nullable": [
       false,
       false,
-      null,
+      false,
       false
     ]
   },
-  "hash": "629f088c68ceadc30394c4642d0400a8ba1420648efee42a1f58f47f15f6b21d"
+  "hash": "5f025430232fa831e09ad3d5857d42d886d3d5d4ec053f89392d0af1f9767ae5"
 }

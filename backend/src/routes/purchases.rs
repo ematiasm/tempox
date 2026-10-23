@@ -10,6 +10,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::AppState;
+use crate::models::account::{CASH_ACCOUNT_ID, CASH_PAYMENT_METHOD_ID, CREDIT_ACCOUNT_ID};
 use crate::models::purchase::{Purchase, PurchaseItem, PurchaseWithItems};
 use crate::models::supplier_return::{SupplierReturn, SupplierReturnItem, SupplierReturnWithItems};
 use crate::money;
@@ -132,6 +133,14 @@ pub struct NewPurchase {
     /// Omitted means the seeded one-off supplier.
     #[serde(default)]
     pub supplier_id: Option<Uuid>,
+    /// Where the money left from. Omitted means the seeded `cash` method, which is
+    /// what every purchase meant before this existed.
+    ///
+    /// An unknown id is a 404. A method whose account is the **credit** account is
+    /// refused (S9b): a purchase paid with the debt account would subtract from what
+    /// customers owe, which no purchase can mean.
+    #[serde(default)]
+    pub payment_method_id: Option<Uuid>,
     pub items: Vec<NewPurchaseItem>,
 }
 
@@ -183,6 +192,35 @@ async fn create_purchase(
         None => ONE_OFF_SUPPLIER_ID,
     };
 
+    // Resolve the destination before any write, the mirror of a sale: an unknown
+    // method is a 404 rather than a foreign-key 500, and the account is read here
+    // because the credit rule below needs it.
+    let (payment_method_id, method_account_id) = match body.payment_method_id {
+        Some(id) => {
+            let row = sqlx::query!("SELECT account_id FROM payment_methods WHERE id = $1", id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|e| {
+                    tracing::error!(?e, "payment method lookup failed");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?;
+            let row = row.ok_or(StatusCode::NOT_FOUND)?;
+            (id, row.account_id)
+        }
+        None => (CASH_PAYMENT_METHOD_ID, CASH_ACCOUNT_ID),
+    };
+
+    // S9b: a purchase may never name the credit method. Its effect would subtract
+    // from the debt account — "what customers owe went down by 40,000" — which no
+    // purchase means, and there is no purchase-side counterpart to a credit sale
+    // until the payable document exists.
+    //
+    // Written as an equality against the account rather than against the method id so
+    // it keeps holding if the shop ever attaches a second method to that account.
+    if method_account_id == CREDIT_ACCOUNT_ID {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
     // Resolve every line against the product: snapshot name and unit, resolve
     // the price (override or list price), and build the money input.
     //
@@ -224,9 +262,10 @@ async fn create_purchase(
     }
 
     let purchase_id = sqlx::query_scalar!(
-        "INSERT INTO purchases (supplier_id, total) VALUES ($1, $2) RETURNING id",
+        "INSERT INTO purchases (supplier_id, total, payment_method_id) VALUES ($1, $2, $3) RETURNING id",
         supplier_id,
-        total
+        total,
+        payment_method_id
     )
     .fetch_one(&mut *tx)
     .await
@@ -296,8 +335,12 @@ async fn create_purchase(
     // `70.00` rather than `70.000000` (see 0006 for why the column declares 6).
     let purchase = sqlx::query_as!(
         Purchase,
-        "SELECT id, supplier_id, round(total, 2) AS \"total!\", created_at
-         FROM purchases WHERE id = $1",
+        "SELECT p.id, p.supplier_id, p.payment_method_id,
+                pm.name AS \"payment_method_name!\",
+                round(p.total, 2) AS \"total!\", p.created_at
+         FROM purchases p
+         JOIN payment_methods pm ON pm.id = p.payment_method_id
+         WHERE p.id = $1",
         purchase_id
     )
     .fetch_one(&mut *tx)
@@ -341,11 +384,14 @@ async fn list_purchases(
     // ranges that meet at midnight partition the ledger — no purchase is counted
     // twice or lost between them.
     let rows = sqlx::query!(
-        "SELECT id, supplier_id, round(total, 2) AS \"total!\", created_at
-         FROM purchases
-         WHERE ($1::timestamptz IS NULL OR created_at >= $1)
-           AND ($2::timestamptz IS NULL OR created_at < $2)
-         ORDER BY created_at DESC
+        "SELECT p.id, p.supplier_id, p.payment_method_id,
+                pm.name AS \"payment_method_name!\",
+                round(p.total, 2) AS \"total!\", p.created_at
+         FROM purchases p
+         JOIN payment_methods pm ON pm.id = p.payment_method_id
+         WHERE ($1::timestamptz IS NULL OR p.created_at >= $1)
+           AND ($2::timestamptz IS NULL OR p.created_at < $2)
+         ORDER BY p.created_at DESC
          LIMIT $3 OFFSET $4",
         params.from,
         params.to,
@@ -421,6 +467,8 @@ async fn list_purchases(
             purchase: Purchase {
                 id: row.id,
                 supplier_id: row.supplier_id,
+                payment_method_id: row.payment_method_id,
+                payment_method_name: row.payment_method_name,
                 total: row.total,
                 created_at: row.created_at,
             },
@@ -559,10 +607,25 @@ async fn create_supplier_return(
     }
     return_total.rescale(money::MONEY_SCALE);
 
+    // The return inherits the corrected purchase's method, the mirror of a credit
+    // note inheriting the sale's: the supplier gives money back through the same
+    // rail that paid them. No override exists in v3.
+    let inherited_method: Uuid = sqlx::query_scalar!(
+        "SELECT payment_method_id FROM purchases WHERE id = $1",
+        purchase_id
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| {
+        tracing::error!(?e, "purchase payment method read failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
     let return_id = sqlx::query_scalar!(
-        "INSERT INTO supplier_returns (purchase_id, total) VALUES ($1, $2) RETURNING id",
+        "INSERT INTO supplier_returns (purchase_id, total, payment_method_id) VALUES ($1, $2, $3) RETURNING id",
         purchase_id,
-        return_total
+        return_total,
+        inherited_method
     )
     .fetch_one(&mut *tx)
     .await
