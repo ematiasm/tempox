@@ -23,10 +23,14 @@
   // reach the rail without the comparison and the href ever disagreeing.
   // `as const` keeps them as literals, which is what `resolve()` requires: it is
   // typed to the app's own route ids, not to any string.
+  // `/accounts` joins the rail in v3: where the money lands is a job the shop does,
+  // not a setting hidden behind a URL. It comes last because it is the one destination
+  // nobody visits during a sale.
   const tabs = $derived([
     { href: '/sales', label: lang.t.nav_sales },
     { href: '/purchases', label: lang.t.nav_purchases },
-    { href: '/products', label: lang.t.nav_products }
+    { href: '/products', label: lang.t.nav_products },
+    { href: '/accounts', label: lang.t.nav_accounts }
   ] as const);
 </script>
 
@@ -51,7 +55,7 @@
       <button class="lang" onclick={() => lang.toggle()} aria-label={lang.t.lang_toggle}>
         {lang.other}
       </button>
-      <span class="version">v2</span>
+      <span class="version">v3</span>
     </div>
   </nav>
 

@@ -91,7 +91,16 @@ export type Sale = {
   id: string;
   customer_id: string;
   total: string;
-  payment_method: string;
+  /**
+   * Where the money went. Flat since v3: an id and a **joined** name, no
+   * `account_id`.
+   *
+   * The name is resolved by the server on every read, so renaming a method
+   * corrects the documents that named it instead of freezing a typo into rows the
+   * database refuses to edit.
+   */
+  payment_method_id: string;
+  payment_method_name: string;
   status: string;
   reversed_at: string | null;
   created_at: string;
@@ -267,6 +276,46 @@ export async function createSale(sale: NewSale): Promise<Sale & { items: SaleIte
   return request<Sale & { items: SaleItem[] }>(new URL('/api/sales', base()), json('POST', body));
 }
 
+/** Every account with its methods and its derived balance. */
+export async function listAccounts(): Promise<AccountWithMethods[]> {
+  return request<AccountWithMethods[]>(new URL('/api/accounts', base()));
+}
+
+export async function createAccount(
+  name: string
+): Promise<Omit<AccountWithMethods, 'methods' | 'balance'>> {
+  return request(new URL('/api/accounts', base()), json('POST', { name }));
+}
+
+/**
+ * Renames an account, or moves the shop's till to it.
+ *
+ * Promoting clears the old default **on the server**, in one transaction: the
+ * database guarantees exactly one default at commit, so the client never has to
+ * clear the previous one first.
+ */
+export async function patchAccount(
+  id: string,
+  patch: { name?: string; is_default?: boolean }
+): Promise<Omit<AccountWithMethods, 'methods' | 'balance'>> {
+  return request(new URL(`/api/accounts/${id}`, base()), json('PATCH', patch));
+}
+
+export async function createPaymentMethod(name: string, accountId: string): Promise<PaymentMethod> {
+  return request(
+    new URL('/api/payment-methods', base()),
+    json('POST', { name, account_id: accountId })
+  );
+}
+
+/** Renames, retires, or reattaches a method. `account_id` is refused by the server once a document names the method. */
+export async function patchPaymentMethod(
+  id: string,
+  patch: { name?: string; is_active?: boolean; account_id?: string }
+): Promise<PaymentMethod> {
+  return request(new URL(`/api/payment-methods/${id}`, base()), json('PATCH', patch));
+}
+
 export async function getCash(): Promise<Cash> {
   const accounts = await request<AccountWithMethods[]>(new URL('/api/accounts', base()));
   // Exactly one account is the default — enforced by the database, not by this
@@ -409,6 +458,9 @@ export type Purchase = {
   id: string;
   supplier_id: string;
   total: string;
+  /** The same flat shape a sale carries: id plus the joined name. */
+  payment_method_id: string;
+  payment_method_name: string;
   created_at: string;
 };
 

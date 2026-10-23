@@ -347,6 +347,7 @@
               <th scope="col">{lang.t.sales_time}</th>
               <th scope="col">{lang.t.purchases_document}</th>
               <th scope="col">{lang.t.purchases_supplier}</th>
+              <th scope="col">{lang.t.purchases_method}</th>
               <th scope="col">{lang.t.sales_status}</th>
               <th scope="col" class="num">{lang.t.sales_total}</th>
             </tr>
@@ -402,6 +403,10 @@
                       lang.t.purchases_one_off_supplier}
                   {/if}
                 </td>
+                <!-- Where the money left from, the mirror of the sales ledger's
+                   column: a purchase paid from the bank is not money that left the
+                   till. -->
+                <td class="method">{row.purchase.payment_method_name}</td>
                 <td>
                   {#if returned}
                     <Stamp label={lang.t.purchases_returned_state} tone="annulled" />
@@ -417,7 +422,9 @@
               </tr>
               {#if isOpen}
                 <tr class="lines-row">
-                  <td colspan="5">
+                  <!-- Six columns since v3 added the method: the expanded lines
+                     must span every one of them or the table breaks its alignment. -->
+                  <td colspan="6">
                     <div class="lines" id="purchase-lines-{row.purchase.id}">
                       <table>
                         <caption>{lang.t.purchases_lines_of} #{row.purchase.id.slice(0, 8)}</caption
@@ -793,6 +800,14 @@
     color: var(--ink-soft);
     font-size: var(--step--1);
   }
+  /* The destination, quieter than the customer and the amount: it explains a figure
+     rather than competing with it, and it is short by nature (one method's name). */
+  .method {
+    color: var(--ink-soft);
+    font-size: var(--step--1);
+    white-space: nowrap;
+  }
+
   .supplier {
     font-weight: 500;
   }

@@ -645,6 +645,7 @@
               <th scope="col">{lang.t.sales_time}</th>
               <th scope="col">{lang.t.sales_sale}</th>
               <th scope="col">{lang.t.sales_customer}</th>
+              <th scope="col">{lang.t.sales_method}</th>
               <th scope="col">{lang.t.sales_status}</th>
               <th scope="col" class="num">{lang.t.sales_total}</th>
             </tr>
@@ -722,6 +723,12 @@
                 <td class="customer" class:walkin={row.customer_name === 'walk-in'}>
                   {row.customer_name === 'walk-in' ? lang.t.sales_walkin : row.customer_name}
                 </td>
+                <!-- Where the money went. Since v3 a sale can name a bank transfer,
+                   and a ledger that showed only the amount would make two sales of
+                   the same size indistinguishable while one reached the till and the
+                   other never did. The name is the server's join, not a snapshot, so
+                   a rename corrects old rows instead of freezing a typo. -->
+                <td class="method">{row.payment_method_name}</td>
                 <td>
                   {#if isAnnulled(row)}
                     <Stamp label={lang.t.sales_annulled} tone="annulled" />
@@ -1270,6 +1277,14 @@
   }
   .chev.open {
     transform: rotate(90deg);
+  }
+
+  /* The destination, quieter than the customer and the amount: it explains a figure
+     rather than competing with it, and it is short by nature (one method's name). */
+  .method {
+    color: var(--ink-soft);
+    font-size: var(--step--1);
+    white-space: nowrap;
   }
 
   .customer {
