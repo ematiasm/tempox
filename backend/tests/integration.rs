@@ -5526,3 +5526,248 @@ async fn v3_t0_creating_an_account_as_default_fails_because_it_has_no_method_yet
         "the supported sequence must work: create, attach a method, promote"
     );
 }
+
+// ── v3 T3: `money_movements` and derived balances ───────────────────────────
+//
+// The view is the single definition of "money moved", and `GET /api/accounts`
+// carries its sum. What these tests pin is the SIGN of every document and the fact
+// that a balance is a sum over documents rather than a stored field — the same
+// property `stock = SUM(movements)` already has.
+
+#[sqlx::test]
+async fn v3_t3_a_fresh_ledger_balances_to_zero_on_every_account(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+    let response = client.get("/api/accounts").await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+    // COALESCE, not NULL: an account with no movements must read `0.00` so the client
+    // has one shape to render, and the string must carry two decimals like every
+    // other amount in this API.
+    for account in response.body.as_array().expect("array") {
+        assert_eq!(
+            account["balance"], "0.00",
+            "every account starts at zero, as a two-decimal string"
+        );
+    }
+}
+
+#[sqlx::test]
+async fn v3_t3_the_four_documents_move_money_with_the_right_sign(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+    let cash = "00000000-0000-0000-0000-000000000003";
+
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "sign-probe", "list_price": "100.00" }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("product id").to_string();
+
+    // A sale brings 100 in.
+    let sale = client
+        .post(
+            "/api/sales",
+            serde_json::json!({ "items": [{ "product_id": product_id, "quantity": 1 }] }),
+        )
+        .await;
+    assert_eq!(sale.status(), axum::http::StatusCode::CREATED);
+    let sale_id = sale.body["id"].as_str().expect("sale id").to_string();
+    let sale_item = sale.body["items"][0]["id"]
+        .as_str()
+        .expect("item id")
+        .to_string();
+
+    assert_eq!(
+        balance_of(&client, cash).await,
+        "100.00",
+        "a sale puts money INTO the account its method names"
+    );
+
+    // A purchase takes 40 out.
+    client
+        .post(
+            "/api/purchases",
+            serde_json::json!({ "items": [{ "product_id": product_id, "quantity": 2, "unit_price": "20.00" }] }),
+        )
+        .await;
+    assert_eq!(
+        balance_of(&client, cash).await,
+        "60.00",
+        "a purchase takes money OUT"
+    );
+
+    // A refund of 100 gives it back to the customer: 60 - 100 = -40.
+    client
+        .post(
+            &format!("/api/sales/{sale_id}/credit-notes"),
+            serde_json::json!({ "items": [{ "sale_item_id": sale_item, "quantity": 1 }] }),
+        )
+        .await;
+    assert_eq!(
+        balance_of(&client, cash).await,
+        "-40.00",
+        "a credit note takes money OUT, and a balance may go negative"
+    );
+
+    // `/api/cash` still agrees, and that is the point of the view: one definition.
+    let old_endpoint = client.get("/api/cash").await;
+    assert_eq!(
+        old_endpoint.body["total"], "-40.00",
+        "the view must reproduce the figure /api/cash computed by hand"
+    );
+}
+
+#[sqlx::test]
+async fn v3_t3_a_supplier_return_brings_money_back(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+    let cash = "00000000-0000-0000-0000-000000000003";
+
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "return-probe", "list_price": "10.00" }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("id").to_string();
+
+    let purchase = client
+        .post(
+            "/api/purchases",
+            serde_json::json!({ "items": [{ "product_id": product_id, "quantity": 3, "unit_price": "10.00" }] }),
+        )
+        .await;
+    // The purchase response nests the header under `purchase` (`PurchaseWithItems`),
+    // where a sale flattens it. Measured here rather than assumed: reading the root
+    // gave no id at all.
+    let purchase_id = purchase.body["purchase"]["id"]
+        .as_str()
+        .expect("purchase id")
+        .to_string();
+    let purchase_item = purchase.body["items"][0]["id"]
+        .as_str()
+        .expect("item id")
+        .to_string();
+    assert_eq!(balance_of(&client, cash).await, "-30.00");
+
+    client
+        .post(
+            &format!("/api/purchases/{purchase_id}/supplier-returns"),
+            serde_json::json!({ "items": [{ "purchase_item_id": purchase_item, "quantity": 1 }] }),
+        )
+        .await;
+    assert_eq!(
+        balance_of(&client, cash).await,
+        "-20.00",
+        "a supplier return brings money BACK, the mirror of a purchase"
+    );
+}
+
+#[sqlx::test]
+async fn v3_t3_a_second_account_keeps_its_own_balance(pool: sqlx::PgPool) {
+    // The whole reason a destination is derivable: two accounts, one sale each, and
+    // neither balance is the other's. This is what `T6` will use to show the till's
+    // footer no longer means "every sale".
+    let client = common::client(pool.clone());
+    let cash = "00000000-0000-0000-0000-000000000003";
+    let bank = "00000000-0000-0000-0000-000000000005";
+
+    let created = client
+        .post(
+            "/api/payment-methods",
+            serde_json::json!({ "name": "transferencia", "account_id": cash }),
+        )
+        .await;
+    let method_id = created.body["id"].as_str().expect("method id").to_string();
+
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "split-probe", "list_price": "50.00" }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("id").to_string();
+
+    // A sale through the new method still lands in `cash`, because that is the
+    // account the method points at.
+    client
+        .post(
+            "/api/sales",
+            serde_json::json!({
+                "items": [{ "product_id": product_id, "quantity": 1 }],
+                "payment_method_id": method_id
+            }),
+        )
+        .await;
+    assert_eq!(balance_of(&client, cash).await, "50.00");
+    assert_eq!(
+        balance_of(&client, bank).await,
+        "0.00",
+        "the credit account is untouched by a sale that names a cash method"
+    );
+}
+
+/// Reads one account's balance from `GET /api/accounts`.
+async fn balance_of(client: &common::Client, account_id: &str) -> String {
+    let response = client.get("/api/accounts").await;
+    response
+        .body
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|a| a["id"] == account_id)
+        .unwrap_or_else(|| panic!("account {account_id} missing from /api/accounts"))["balance"]
+        .as_str()
+        .expect("balance string")
+        .to_string()
+}
+
+#[sqlx::test]
+async fn v3_t3_the_view_counts_only_confirmed_sales(pool: sqlx::PgPool) {
+    // The `status = 'confirmed'` predicate survived from `/api/cash`, and `T2` will
+    // delete the column so that "the row exists" and "it counts" become one
+    // statement. Until then the filter has to be there, and nothing else in this
+    // slice exercises it: every sale these tests create is `confirmed` by default, so
+    // removing the predicate left the whole suite green.
+    //
+    // Measured by mutation: `WHERE s.status = 'confirmed'` -> `WHERE true` passed
+    // every other v3 test. This is the assertion that makes the predicate observable.
+    let client = common::client(pool.clone());
+    let cash = "00000000-0000-0000-0000-000000000003";
+
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "status-probe", "list_price": "70.00" }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("id").to_string();
+    client
+        .post(
+            "/api/sales",
+            serde_json::json!({ "items": [{ "product_id": product_id, "quantity": 1 }] }),
+        )
+        .await;
+    assert_eq!(balance_of(&client, cash).await, "70.00");
+
+    // Move the sale out of the counted state directly: no API route writes `status`,
+    // which is exactly why the view's filter is easy to forget.
+    let (sale_id,): (uuid::Uuid,) = sqlx::query_as(
+        "SELECT id FROM sales WHERE customer_id = '00000000-0000-0000-0000-000000000001'
+          ORDER BY created_at DESC LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read the sale");
+    sqlx::query("UPDATE sales SET status = 'draft' WHERE id = $1")
+        .bind(sale_id)
+        .execute(&pool)
+        .await
+        .expect("move the sale out of confirmed");
+
+    assert_eq!(
+        balance_of(&client, cash).await,
+        "0.00",
+        "a sale whose status is not confirmed must not move the balance"
+    );
+}

@@ -8,11 +8,10 @@
 //! written; the guard needs the `credit` account to exist, and creating accounts
 //! needs endpoints.
 //!
-//! **Balances are not here.** A balance is a `SUM` over `money_movements`, which
-//! `0014` creates; `GET /api/accounts` in this task returns the accounts and their
-//! methods without amounts, and `T3` adds the derived balance once the view exists.
-//! Splitting them keeps this task about HTTP shape and its refusals rather than
-//! about SQL aggregation.
+//! **Balances come from `money_movements`, never from a column.** `0014` creates the
+//! view and owns the sign convention; this module only sums it per account. An
+//! account's balance is therefore the same kind of number stock already is — a
+//! derived sum over documents — and cannot drift from them.
 //!
 //! **What is editable, and why.** The rule follows from identity, not convention:
 //!
@@ -53,17 +52,24 @@ pub fn routes() -> Router<AppState> {
         .route("/payment-methods/{id}", patch(update_payment_method))
 }
 
-/// An account with the methods that point at it.
+/// An account with the methods that point at it, and what it currently holds.
 ///
 /// The methods are nested rather than joined per row because an account with no
 /// methods is a legitimate state (it can exist before anyone attaches a method to
 /// it), and an empty array says that without an `Option` for the client to branch
 /// on.
+///
+/// `balance` is **derived**, never stored: the sum of `money_movements` for this
+/// account, over all time. `0014` owns that definition, so the sign convention lives
+/// in one place instead of four. It is serialized through the money helper so it
+/// leaves as a two-decimal string like every other amount in the API.
 #[derive(Debug, Serialize)]
 pub struct AccountWithMethods {
     #[serde(flatten)]
     pub account: Account,
     pub methods: Vec<PaymentMethod>,
+    #[serde(serialize_with = "crate::money::serialize_amount")]
+    pub balance: rust_decimal::Decimal,
 }
 
 // ── Accounts ────────────────────────────────────────────────────────────────
@@ -86,6 +92,28 @@ async fn list_accounts(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
+    // One statement for every balance, grouped by account, rather than one query per
+    // account. The view is small at this scale (a neighbourhood shop reaches ~215k
+    // rows in a decade) and `COALESCE` gives an account with no movements a clean zero
+    // instead of a null the client has to branch on.
+    let balances = sqlx::query!(
+        r#"SELECT a.id AS "account_id!", COALESCE(SUM(m.amount), 0)::numeric AS "balance!"
+             FROM accounts a
+             LEFT JOIN payment_methods pm ON pm.account_id = a.id
+             LEFT JOIN money_movements m  ON m.payment_method_id = pm.id
+            GROUP BY a.id"#
+    )
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| {
+        tracing::error!(?e, "account balances failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let balances: std::collections::HashMap<Uuid, rust_decimal::Decimal> = balances
+        .into_iter()
+        .map(|row| (row.account_id, row.balance))
+        .collect();
+
     let mut with_methods = Vec::with_capacity(accounts.len());
     for account in accounts {
         // One extra query per account, bounded by the number of accounts. The same
@@ -103,7 +131,15 @@ async fn list_accounts(
             tracing::error!(?e, "account methods read failed");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
-        with_methods.push(AccountWithMethods { account, methods });
+        let balance = balances
+            .get(&account.id)
+            .copied()
+            .unwrap_or(rust_decimal::Decimal::ZERO);
+        with_methods.push(AccountWithMethods {
+            account,
+            methods,
+            balance,
+        });
     }
 
     Ok(Json(with_methods))

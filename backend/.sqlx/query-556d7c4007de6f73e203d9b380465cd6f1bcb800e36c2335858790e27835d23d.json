@@ -1,0 +1,33 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT a.id AS \"account_id!\", COALESCE(SUM(m.amount), 0)::numeric AS \"balance!\"\n             FROM accounts a\n             LEFT JOIN payment_methods pm ON pm.account_id = a.id\n             LEFT JOIN money_movements m  ON m.payment_method_id = pm.id\n            GROUP BY a.id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "account_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "accounts",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "balance!",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "556d7c4007de6f73e203d9b380465cd6f1bcb800e36c2335858790e27835d23d"
+}
