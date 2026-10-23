@@ -989,3 +989,17 @@ undo of the last edit.
 L69 (verification, 2026-10-23): the view's agreement with `/api/cash` is asserted
 directly — the same scenario computed both ways returns `-40.00` — which is what makes
 retiring that endpoint in T6 a safe change rather than a leap.
+
+L70 (state, 2026-10-23, T3 reviewed and approved): lineage `review-c7b8c2e2b27cb95a`
+reviewed **in isolation** (`baseRef` = T0's commit, 478 lines, 5 files) and returned
+`approved` with two lenses and no blocking finding; authority burned. This is the first
+transaction since T1 that closed on its first pass, and the isolation is why: the
+branch-wide projector refused outright with `lens_context_budget_exceeded` and created
+no authority at all, while the same change reviewed against its own parent fit in 40KB
+of reviewer evidence.
+
+L71 (confirmation, 2026-10-23, of L65's pattern): T3's two mutation gaps were found by
+me before review, not by it, because I ran the mutations. The reviewer's value in this
+slice has been finding what mutation cannot: a surface the code offers and no test
+exercises, and — twice — a *concurrency* rule that sequential tests cannot see. The two
+tools find different classes of defect and neither replaces the other.
