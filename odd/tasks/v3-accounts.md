@@ -890,3 +890,27 @@ L59 (decision, 2026-10-23, from L57): two review transactions remain open and un
 recoverable by Pi: their authority is bound to candidate hashes that no longer exist, and
 `recover`/`reset` remain destructive operations for the audited native CLI. Reported as open
 authority rather than silently dropped.
+
+L60 (state, 2026-10-23, T0 done): `GET`/`POST /api/accounts` (methods nested),
+`GET`/`POST /api/payment-methods`, and `PATCH` for each, without balances — those
+arrive with the view in T3, so this commit is about HTTP shape and its refusals.
+Promoting an account to default clears the old one **in the same transaction**, which
+turns "move the till" into one call instead of the two-statement deadlock T1's first
+review found. 7 new integration tests; the `.sqlx` cache was regenerated because the
+suite builds `SQLX_OFFLINE=true` and refused the new queries. Full suite 74 integration
++ 50 unit.
+
+L61 (discovery, 2026-10-23, found by mutation again): **a rule asserted on one endpoint
+is not a rule asserted on both.** Removing the trim-then-refuse from
+`create_payment_method` left every test green, because the only blank-name assertion
+covered `create_account`. This is the third time in this slice that mutation found a
+test asserting less than the code claimed (after the two T1 guard masks), and the
+pattern is consistent: when a rule appears in two handlers, it has to be asserted
+twice, because each handler is a separate place to forget it.
+
+L62 (decision, 2026-10-23, T0's test for the moved till): the test activates the
+`credit` method before promoting its account, and that is the invariant working rather
+than an obstacle. `credit` is seeded inactive because v3 cannot collect a credit sale,
+so promoting it without activating a method would create a till nobody can take money
+at — `guard_new_default_account_has_active_method` refuses exactly that, and the first
+run of the test failed for the right reason.

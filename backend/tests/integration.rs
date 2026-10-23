@@ -5453,3 +5453,76 @@ async fn v3_t0_patch_with_nothing_to_change_is_refused(pool: sqlx::PgPool) {
         .await;
     assert_eq!(missing.status(), axum::http::StatusCode::NOT_FOUND);
 }
+
+#[sqlx::test]
+async fn v3_t0_creating_an_account_as_default_fails_because_it_has_no_method_yet(
+    pool: sqlx::PgPool,
+) {
+    // **Found by native review, and the gap was a missing assertion.**
+    //
+    // `POST /api/accounts` accepts `is_default: true`, and a freshly inserted account
+    // has no payment methods — so the schema's `guard_new_default_account_has_active_method`
+    // refuses it. That is the invariant working, but the route offered an option that
+    // could never succeed, and no test ever passed `is_default: true` to `POST`, so
+    // nothing said so.
+    //
+    // What the assertion pins is the **status code**: a caller asking for something
+    // the schema forbids must get a refusal it can act on, not a 500 that reads as a
+    // server fault. The positive path exists in `PATCH` (create the account, attach a
+    // method, then promote), and `v3_t0_moving_the_till_is_a_single_operation…` covers
+    // it.
+    let client = common::client(pool.clone());
+
+    let refused = client
+        .post(
+            "/api/accounts",
+            serde_json::json!({ "name": "nueva-caja", "is_default": true }),
+        )
+        .await;
+
+    assert!(
+        refused.status().is_client_error(),
+        "creating a default account with no method must be refused as a client error, \
+         not reported as a server fault; got {}",
+        refused.status()
+    );
+
+    // And nothing was written: the refusal is total, not partial.
+    let accounts = client.get("/api/accounts").await;
+    let names: Vec<&str> = accounts
+        .body
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|a| a["name"].as_str().unwrap_or(""))
+        .collect();
+    assert!(
+        !names.contains(&"nueva-caja"),
+        "a refused creation must not leave an account behind: {names:?}"
+    );
+
+    // The supported path, stated so the refusal above cannot be read as "cannot ever
+    // promote": create without the flag, attach a method, then PATCH the default.
+    let created = client
+        .post("/api/accounts", serde_json::json!({ "name": "caja-2" }))
+        .await;
+    assert_eq!(created.status(), axum::http::StatusCode::CREATED);
+    let id = created.body["id"].as_str().expect("id").to_string();
+    client
+        .post(
+            "/api/payment-methods",
+            serde_json::json!({ "name": "efectivo-2", "account_id": id }),
+        )
+        .await;
+    let promoted = client
+        .patch(
+            &format!("/api/accounts/{id}"),
+            serde_json::json!({ "is_default": true }),
+        )
+        .await;
+    assert_eq!(
+        promoted.status(),
+        axum::http::StatusCode::OK,
+        "the supported sequence must work: create, attach a method, promote"
+    );
+}

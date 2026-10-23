@@ -131,6 +131,19 @@ async fn create_account(
         return Err(StatusCode::BAD_REQUEST);
     }
 
+    // **A new account cannot be the default.** It has no payment methods yet, and
+    // `guard_new_default_account_has_active_method` refuses a default account with
+    // nothing active — so the option this route used to accept could never succeed,
+    // and it surfaced as a 500 from the trigger. Found by native review (`R3-001`)
+    // after the fact, with the status code measured before the fix.
+    //
+    // Refused here with the reason a caller can act on: create the account, attach a
+    // method, then promote it through `PATCH`. That sequence is the supported one and
+    // is covered by `v3_t0_moving_the_till_is_a_single_operation…`.
+    if body.is_default {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
     // One transaction, because promoting the new account to default is a statement
     // about two rows: the new one becomes true and the old one must become false
     // **in the same transaction**, or the deferred "exactly one default" constraint
@@ -141,19 +154,6 @@ async fn create_account(
         tracing::error!(?e, "tx begin failed");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
-
-    if body.is_default {
-        // The account being replaced has to be cleared first, in this transaction.
-        // `accounts_one_default_idx` refuses two true rows at any instant, so the
-        // order matters: clear, then insert.
-        sqlx::query("UPDATE accounts SET is_default = false WHERE is_default")
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| {
-                tracing::error!(?e, "clear default failed");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
-    }
 
     let account = sqlx::query_as!(
         Account,
