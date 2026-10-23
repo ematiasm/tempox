@@ -1022,3 +1022,27 @@ L74 (consequence, 2026-10-23, noted for T6-T8): `payment_method` as a bare strin
 longer exists on the wire. The frontend's `Sale` type still declares it, so the
 frontend build does not see the change until T7; the API is ahead of its only consumer
 by design, which is why this is a breaking change with exactly one place to fix.
+
+L75 (state, 2026-10-23, T4 reviewed and approved): lineage `review-72df70dc6c5e449d`
+reviewed in isolation against T3's commit (763 lines, 9 files) and returned
+`approved` with two lenses and no blocking finding; authority burned. Second
+consecutive clean pass, and the isolation protocol held again.
+
+L76 (advisory, 2026-10-23, non-blocking, carried as later work): two findings, neither
+opening a correction.
+- `R1-inactive-method-write-path-unenforced` (risk, WARNING) at
+  `backend/src/routes/sales.rs:170-183`: the write path deliberately does not consult
+  `is_active`, which is S9a's requirement. The reviewer is right that this means an
+  inactive method can be used at write time and there is nothing else stopping it —
+  that is the *intended* behaviour, and the finding is the price of it stated plainly.
+  Whether a retired method should eventually be refused is a product question for
+  after v3, not a defect here.
+- `R3-001` (reliability, SUGGESTION) at `backend/tests/integration.rs:5827`: a test
+  detail worth a later tidy.
+
+L77 (observation, 2026-10-23, the shape of the slice so far): of four reviewed
+candidates, two found real critical defects (T1 twice, T0 once) and two passed clean
+(T3, T4). Every critical finding was either a **concurrency rule** or a **surface the
+code offered and no test exercised** — never an assertion that existed and was wrong.
+That is why the mutation runs and the independent review are both kept for the
+remaining tasks: they do not overlap.
