@@ -63,7 +63,7 @@ S6 **Everything else about both rows stays editable.** `name` on either row, and
 | T2 | S1-S4 | GREEN: migration `0016` adding the three guards, with the trigger-present proof block | `94702f7` |
 | T3 | S5 | GREEN: `accounts.rs` pre-checks returning `409` for both refusals | `94702f7` |
 | T4 | S6 | Existing rename and `is_active` tests still pass unchanged; the schema test also proves both stay editable | `94702f7` |
-| T5 | S3 | Screen: `/accounts` stops offering "make till" for the credit account | — |
+| T5 | S3 | Screen: `/accounts` stops offering "make till" for the credit account | `b6e1a91` |
 
 T1-T4 landed together in `94702f7` because they are one behaviour: the schema guard,
 its RED tests and the status code that reports it. Splitting them would have produced
@@ -71,7 +71,17 @@ a commit whose tests fail. The delivered work unit is 185 non-test/non-doc lines
 (`0016` plus `accounts.rs`); the remaining lines are the two new tests and the three
 migrated ones, which is where the evidence lives.
 
-T5 touches the screen and lands on `feat/v3-frontend-close` (PR #81).
+T5 landed separately in `b6e1a91` on `feat/v3-frontend-close` (PR #81), because it is
+a screen change in a different branch and because the backend fix had to reach `main`
+first: with #81 merged before #80, a screen that withheld the button would ship
+without the server refusal behind it. That ordering is the chained-PR rule the
+feature already follows, not a new one.
+
+**T5 has a prerequisite #81 does not carry.** The screen withholds the button on its
+own, which is correct for the screen; but the `409` it relies on lives in #80. Between
+the two merges, and only then, a client calling the API directly still gets a `500`
+for the promotion while its method is inactive. That is the state `main` would be in
+for one PR, and it is the reason the merge order in `HANDOFF.md` matters.
 
 ## Log
 
@@ -190,3 +200,24 @@ this feature is the two chained PRs, not one commit series. This work unit is
 `94702f7`, 185 non-test lines of behaviour plus its evidence. Nothing new is
 proposed here: if #80 ever needs to be reviewed as slices rather than as a chain,
 that is a decision about the branch, and it was made before this commit existed.
+
+L11 **A mistake made while starting T5, recorded because it could have cost the
+review ledger.** Staging T5 with `git rebase feat/v3-backend` on
+`feat/v3-frontend-close` rewrote all 19 published commits of PR #81 for a screen
+change that needs none of that branch's work. Nothing had been pushed, so
+`git reset --keep origin/feat/v3-frontend-close` restored the branch to `6b616bd`
+with an empty diff against origin; `git diff` also confirmed the rebase had changed
+no content, only hashes. T5 was then done on the published tip.
+
+The rule this repeats, already in `HANDOFF.md` §5, is about correcting a commit once
+a review opened authority — but the cost here was different and worth naming: a
+rewritten tip is a new target for the provider, and the seals that cover #81's trees
+would no longer cover it. Stacking a branch that cannot use the parent's work is not
+a rebase; it is two independent fixes.
+
+L12 **T5's evidence.** The spec
+`the seeded debt account is never offered as the till` failed first on the button
+being present (`Received: 1`) and passes now; reverting the `isDebtAccount` branch
+made it fail again with the same message, so it belongs to that guard and not to the
+render. `npx playwright test` -> 23 passed (was 21). `eslint` and `svelte-check` clean
+(0 errors, 0 warnings).
