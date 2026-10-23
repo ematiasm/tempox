@@ -4856,7 +4856,9 @@ async fn v3_the_default_account_always_keeps_an_active_method(pool: sqlx::PgPool
     // express a statement about other rows. Three paths are measured.
     let cash_method = uuid::Uuid::from_u128(4);
     let cash_account = uuid::Uuid::from_u128(3);
-    let credit_account = uuid::Uuid::from_u128(5);
+    // No `credit_account`: the till-move case below uses a fresh account, because the
+    // seeded debt account can never be the default (`S3`,
+    // `odd/tasks/v3-seed-identities.md`). A binding left here would be an unused one.
 
     // Positive case: a second active method on the default account is fine, and so is
     // deactivating one of two.
@@ -5503,7 +5505,10 @@ async fn v3_t0_moving_the_till_is_a_single_operation_not_a_deadlock(pool: sqlx::
         .map(|a| a["name"].as_str().unwrap_or(""))
         .collect();
     assert_eq!(defaults.len(), 1, "exactly one default at commit");
-    assert_eq!(defaults[0], "caja-nueva", "the till moved where it was told");
+    assert_eq!(
+        defaults[0], "caja-nueva",
+        "the till moved where it was told"
+    );
 
     // Demoting without promoting another is refused by the deferred constraint, and
     // the caller sees an error rather than a silent zero-till state. Asserted as "not
@@ -5660,12 +5665,11 @@ async fn v3_the_credit_seed_keeps_its_identity_in_the_schema(pool: sqlx::PgPool)
     // S2: nothing may be attached to the debt account later either. This is the same
     // rule from the other side, and the side that was reachable in practice —
     // measured as `PATCH /api/payment-methods/…0006 {{"account_id":"…0003"}}` -> 200.
-    let moved_onto = sqlx::query(
-        "INSERT INTO payment_methods (account_id, name) VALUES ($1, 'onto-credit')",
-    )
-    .bind(uuid::Uuid::from_u128(5))
-    .execute(&pool)
-    .await;
+    let moved_onto =
+        sqlx::query("INSERT INTO payment_methods (account_id, name) VALUES ($1, 'onto-credit')")
+            .bind(uuid::Uuid::from_u128(5))
+            .execute(&pool)
+            .await;
     assert!(
         moved_onto.is_err(),
         "no method may be attached to the seeded credit account: a method there would \
@@ -5714,7 +5718,8 @@ async fn v3_the_credit_seed_keeps_its_identity_in_the_schema(pool: sqlx::PgPool)
             .await
             .expect("read the seeded method");
     assert_eq!(
-        method.0, uuid::Uuid::from_u128(5),
+        method.0,
+        uuid::Uuid::from_u128(5),
         "the seeded method still belongs to the seeded account"
     );
     assert!(
@@ -5760,8 +5765,7 @@ async fn v3_the_credit_seed_keeps_its_identity_in_the_schema(pool: sqlx::PgPool)
     );
     assert_eq!(renamed.body["name"], "fiado");
     assert_eq!(
-        renamed.body["account_id"],
-        "00000000-0000-0000-0000-000000000005",
+        renamed.body["account_id"], "00000000-0000-0000-0000-000000000005",
         "a rename moves nothing"
     );
 
