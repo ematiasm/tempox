@@ -1003,3 +1003,22 @@ me before review, not by it, because I ran the mutations. The reviewer's value i
 slice has been finding what mutation cannot: a surface the code offers and no test
 exercises, and — twice — a *concurrency* rule that sequential tests cannot see. The two
 tools find different classes of defect and neither replaces the other.
+
+L72 (state, 2026-10-23, T4 done): `POST /api/sales` accepts `payment_method_id`
+(omitted = cash, so an older caller keeps its exact behaviour), reads the method's
+account server-side rather than trusting a client-supplied one, returns 404 for an
+unknown method, and enforces S9 — a sale resolving to the credit account must name a
+real customer. The wire is now flat (`payment_method_id` + `payment_method_name`, no
+`account_id`). 4 new tests, suite at 84.
+
+L73 (practice, 2026-10-23, the S9 trap closed by mutation): the credit guard was
+mutated two ways. Removing it fails the refusal assertion, as expected. But adding
+`AND is_active` to the method lookup — a plausible "only usable methods" refinement —
+fails the **positive** case, because `credit` is seeded inactive and the acceptance
+would then be refused for the wrong reason. That is the trap S9a warned about, and it
+is now guarded by a test rather than by a comment.
+
+L74 (consequence, 2026-10-23, noted for T6-T8): `payment_method` as a bare string no
+longer exists on the wire. The frontend's `Sale` type still declares it, so the
+frontend build does not see the change until T7; the API is ahead of its only consumer
+by design, which is why this is a breaking change with exactly one place to fix.
