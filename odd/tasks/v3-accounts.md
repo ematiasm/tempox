@@ -395,7 +395,7 @@ with no other change competing for attention (L49).
 | T4 | Sales write path and flat wire (S6b): `payment_method_id` + `payment_method_name` side by side at the top level, resolved by join (never `account_id`, never a name column, never a nested object), picker defaults to an active method belonging to the `is_default` account; API accepts inactive methods; enforce S9 walk-in guard | S4, S5, S6b, S8, S9 | inline | pending | — |
 | T5 | Purchases write path (same flat wire as T4), plus inheritance in credit notes (with override) and supplier returns; reject the `credit` method on purchases in the write path | S5, S6b, S9b, S10 | inline | pending | — |
 | T6 | Retire `/api/cash`; the footer reads the default account's derived balance from `/api/accounts` | S8, S13 | inline | done | `6d96958` |
-| T7 | Frontend: `/accounts` screen, method column in both ledgers, annulment derived from notes only | S12 | inline | pending | — |
+| T7 | Frontend: `/accounts` screen (5 write actions), rail + v3 chip, method column in both ledgers, `Sale`/`Purchase` migrated to the flat wire, i18n both languages | S6b, S12 | inline | done | `b4a64c5` + `2ff3e44` |
 | T8 | i18n both dictionaries, `architecture.md`/`PRODUCT.md`/`PLAN.md`, e2e over a sale on a non-cash method | S18, S19 | inline | pending | — |
 | T2 | **Closing commit, alone, after T8.** Migration `0013`: drop `status`/`reversed_at` with pre-check, re-cut `guard_sale_economics`. Risk item 1 — destructive over immutable history | S11 | inline | pending | — |
 
@@ -1127,3 +1127,29 @@ was broken was the link between the code and `S8a`, which only a human asking "d
 match what we wrote?" surfaces. That is the fourth instance of this slice's pattern — a
 rule and its enforcement drifting apart — and the first where the drift was in the
 spec rather than in the tests.
+
+L86 (state, 2026-10-23, T7 reviewed and approved): lineage `review-43a6174dd97e78fb`
+isolated against T6's close (9 files, 707 lines, frontend only) returned `approved`
+with two lenses and four advisory findings; authority burned.
+
+L87 (defect, 2026-10-23, found by review as `R3-001` and fixed): **the accounts panel
+said the opposite of what was happening.** It distinguished only `accounts === null`,
+which is true while loading AND after a failure, so one ternary had to guess and
+guessed wrong in both directions — a failed read rendered "no accounts yet", a lie
+about the shop's data, and a load rendered "could not read", a lie about a request
+that had not finished. A `reading` flag separates the three states. Fixed as
+`2ff3e44`, with the new `accounts_loading` string in both dictionaries.
+
+L88 (advisory, 2026-10-23, recorded and deliberately not fixed): `R1-ungated-till-move`
+and `R3-002` both point at the same thing — the button that moves the shop's till has
+no confirmation step. The reviewer is right that it is one click and no undo prompt.
+It is not a defect in what the operation *does*: the server guards it, and moving the
+till back is a symmetric operation. A confirm step is a design decision for that
+screen, and the risk is already named in the component's comment and on the button's
+hint. Carried with the other advisories.
+
+L89 (observation, 2026-10-23, the slice's review record so far): six reviewed
+candidates, six verdicts — T1 (two critical), T0 (one critical), T3 clean, T4 clean,
+T7 clean with one real defect in the advisory set, T5 deferred by the owner. Every
+critical finding was a concurrency rule or a surface no test exercised; every clean
+pass had its mutations run first. The two are complements, not substitutes.
