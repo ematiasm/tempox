@@ -565,6 +565,29 @@ carried as later work, none of them a reason to re-review this candidate:
 | `R3-002` | reliability | WARNING | `integration.rs` test region |
 | `R3-003` | reliability | SUGGESTION | `integration.rs` test region |
 
+### Review practice for this slice (learned the hard way, three times)
+
+**Corrections are new commits, never `--amend`, once a review has opened authority.**
+Each amendment changes the candidate hash the authority is bound to, so the provider
+keeps asking for a tree that no longer exists and the transaction dies unrecoverable
+from Pi. Measured on all three: `review-7e70748cd932714a`, `review-a9b0b92eff7cdae1`
+and `review-2b406848e8df8fdd` are stranded in `correction_required`, bound to
+`0d4e6006…`, `af5db1a8…` and `247c13fe…` respectively, none of which can be produced
+again. A visible correction commit is also better history than a silent rewrite of the
+work being reviewed.
+
+**Review each task in isolation, with an explicit `baseRef`.** The default projection
+is the whole branch against `main`, and by T0 that was ~3,600 lines — over the
+provider's reviewer context budget, which refuses without creating authority
+(`lens_context_budget_exceeded`, `lineage_created: false`, nothing to repair). Isolated
+against its parent, T0's candidate was 1,456 lines and started cleanly. Every task from
+here is reviewed that way.
+
+**A stranding is reported, not repaired.** `RESET`, `RECOVER` and `ABANDON` are
+destructive native operations that need an explicit owner decision; Pi does not reach
+for them to tidy up. The affected lineages are listed in `L59` and `L63`.
+
+
 ## Log
 
 L1 (user, 2026-10-22, verbatim): "bueno arranquemos a planificar V3 "Accounts" o
@@ -914,3 +937,29 @@ than an obstacle. `credit` is seeded inactive because v3 cannot collect a credit
 so promoting it without activating a method would create a till nobody can take money
 at — `guard_new_default_account_has_active_method` refuses exactly that, and the first
 run of the test failed for the right reason.
+
+L63 (state, 2026-10-23, T0 reviewed, one critical finding, correction applied, lineage
+stranded again): native review of T0 in isolation (`review-2b406848e8df8fdd`, 1,456
+lines) ran both lenses and a refuter, and found `R3-001`: `POST /api/accounts` accepted
+`is_default: true`, which a fresh account can never satisfy because it has no payment
+methods — the schema refused it and it surfaced as a **500**. Measured before the fix.
+The route now refuses it with a 400 and an actionable reason, and the supported
+sequence (create, attach a method, promote via PATCH) is asserted in the same test;
+mutation puts the 500 back and the test fails. **The transaction is stranded** because
+the fix was committed with `--amend`, moving the candidate hash from `247c13fe…` to
+`538a95e9…`; the provider's correction binding still names the old target.
+
+L64 (practice, 2026-10-23, from L59 and L63, recorded so T3-T8 do not repeat it):
+corrections land as **new commits**, never `--amend`, once a review has opened
+authority; each task is reviewed **in isolation with an explicit `baseRef`**, because
+the branch-wide projection is now over the reviewer context budget; and a stranded
+lineage is **reported to the owner, not repaired** with `RESET`/`RECOVER`/`ABANDON`,
+which are destructive native operations.
+
+L65 (discovery, 2026-10-23, the fourth of its kind in this slice): `R3-001`'s root cause
+was again a test asserting less than the handler did. The only test of `POST
+/api/accounts` never passed `is_default`, so an option that could only ever 500 had no
+assertion at all. The pattern is now unmistakable across T1 and T0: **every critical
+defect in this slice was a rule the code offered and no test exercised**, never a rule
+the tests exercised wrongly. Mutation finds the ones where the assertion is too weak;
+an independent reviewer finds the ones where the surface is wider than the tests.
