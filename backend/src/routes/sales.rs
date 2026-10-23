@@ -28,7 +28,6 @@ pub fn routes() -> Router<AppState> {
         .route("/sales", post(create_sale).get(list_sales))
         .route("/sales/{id}/credit-notes", post(create_credit_note))
         .route("/sales/summary", get(sales_summary))
-        .route("/cash", get(cash_total))
 }
 
 #[derive(Debug, Deserialize)]
@@ -111,13 +110,6 @@ pub struct NewCreditNoteItem {
     /// How many units come back. May be less than the quantity sold: a partial
     /// refund is the normal case, and several notes may follow.
     pub quantity: i32,
-}
-
-/// The cash balance: the sum of confirmed sales, as a currency amount.
-#[derive(Debug, Serialize)]
-pub struct Cash {
-    #[serde(serialize_with = "crate::money::serialize_amount")]
-    pub total: Decimal,
 }
 
 #[derive(Debug, Deserialize)]
@@ -796,37 +788,6 @@ async fn sales_summary(
         net: row.net,
         documents: row.documents,
     }))
-}
-
-async fn cash_total(State(state): State<AppState>) -> Result<Json<Cash>, StatusCode> {
-    // Net of the corrections. A refund is money leaving the till, and a figure
-    // called "cash on hand" that ignored it would be wrong in the one direction
-    // that matters. Both sums are `numeric` and both are COALESCEd, so an empty
-    // ledger and a ledger with no notes behave identically.
-    let total = sqlx::query_scalar!(
-        // Money in the till: what came in from sales, minus what was refunded to
-        // customers, minus what was spent buying stock, **plus** what suppliers
-        // gave back on returns. The shape of the answer never changes — one
-        // two-decimal string — but its meaning has changed twice, so the comment
-        // says what the figure is rather than what it used to be.
-        //
-        // `sales` filters `status = 'confirmed'` and the other three filter
-        // nothing. That asymmetry is the design, not an oversight: a sale carries
-        // a reserved lifecycle whose `cancel` must not count, while a purchase, a
-        // credit note and a supplier return have no status at all — if the row
-        // exists, it counts.
-        "SELECT (COALESCE((SELECT SUM(total) FROM sales WHERE status = 'confirmed'), 0)
-               - COALESCE((SELECT SUM(total) FROM credit_notes), 0)
-               - COALESCE((SELECT SUM(total) FROM purchases), 0)
-               + COALESCE((SELECT SUM(total) FROM supplier_returns), 0))::numeric AS \"total!\""
-    )
-    .fetch_one(&state.db)
-    .await
-    .map_err(|e| {
-        tracing::error!(?e, "cash total failed");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-    Ok(Json(Cash { total }))
 }
 
 #[cfg(test)]

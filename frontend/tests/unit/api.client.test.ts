@@ -137,13 +137,32 @@ describe('listCustomers and getCash', () => {
     expect(customers[0]?.name).toBe('walk-in');
   });
 
-  it('reads the cash total', async () => {
-    const fetchMock = vi.fn(async () => jsonResponse({ total: '184300.00' }));
+  it('reads the till from the default account, not from every sale', async () => {
+    // `/api/cash` was retired in `T6`. The figure is the default account's derived
+    // balance, so this test asserts the path AND that the pick is by `is_default`:
+    // reading the first row would silently show the wrong account the moment the
+    // shop has two.
+    const fetchMock = vi.fn(async () =>
+      jsonResponse([
+        { id: 'a2', name: 'banco', is_default: false, balance: '999.00', methods: [] },
+        { id: 'a1', name: 'cash', is_default: true, balance: '184300.00', methods: [] }
+      ])
+    );
     vi.stubGlobal('fetch', fetchMock);
 
     const cash = await getCash();
-    expect(calledUrl(fetchMock).pathname).toBe('/api/cash');
+    expect(calledUrl(fetchMock).pathname).toBe('/api/accounts');
     expect(cash.total).toBe('184300.00');
+  });
+
+  it('refuses to invent a till when no account is the default', async () => {
+    // A fallback to `0.00` here would be a number nobody recorded.
+    const fetchMock = vi.fn(async () =>
+      jsonResponse([{ id: 'a2', name: 'banco', is_default: false, balance: '5.00', methods: [] }])
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(getCash()).rejects.toThrow();
   });
 });
 

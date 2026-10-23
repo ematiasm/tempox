@@ -803,11 +803,20 @@ async fn v1_read_endpoints_reflect_writes(pool: sqlx::PgPool) {
     .fetch_one(&pool)
     .await
     .expect("cash arithmetic");
-    let cash_resp = client.get("/api/cash").await;
+    // `T6` retired `/api/cash`; the same figure is now the default account's
+    // derived balance.
+    let cash_resp = client.get("/api/accounts").await;
     cash_resp.expect_status(axum::http::StatusCode::OK);
-    let cash = cash_resp.json().clone();
+    let accounts = cash_resp.json().clone();
+    let till = accounts
+        .as_array()
+        .expect("accounts array")
+        .iter()
+        .find(|a| a["is_default"].as_bool().unwrap_or(false))
+        .expect("a default account")
+        .clone();
     assert_eq!(
-        cash["total"],
+        till["balance"],
         format!(
             "{:.2}",
             cash_before.0 + rust_decimal::Decimal::new(300300, 2)
@@ -1176,13 +1185,25 @@ struct Reversal {
     lines: Vec<(uuid::Uuid, uuid::Uuid, i64, String)>,
 }
 
-/// Reads the cash figure the screen shows, straight from its endpoint.
+/// Reads the till's balance: the account whose `is_default` is true, from
+/// `GET /api/accounts`, which is where the figure lives since `T6` retired
+/// `/api/cash`.
+///
+/// The replacement is deliberately the *same number* by a different route: `0014`'s
+/// view sums what that endpoint used to sum, and `v3_t3_the_four_documents…` asserts
+/// the agreement directly, which is what made the retirement safe rather than a leap.
 async fn cash(client: &common::Client) -> rust_decimal::Decimal {
-    let response = client.get("/api/cash").await;
+    let response = client.get("/api/accounts").await;
     response.expect_status(axum::http::StatusCode::OK);
     let body = response.json();
-    rust_decimal::Decimal::from_str_exact(body["total"].as_str().expect("cash total string"))
-        .expect("cash total is a decimal")
+    let till = body
+        .as_array()
+        .expect("accounts array")
+        .iter()
+        .find(|a| a["is_default"].as_bool().unwrap_or(false))
+        .expect("exactly one account is the default");
+    rust_decimal::Decimal::from_str_exact(till["balance"].as_str().expect("balance string"))
+        .expect("balance is a decimal")
 }
 
 /// Refunds part of a sale through the API and returns the response, whatever
@@ -3230,11 +3251,19 @@ async fn v2_cash_nets_purchases_and_still_counts_sales(pool: sqlx::PgPool) {
             .expect("insert product");
 
     async fn cash(client: &common::Client) -> String {
-        let response = client.get("/api/cash").await;
+        // `T6` retired `/api/cash`; the till's balance is the default account's
+        // derived balance, and it is the same number by the same view.
+        let response = client.get("/api/accounts").await;
         response.expect_status(axum::http::StatusCode::OK);
-        response.json()["total"]
+        response
+            .json()
+            .as_array()
+            .expect("accounts array")
+            .iter()
+            .find(|a| a["is_default"].as_bool().unwrap_or(false))
+            .expect("a default account")["balance"]
             .as_str()
-            .expect("cash total is a decimal string")
+            .expect("balance string")
             .to_string()
     }
     fn cents(s: &str) -> i64 {
@@ -4096,11 +4125,19 @@ async fn v2_5_cash_adds_returns_back_and_still_counts_sales_and_purchases(pool: 
     let product = v2_5_product(&pool, "cash").await;
 
     async fn cash(client: &common::Client) -> String {
-        let response = client.get("/api/cash").await;
+        // `T6` retired `/api/cash`; the till's balance is the default account's
+        // derived balance, and it is the same number by the same view.
+        let response = client.get("/api/accounts").await;
         response.expect_status(axum::http::StatusCode::OK);
-        response.json()["total"]
+        response
+            .json()
+            .as_array()
+            .expect("accounts array")
+            .iter()
+            .find(|a| a["is_default"].as_bool().unwrap_or(false))
+            .expect("a default account")["balance"]
             .as_str()
-            .expect("cash total is a decimal string")
+            .expect("balance string")
             .to_string()
     }
     fn cents(s: &str) -> i64 {
@@ -5619,10 +5656,22 @@ async fn v3_t3_the_four_documents_move_money_with_the_right_sign(pool: sqlx::PgP
         "a credit note takes money OUT, and a balance may go negative"
     );
 
-    // `/api/cash` still agrees, and that is the point of the view: one definition.
-    let old_endpoint = client.get("/api/cash").await;
+    // The figure the retired `/api/cash` computed by hand, checked against the same
+    // arithmetic read straight from the documents. That agreement is what made the
+    // retirement safe: `T6` removed an endpoint whose number the view already
+    // reproduces, not one whose number changed.
+    let (hand_computed,): (rust_decimal::Decimal,) = sqlx::query_as(
+        "SELECT (COALESCE((SELECT SUM(total) FROM sales WHERE status = 'confirmed'), 0)
+               - COALESCE((SELECT SUM(total) FROM credit_notes), 0)
+               - COALESCE((SELECT SUM(total) FROM purchases), 0)
+               + COALESCE((SELECT SUM(total) FROM supplier_returns), 0))::numeric",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("hand-computed till");
     assert_eq!(
-        old_endpoint.body["total"], "-40.00",
+        hand_computed,
+        rust_decimal::Decimal::from_str_exact("-40.00").expect("decimal"),
         "the view must reproduce the figure /api/cash computed by hand"
     );
 }
@@ -6314,5 +6363,93 @@ async fn v3_t5_a_supplier_return_inherits_the_purchases_method(pool: sqlx::PgPoo
         balance_of(&client, cash).await,
         "0.00",
         "a return to the bank must not appear in the till"
+    );
+}
+
+// ── v3 T6: `/api/cash` is retired; the till is the default account ──────────
+
+#[sqlx::test]
+async fn v3_t6_the_cash_endpoint_is_gone(pool: sqlx::PgPool) {
+    // Retiring an endpoint is a contract change, and the test says so rather than
+    // leaving a stale caller to discover it: a request to the old path must not
+    // answer with a balance.
+    let client = common::client(pool.clone());
+    let gone = client.get("/api/cash").await;
+    assert_eq!(
+        gone.status(),
+        axum::http::StatusCode::NOT_FOUND,
+        "/api/cash was retired in T6; its figure now lives on /api/accounts"
+    );
+}
+
+#[sqlx::test]
+async fn v3_t6_the_till_is_the_default_account_not_every_sale(pool: sqlx::PgPool) {
+    // **The behaviour this task exists to change.** Before v3, a footer labelled
+    // "cash on hand" summed every confirmed sale and nothing else. Once a sale can
+    // name a bank transfer, that label is a lie: the sale happened, the money never
+    // reached the till.
+    let client = common::client(pool.clone());
+    let till = "00000000-0000-0000-0000-000000000003";
+
+    let account = client
+        .post(
+            "/api/accounts",
+            serde_json::json!({ "name": "banco-cobros" }),
+        )
+        .await;
+    let account_id = account.body["id"].as_str().expect("account id").to_string();
+    let method = client
+        .post(
+            "/api/payment-methods",
+            serde_json::json!({ "name": "cobro-transf", "account_id": account_id }),
+        )
+        .await;
+    let method_id = method.body["id"].as_str().expect("method id").to_string();
+
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "t6-probe", "list_price": "100.00" }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("product id").to_string();
+
+    // One sale into the till, one into the bank.
+    client
+        .post(
+            "/api/sales",
+            serde_json::json!({ "items": [{ "product_id": product_id, "quantity": 1 }] }),
+        )
+        .await;
+    client
+        .post(
+            "/api/sales",
+            serde_json::json!({
+                "items": [{ "product_id": product_id, "quantity": 1 }],
+                "payment_method_id": method_id
+            }),
+        )
+        .await;
+
+    // The till holds the first only; the bank holds the second.
+    assert_eq!(
+        balance_of(&client, till).await,
+        "100.00",
+        "the till must count only the money that reached it"
+    );
+    assert_eq!(balance_of(&client, &account_id).await, "100.00");
+
+    // And the footer's new source agrees with the till, not with "every sale".
+    let response = client.get("/api/accounts").await;
+    let accounts = response.body.as_array().expect("accounts array");
+    let defaults: Vec<&str> = accounts
+        .iter()
+        .filter(|a| a["is_default"].as_bool().unwrap_or(false))
+        .map(|a| a["name"].as_str().unwrap_or(""))
+        .collect();
+    assert_eq!(
+        defaults,
+        vec!["cash"],
+        "exactly one account is the till, so the footer has one number to show"
     );
 }

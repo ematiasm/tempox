@@ -139,7 +139,41 @@ export type CreditNote = {
   items: CreditNoteItem[];
 };
 
+/**
+ * The till's balance: the account the shop marked as its default.
+ *
+ * `/api/cash` is gone (`T6`). The figure is the same number by the same view, but it
+ * is now **one account's balance** rather than a hand-written sum — which is the
+ * point of v3: a sale paid by transfer no longer counts as money in the till, and
+ * that distinction was impossible to express while the endpoint hardcoded the
+ * arithmetic.
+ */
 export type Cash = { total: string };
+
+/**
+ * An account and the methods that point at it, as `GET /api/accounts` returns them.
+ *
+ * `balance` is **derived**: the sum of `money_movements` over all time, computed by
+ * the database. It is a two-decimal string like every other amount on the wire.
+ */
+export type AccountWithMethods = {
+  id: string;
+  name: string;
+  /** The shop's till. Exactly one account holds it, enforced by the database. */
+  is_default: boolean;
+  created_at: string;
+  balance: string;
+  methods: PaymentMethod[];
+};
+
+/** A payment method: the concrete thing a cashier picks, tied to one account. */
+export type PaymentMethod = {
+  id: string;
+  account_id: string;
+  name: string;
+  is_active: boolean;
+  created_at: string;
+};
 
 /** A shop day, as the server resolved it. */
 export type DayRange = {
@@ -234,7 +268,17 @@ export async function createSale(sale: NewSale): Promise<Sale & { items: SaleIte
 }
 
 export async function getCash(): Promise<Cash> {
-  return request<Cash>(new URL('/api/cash', base()));
+  const accounts = await request<AccountWithMethods[]>(new URL('/api/accounts', base()));
+  // Exactly one account is the default — enforced by the database, not by this
+  // filter. A client that picked the first row instead would show the wrong account
+  // the moment the shop has two.
+  const till = accounts.find((a) => a.is_default);
+  if (!till) {
+    // Not a fallback: with no default account there is no till to show, and inventing
+    // `0.00` would be a number nobody recorded.
+    throw new ApiError(500, 'no default account');
+  }
+  return { total: till.balance };
 }
 
 /**
