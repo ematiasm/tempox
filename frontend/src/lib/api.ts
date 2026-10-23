@@ -261,6 +261,11 @@ export type NewSaleLine = {
 export type NewSale = {
   /** Omitted means the server's seeded walk-in customer. */
   customer_id?: string;
+  /**
+   * Where the money went. Omitted means the seeded `cash` method — the same thing
+   * an older client sends by leaving it out, which is what keeps the field additive.
+   */
+  payment_method_id?: string;
   items: NewSaleLine[];
 };
 
@@ -273,6 +278,9 @@ export async function createSale(sale: NewSale): Promise<Sale & { items: SaleIte
   // Omitted, not null: the server distinguishes "no customer" (walk-in) from
   // "an unknown customer id" (404).
   if (sale.customer_id) body.customer_id = sale.customer_id;
+  // Same rule for the destination: omitted means the server's default, and an
+  // unknown id is a 404 rather than a null the server would have to interpret.
+  if (sale.payment_method_id) body.payment_method_id = sale.payment_method_id;
   return request<Sale & { items: SaleItem[] }>(new URL('/api/sales', base()), json('POST', body));
 }
 
@@ -299,6 +307,11 @@ export async function patchAccount(
   patch: { name?: string; is_default?: boolean }
 ): Promise<Omit<AccountWithMethods, 'methods' | 'balance'>> {
   return request(new URL(`/api/accounts/${id}`, base()), json('PATCH', patch));
+}
+
+/** Every method, active or not. A ledger rendering an old document needs a retired one. */
+export async function listPaymentMethods(): Promise<PaymentMethod[]> {
+  return request<PaymentMethod[]>(new URL('/api/payment-methods', base()));
 }
 
 export async function createPaymentMethod(name: string, accountId: string): Promise<PaymentMethod> {

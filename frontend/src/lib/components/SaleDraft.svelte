@@ -12,8 +12,10 @@
   import {
     createSale,
     listCustomers,
+    listPaymentMethods,
     findOrCreateCustomer,
     type Customer,
+    type PaymentMethod,
     type Product
   } from '#lib/api.js';
   import { formatMoney, lineTotalAmount, parseAmount, parseQuantity } from '#lib/money.js';
@@ -59,6 +61,17 @@
   let lines = $state<Line[]>([]);
   let customers = $state<Customer[]>([]);
   let customerId = $state<string>('');
+  /**
+   * The methods the counter can offer, and the one chosen.
+   *
+   * Empty `paymentMethodId` means "the server's default", which is the seeded cash
+   * method — the same thing an older client sends by omitting the field. Only
+   * **active** methods are offered: `is_active` is a picker concern by design, and
+   * the API would accept an inactive one, which is exactly why the screen is where
+   * a retired method must disappear.
+   */
+  let methods = $state<PaymentMethod[]>([]);
+  let paymentMethodId = $state<string>('');
   let submitting = $state(false);
   let error = $state<string | null>(null);
   /** Set when a name already existed and was selected instead of created (S7). */
@@ -83,6 +96,20 @@
       })
       .catch(() => {
         /* The form still works without the list: the server defaults to walk-in. */
+      });
+  });
+
+  $effect(() => {
+    listPaymentMethods()
+      .then((list) => {
+        // Active only, and the seeded cash first: it is the default and the common
+        // case at a counter, so it must not sit wherever the alphabet puts it.
+        methods = list
+          .filter((m) => m.is_active)
+          .sort((a, b) => (a.name === 'cash' ? -1 : b.name === 'cash' ? 1 : 0));
+      })
+      .catch(() => {
+        /* The form still works without the list: the server defaults to cash. */
       });
   });
 
@@ -173,6 +200,7 @@
     try {
       const sale = await createSale({
         customer_id: customerId || undefined,
+        payment_method_id: paymentMethodId || undefined,
         items: complete.map((l) => ({
           product_id: l.product.id,
           quantity: l.quantity,
@@ -236,6 +264,20 @@
       <select class="control" id="customer" bind:value={customerId}>
         {#each customers as c (c.id)}
           <option value={c.id}>{c.name === 'walk-in' ? lang.t.sales_walkin : c.name}</option>
+        {/each}
+      </select>
+    </div>
+    <div class="field">
+      <!-- Where the money went. It sits beside the customer because they are the two
+           questions a sale asks about context rather than about goods, and omitting it
+           means the seeded cash method — the default the server already applies, so a
+           cashier who never touches this control records exactly what they did before
+           v3 did. Only active methods are listed: a retired one must not be offered. -->
+      <label class="label" for="method">{lang.t.sales_method}</label>
+      <select class="control" id="method" bind:value={paymentMethodId}>
+        <option value="">{lang.t.sales_method_default}</option>
+        {#each methods as m (m.id)}
+          <option value={m.id}>{m.name}</option>
         {/each}
       </select>
     </div>

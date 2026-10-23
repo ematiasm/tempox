@@ -1,5 +1,6 @@
 <script lang="ts">
   import { lang } from '#lib/i18n/index.svelte.js';
+  import { formatMoney } from '#lib/money.js';
   import {
     ApiError,
     createAccount,
@@ -201,7 +202,12 @@
                   </button>
                 {/if}
 
-                <span class="figure">{account.balance}</span>
+                <!-- Formatted, not the raw wire string. The balance arrives as
+                     `0.00`; every other money figure in this app renders through the
+                     active language, and a screen that printed the wire form would be
+                     the one place `$ 1.234,56` became `1234.56`. The e2e caught it
+                     because it asserts what a person reads, not what the API returns. -->
+                <span class="figure">{formatMoney(account.balance)}</span>
               </div>
 
               <div class="methods">

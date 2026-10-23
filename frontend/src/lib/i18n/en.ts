@@ -31,6 +31,7 @@ const en: Dict = {
   accounts_write_failed: 'The change could not be saved',
   accounts_till_hint: 'Sales that do not pick a method go to this account',
   accounts_method_belongs: (account: string) => `Belongs to ${account}`,
+  sales_method_default: 'Cash (default)',
   sales_method: 'Method',
   purchases_method: 'Method',
   nav_sales: 'Sales',
