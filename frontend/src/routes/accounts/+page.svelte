@@ -26,6 +26,20 @@
   // shop's default account. The alternative was to leave the operation API-only,
   // which hides a real job behind curl. The risk is named on the button's hint rather
   // than discovered later.
+  //
+  // **One account is never offered the till, and it is not a rule this file invents.**
+  // The seeded `credit` account holds what customers owe; the server refuses to make
+  // it the default (a `409` from `0016` and the pre-check in `accounts.rs`), because
+  // `is_default` is what `getCash()` reads while an omitted-method sale still posts to
+  // cash — so promoting it would make the counter show the debt balance as the shop's
+  // money. Offering a button whose only outcome is `accounts_write_failed (409)` is
+  // the affordance defect `PRODUCT.md` names, so the button is withheld instead.
+  //
+  // Keyed by `is_default === false` plus the seeded name rather than by id: the screen
+  // has no reason to know ids it never sends, and the name is unique across the table.
+  function isDebtAccount(account: AccountWithMethods): boolean {
+    return account.name === 'credit';
+  }
   let accounts = $state<AccountWithMethods[] | null>(null);
   let error = $state<string | null>(null);
   let busy = $state<string | null>(null);
@@ -204,7 +218,7 @@
 
                 {#if account.is_default}
                   <span class="tick">{lang.t.accounts_is_default}</span>
-                {:else}
+                {:else if !isDebtAccount(account)}
                   <button
                     class="link"
                     title={lang.t.accounts_till_hint}

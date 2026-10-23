@@ -90,3 +90,34 @@ test('a sale paid by transfer lands in that account, not in the till', async ({ 
   // `v3_t6_the_till_is_the_default_account_not_every_sale`, each against a database
   // that test owns alone.
 });
+
+/**
+ * The debt account is seeded, and the screen must not offer to make it the till
+ * (`odd/tasks/v3-seed-identities.md` S3, T5).
+ *
+ * The server refuses the promotion with a 409 since `0016` and the `accounts.rs`
+ * pre-check, so this is not a safety net — it is the difference between a screen that
+ * offers an impossible action and one that does not. Measured before this spec: the
+ * button was rendered for `credit` and clicking it produced `accounts_write_failed (409)`
+ * on a screen where nothing else had ever failed.
+ *
+ * Asserted by name, which is safe here for a reason the other specs do not have: a
+ * second account called `credit` cannot exist — the seeded name is unique across the
+ * table, and this spec creates nothing.
+ */
+test('the seeded debt account is never offered as the till', async ({ page }) => {
+  await page.goto('/accounts');
+
+  const creditRow = page.locator('li.row', { hasText: 'credit' });
+  await expect(creditRow).toHaveCount(1);
+
+  // The account exists and is a destination like any other: renaming and attaching a
+  // method stay offered. What is withheld is the promotion.
+  await expect(creditRow.getByRole('button', { name: 'Renombrar' })).toBeVisible();
+  await expect(creditRow.getByRole('button', { name: 'Marcar como caja' })).toHaveCount(0);
+
+  // And the till still says so about itself, so the absence above cannot be read as
+  // "the screen stopped offering promotion to anyone".
+  const cashRow = page.locator('li.row', { hasText: 'cash' });
+  await expect(cashRow).toContainText('Caja del negocio');
+});
