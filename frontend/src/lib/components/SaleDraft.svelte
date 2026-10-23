@@ -72,6 +72,8 @@
    */
   let methods = $state<PaymentMethod[]>([]);
   let paymentMethodId = $state<string>('');
+  /** A failed method read: the picker falls back to the server's default and says so. */
+  let methodsFailed = $state(false);
   let submitting = $state(false);
   let error = $state<string | null>(null);
   /** Set when a name already existed and was selected instead of created (S7). */
@@ -109,7 +111,12 @@
           .sort((a, b) => (a.name === 'cash' ? -1 : b.name === 'cash' ? 1 : 0));
       })
       .catch(() => {
-        /* The form still works without the list: the server defaults to cash. */
+        // The form still works: the server defaults to cash, and an empty picker
+        // records exactly what a cashier did before v3. But a silent `catch` here
+        // would leave the control showing only its "default" entry with no hint why,
+        // so a failed read is said out loud rather than swallowed. It is not a page
+        // error: the sale can still be recorded.
+        methodsFailed = true;
       });
   });
 
@@ -280,6 +287,9 @@
           <option value={m.id}>{m.name}</option>
         {/each}
       </select>
+      {#if methodsFailed}
+        <p class="method-hint" role="status">{lang.t.sales_method_failed}</p>
+      {/if}
     </div>
   </div>
 
@@ -485,6 +495,15 @@
     display: grid;
     gap: 6px;
     min-width: 0;
+  }
+
+  /* A failed method read: quiet, in the pending tone, next to the control it
+     affects. It reports a degraded state rather than an error, because the sale
+     can still be recorded. */
+  .method-hint {
+    margin: 0;
+    color: var(--state-pending);
+    font-size: var(--step--1);
   }
   .picker-wrap {
     position: relative;

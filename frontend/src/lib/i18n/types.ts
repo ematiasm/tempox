@@ -40,6 +40,7 @@ export interface Dict {
   accounts_write_failed: string;
   accounts_till_hint: string;
   accounts_method_belongs: (account: string) => string;
+  sales_method_failed: string;
   sales_method_default: string;
   sales_method: string;
   purchases_method: string;

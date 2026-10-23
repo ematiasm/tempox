@@ -40,6 +40,7 @@ const es: Dict = {
   accounts_write_failed: 'No se pudo guardar el cambio',
   accounts_till_hint: 'Las ventas que no eligen un medio van a esta cuenta',
   accounts_method_belongs: (account: string) => `Pertenece a ${account}`,
+  sales_method_failed: 'No se pudieron leer los medios: la venta va a Caja',
   sales_method_default: 'Caja (por defecto)',
   sales_method: 'Medio',
   purchases_method: 'Medio',
