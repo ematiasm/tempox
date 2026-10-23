@@ -4,8 +4,13 @@ use serde::Serialize;
 use sqlx::FromRow;
 use uuid::Uuid;
 
-/// A sale header — an immutable event. Corrections are reversals, never edits.
-/// `status` moves toward the lifecycle draft -> confirmed -> cancel -> done.
+/// A sale header — an immutable event. Corrections are credit notes, never edits.
+///
+/// **No `status`, no `reversed_at`.** v1 reserved them for a lifecycle that never
+/// happened: nothing but the column default ever wrote either, and `0015` dropped
+/// them. An annulment is derived from the credit notes and from nothing else —
+/// exactly as it already was for `purchases`, `credit_notes` and `supplier_returns`,
+/// where "the row exists" and "it counts" are one statement.
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct Sale {
     pub id: Uuid,
@@ -27,7 +32,5 @@ pub struct Sale {
     pub payment_method_id: Uuid,
     #[serde(rename = "payment_method_name")]
     pub payment_method_name: String,
-    pub status: String,
-    pub reversed_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
 }

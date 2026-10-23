@@ -352,11 +352,6 @@
     else expanded.add(id);
   }
 
-  /** A cancelled sale is struck through, never crimson: it is a correction, not an alarm. */
-  function isAnnulled(row: SaleListItem) {
-    return row.status === 'cancel' || row.reversed_at !== null;
-  }
-
   /**
    * How much of each line has already come back, keyed by sale-line id.
    *
@@ -409,7 +404,10 @@
         // shop kept, so a partly refunded sale contributes its net: 100.00 sold
         // with 30.00 returned moved 70.00 through the till, not 100.00.
         refunded: row.credit_notes.reduce((sum, note) => sum + Number(note.total), 0).toFixed(2),
-        counts: !(isAnnulled(row) || isFullyRefunded(row))
+        // A fully refunded sale contributes nothing to the running balance. This
+        // read `isAnnulled(row) || isFullyRefunded(row)`, where the first was an
+        // alias of the second: one question, two names (`R3-003`).
+        counts: !isFullyRefunded(row)
       }))
     );
     // `SvelteMap`, not `Map`: the column must recompute when the day reloads.
@@ -645,6 +643,7 @@
               <th scope="col">{lang.t.sales_time}</th>
               <th scope="col">{lang.t.sales_sale}</th>
               <th scope="col">{lang.t.sales_customer}</th>
+              <th scope="col">{lang.t.sales_method}</th>
               <th scope="col">{lang.t.sales_status}</th>
               <th scope="col" class="num">{lang.t.sales_total}</th>
             </tr>
@@ -652,7 +651,7 @@
           <tbody>
             {#each rows as row (row.id)}
               {@const open = expanded.has(row.id)}
-              {@const annulled = isAnnulled(row) || isFullyRefunded(row)}
+              {@const annulled = isFullyRefunded(row)}
               <!-- The whole row is the control. The chevron used to be the only
                  thing that opened a document, which means aiming a mouse at a
                  12px triangle — on a shop PC, several times an hour. A row is
@@ -722,15 +721,25 @@
                 <td class="customer" class:walkin={row.customer_name === 'walk-in'}>
                   {row.customer_name === 'walk-in' ? lang.t.sales_walkin : row.customer_name}
                 </td>
+                <!-- Where the money went. Since v3 a sale can name a bank transfer,
+                   and a ledger that showed only the amount would make two sales of
+                   the same size indistinguishable while one reached the till and the
+                   other never did. The name is the server's join, not a snapshot, so
+                   a rename corrects old rows instead of freezing a typo. -->
+                <td class="method">{row.payment_method_name}</td>
                 <td>
-                  {#if isAnnulled(row)}
-                    <Stamp label={lang.t.sales_annulled} tone="annulled" />
-                  {:else if isFullyRefunded(row)}
-                    <!-- A sale that came back whole is not an annulment: nothing
-                       was wrong with it, the customer returned the goods. It
-                       says so, because the two need different follow-ups: one
-                       is a mistake to investigate, the other is a normal
-                       return. Both contribute nothing to the day. -->
+                  {#if isFullyRefunded(row)}
+                    <!-- A sale that came back whole is not an annulment: nothing was
+                       wrong with it, the customer returned the goods. It says so,
+                       because the two need different follow-ups — one is a mistake to
+                       investigate, the other is a normal return. Both contribute
+                       nothing to the day.
+
+                       This branch used to be the SECOND of two, behind
+                       a branch reading `status === 'cancel'`: a state
+                       nothing could ever enter. With the lifecycle dropped (`0015`)
+                       that first branch would have shadowed this one and labelled every
+                       return "Anulada", which is what the e2e caught. -->
                     <Stamp label={lang.t.sales_refunded_state} tone="annulled" />
                   {:else}
                     <Stamp label={lang.t.sales_confirmed} />
@@ -1270,6 +1279,14 @@
   }
   .chev.open {
     transform: rotate(90deg);
+  }
+
+  /* The destination, quieter than the customer and the amount: it explains a figure
+     rather than competing with it, and it is short by nature (one method's name). */
+  .method {
+    color: var(--ink-soft);
+    font-size: var(--step--1);
+    white-space: nowrap;
   }
 
   .customer {

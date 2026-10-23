@@ -18,9 +18,18 @@ destination column at all.
 
 ## Specs
 
-The `is_default` flag is configuration, not authorization. `POST` and `PATCH`
-account writes may set it; PATCH can unset it on a different row; the partial unique
-index guarantees at most one true. The seeded cash account is the default till.
+The `is_default` flag is configuration, not authorization. The partial unique index
+guarantees at most one true, and a deferrable constraint trigger guarantees exactly one
+at commit. The seeded cash account is the default till.
+
+**A new account is never born the default.** `POST /api/accounts` refuses
+`is_default: true` with a 400; the supported path is create, attach a method, then
+promote through `PATCH`. This corrects an earlier statement of the same rule ("POST and
+PATCH may set it"), which the implementation could not satisfy: a freshly inserted
+account has no payment methods, so `guard_new_default_account_has_active_method` refuses
+it, and the refusal surfaced as a **500** until it was made a 400. The wording was
+aligned to what the rule actually is rather than the route made to accept a flag that
+can never succeed.
 
 
 S1 a payment method belongs to **exactly one** account; an account has zero or
@@ -381,13 +390,13 @@ with no other change competing for attention (L49).
 | ID | Task | Specs | Route | Status | Commit |
 |---|---|---|---|---|---|
 | T1 | Migrations `0012` (accounts, payment methods, seeds, guards) and `0013` (four destinations, backfill, drop of `sales.payment_method`) | S1–S5, S8a, S14 | inline | done | `050779b` |
-| T0 | `GET`/`POST /api/accounts` and `GET`/`POST /api/payment-methods`, plus `PATCH` for name, `is_active` and `is_default`; account creation may set `is_default`; PATCH can set it or unset it on another account; at most one true (partial unique index); 409 on duplicate name, 400 on blank (trimmed first). Depends on T1 — it writes the tables T1 creates | S2, S3, S3a, S4 | inline | pending | — |
+| T0 | `GET`/`POST /api/accounts` and `GET`/`POST /api/payment-methods`, plus `PATCH` for name, `is_active` and `is_default`; **creation refuses `is_default`** (a new account has no method to make it legal) and promotion happens through `PATCH`, which clears the old default in the same transaction; 409 on duplicate name, 400 on blank (trimmed first). Depends on T1 | S2, S3, S3a, S4 | inline | done | `b260b1b` |
 | T3 | Migration `0014`: `VIEW money_movements` + derived `balance` on `GET /api/accounts` | S4, S6–S8 | inline | done | `da53a17` |
 | T4 | Sales write path and flat wire (S6b): `payment_method_id` + `payment_method_name` side by side at the top level, resolved by join (never `account_id`, never a name column, never a nested object), picker defaults to an active method belonging to the `is_default` account; API accepts inactive methods; enforce S9 walk-in guard | S4, S5, S6b, S8, S9 | inline | pending | — |
 | T5 | Purchases write path (same flat wire as T4), plus inheritance in credit notes (with override) and supplier returns; reject the `credit` method on purchases in the write path | S5, S6b, S9b, S10 | inline | pending | — |
-| T6 | Retire `/api/cash`; the footer reads the default account's derived balance from `/api/accounts` | S8, S13 | inline | done | `6d96958` |
-| T7 | Frontend: `/accounts` screen, method column in both ledgers, annulment derived from notes only | S12 | inline | pending | — |
-| T8 | i18n both dictionaries, `architecture.md`/`PRODUCT.md`/`PLAN.md`, e2e over a sale on a non-cash method | S18, S19 | inline | pending | — |
+| T6 | Retire `/api/cash`; the footer reads the default account's derived balance from `/api/accounts` | S8, S13 | inline | done | `6d96958` + `8cc6e73` |
+| T7 | Frontend: `/accounts` screen (5 write actions), rail + v3 chip, method column in both ledgers, `Sale`/`Purchase` migrated to the flat wire, i18n both languages | S6b, S12 | inline | done | `b4a64c5` + `2ff3e44` |
+| T8 | `architecture.md` API table + invariants for the final schema, README, sale method picker, e2e over a non-cash sale | S18, S19 | inline | done | `6d99bf3` |
 | T2 | **Closing commit, alone, after T8.** Migration `0013`: drop `status`/`reversed_at` with pre-check, re-cut `guard_sale_economics`. Risk item 1 — destructive over immutable history | S11 | inline | pending | — |
 
 Deferred work with its reason, so it is not rediscovered as a surprise:
@@ -1093,3 +1102,275 @@ is therefore **open but not stranded** — it was created against the correct ba
 amended, so it can still be run later as-is. Recorded so a future session does not read
 an unapproved candidate as approved: T5's code has 5 tests and 4/4 mutations, and no
 independent review.
+
+L84 (correction, 2026-10-23, found by the owner asking whether T0 needed review): **T0's
+correction was reviewed after all**, and `L63` overstated its absence. `T3`'s candidate
+(`da53a17`, reviewed as `review-c7b8c2e2b27cb95a`) had `b260b1b` as its base and its
+changed paths **included `backend/src/routes/accounts.rs`** — the file carrying the
+`R3-001` fix. A reviewer read the corrected handler in a 478-line candidate and approved
+it. Not a dedicated review of the fix, but the independent look `L63` claimed was missing.
+No further review of T0 is warranted; a transaction spent on it would re-read what T3
+already read.
+
+L85 (correction, 2026-10-23, and this one is a real inconsistency the owner's question
+exposed): **the `R3-001` fix contradicted the spec, and the spec was silently wrong.**
+`S8a` and T0's row said "POST and PATCH account writes may set `is_default`"; the fix
+made `POST` refuse it with a 400. The reasoning behind the fix is sound — a new account
+has no methods, so the schema's guard refuses it — but the honest conclusion was that
+**the rule had been stated wrongly**, not that the route should keep accepting a flag
+that can never succeed. The spec now says what the rule is: an account is never born the
+default; it is promoted through `PATCH` after a method is attached.
+
+The interesting part is why review could not catch it: the reviewer reads code against
+the intent declared **in the code**, and the fix's own comment explains itself well. What
+was broken was the link between the code and `S8a`, which only a human asking "does this
+match what we wrote?" surfaces. That is the fourth instance of this slice's pattern — a
+rule and its enforcement drifting apart — and the first where the drift was in the
+spec rather than in the tests.
+
+L86 (state, 2026-10-23, T7 reviewed and approved): lineage `review-43a6174dd97e78fb`
+isolated against T6's close (9 files, 707 lines, frontend only) returned `approved`
+with two lenses and four advisory findings; authority burned.
+
+L87 (defect, 2026-10-23, found by review as `R3-001` and fixed): **the accounts panel
+said the opposite of what was happening.** It distinguished only `accounts === null`,
+which is true while loading AND after a failure, so one ternary had to guess and
+guessed wrong in both directions — a failed read rendered "no accounts yet", a lie
+about the shop's data, and a load rendered "could not read", a lie about a request
+that had not finished. A `reading` flag separates the three states. Fixed as
+`2ff3e44`, with the new `accounts_loading` string in both dictionaries.
+
+L88 (advisory, 2026-10-23, recorded and deliberately not fixed): `R1-ungated-till-move`
+and `R3-002` both point at the same thing — the button that moves the shop's till has
+no confirmation step. The reviewer is right that it is one click and no undo prompt.
+It is not a defect in what the operation *does*: the server guards it, and moving the
+till back is a symmetric operation. A confirm step is a design decision for that
+screen, and the risk is already named in the component's comment and on the button's
+hint. Carried with the other advisories.
+
+L89 (observation, 2026-10-23, the slice's review record so far): six reviewed
+candidates, six verdicts — T1 (two critical), T0 (one critical), T3 clean, T4 clean,
+T7 clean with one real defect in the advisory set, T5 deferred by the owner. Every
+critical finding was a concurrency rule or a surface no test exercised; every clean
+pass had its mutations run first. The two are complements, not substitutes.
+
+L90 (state, 2026-10-23, T6 reviewed and approved): lineage `review-3a3880749c9d0fa1`
+isolated against T5's close (13 files, 1116 lines) returned `approved` with two lenses
+and four advisory findings; authority burned. The candidate was the largest isolated
+review of the slice because it rewrote twelve backend call sites and two on the client.
+
+L91 (what the reviewers did NOT dispute, and it was the point of asking): the
+equivalence assertion that justified the retirement — the view reproduces exactly the
+figure `/api/cash` computed by hand — survived review. That was the one argument in T6
+written by me and load-bearing for the whole change, and its correctness was the reason
+removing a daily endpoint was safe rather than a guess.
+
+L92 (advisory, 2026-10-23, T6's four, recorded and not fixed): `R1-001` and `R3-001`
+point at the accounts screen's error path — the same surface T7's own review flagged;
+`R3-002` and `R3-003` are suggestions about `reload()` and a test detail. None blocks.
+
+L93 (state, 2026-10-23, T8 done): `architecture.md` documents the six account/method
+routes with their real codes, the destination on all four documents, the view, the
+deferred default constraint, and the two credit rules; its invariants section is written
+for the **final** schema, so T2 executes what the doc already claims. README gained v3
+and stopped promising `/api/cash`. The sale draft gained a method picker — T4 built the
+API field and nothing at the counter could reach it. 22 e2e green including a new one.
+
+L94 (two real defects the e2e found, and this is the argument for the level existing):
+1. **The accounts screen printed the raw wire string.** `{account.balance}` rendered
+   `0.00` where every other money figure in the app goes through `formatMoney` and reads
+   `$ 0,00`. A screen that skips the formatter is the one place `$ 1.234,56` becomes
+   `1234.56`. Fixed by formatting it.
+2. **`SaleDraft` had no method picker at all.** T4 built `payment_method_id`, the server
+   accepted it, the tests exercised it — and the counter had no control to set it. The
+   whole slice's central claim was unreachable from the screen it exists for.
+
+Neither defect was visible to 91 integration tests, 232 unit tests, six native reviews,
+or mutation runs, because all of them test the layer they were written for. The e2e is
+the only level that asserts what a person does with the app and reads off it.
+
+L95 (note, 2026-10-23, the shape of T8's own mistake): the first version of the spec
+looked for a picker labelled "Medio de pago", a `data-sale-id` that does not exist, and
+passed `money('0')` where the helper needs a full `0,00`. Three assumptions about the DOM,
+each caught by running it rather than reading it.
+
+L96 (state, 2026-10-23, T8 reviewed and approved): lineage `review-3ba92a34518f8ecc`
+(10 files, 202 lines) approved with two lenses and three advisory warnings, authority
+burned. Three of its warnings were real and two are fixed in `3409a1b`.
+
+L97 (lesson, 2026-10-23, and it cost three attempts): **a shared resource cannot carry
+an assertion about one spec's activity.** T8's e2e claimed the till did not receive the
+transfer sale, and every phrasing failed for a different honest reason:
+`not.toHaveText(total)` is blind to a coincidental match; an absolute `$ 0,00` failed
+because the suite shares one database and a purchase spec had left the till at
+`-$ 30,00`; a before/after comparison failed because **Playwright runs specs
+concurrently** and another worker changed the figure between the two reads. Nothing in
+`playwright.config.ts` sets `workers`, so the default applies.
+
+The claim moved to where a database belongs to one test. What the e2e keeps is the
+part that is exclusive to it: the account it created, and the method the ledger shows.
+The lesson generalises past this spec — an assertion is only as good as the isolation
+of the thing it measures, and the e2e level has almost none.
+
+L98 (fix, 2026-10-23, R3-002): a failed method read in `SaleDraft` was swallowed by an
+empty `catch`, leaving the picker with only its default entry and no hint why. It now
+reports the degraded state in the pending tone, because the sale can still be
+recorded — the difference between "this control is unusable" and "the page failed".
+
+L99 (state, 2026-10-23, **T2 done — v3 is closed**): `0015_drop_sale_lifecycle.sql`
+drops `sales.status` and `sales.reversed_at`, recreates `money_movements` without the
+`confirmed` predicate, and re-cuts `guard_sale_economics` to the three columns that
+remain. The migration asserts its own safety: per-account totals captured before the
+drop and compared after, refusing if any figure moved; and two pre-checks that refuse
+rather than erase a fact if any row still used the lifecycle. Suite at 91 integration
++ 50 unit, 232 frontend unit, 22 e2e. The mutation on the pre-check bites: with one
+`draft` row planted, the guard raises; with `IF false`, it does not.
+
+L100 (three failures on the way, all measured — the T2 version of the slice's habit):
+1. **`money_movements` depends on `sales.status`**, so PostgreSQL refused the drop with
+   `cannot drop column status of table sales because other objects depend on it`. Found
+   by asking `pg_depend` which objects referenced the column, not by guessing. The view
+   must be recreated *before* the `DROP`, in the same transaction.
+2. **`CREATE OR REPLACE VIEW` refuses a column rename.** The first rewrite omitted the
+   aliases, and PostgreSQL took the first branch's third column to be named `text`.
+3. **`UPDATE sales SET total = total` does not fire the guard at all.** PostgreSQL skips
+   rewriting a row when nothing changes, so the assertion "no column is writable" passed
+   for the wrong reason until the update actually changed a value.
+And one the e2e caught: with the dead `status === 'cancel'` branch removed, every
+returned sale started rendering "Anulada" instead of "Devuelta", because the branch that
+was second had been shadowed. The rendering now checks the return first.
+
+L101 (closing note, 2026-10-23): v3 is complete — nine tasks, eight reviewed and
+approved (T5's review was deferred by the owner and its authority is still open), and
+every task's mutations run before its review. The slice's own record of what it cost:
+three review transactions found real critical defects in T1 and one in T0, T7's review
+found a real defect in an advisory, and the e2e found two more that no other level
+could see. Nothing in that list was found by the same tool twice.
+
+L102 (state, 2026-10-23, **T2 reviewed and approved — v3's last candidate**): lineage
+`review-7e0f9995b2616e0d` isolated against T8's close with **three lenses** (risk,
+resilience, reliability), 13 files, 1023 lines. `approved`, four advisory findings,
+authority burned. This is the first candidate to carry `resilience`, added because this
+migration is the one that asserts its own safety — behaviour under failure is exactly
+what that lens reads.
+
+L103 (three warnings fixed in `d27cbe7`, all of the kind that rots quietly):
+- `R3-001`: the totals snapshot was an unguarded `CREATE TEMP TABLE`. A TEMP table
+  lives for the session, so a retry within one connection fails on the name — the shape
+  of `0009`'s re-run defect. Guarded with `DROP IF EXISTS`.
+- `R3-002`: the "no writable column" assertion accepted **any** error. It had already
+  been caught once passing for the wrong reason; the fix then used `total + 0.01`,
+  which is still whole cents, but the assertion still did not say why it failed. It now
+  requires the message to come from the sale guard.
+- `R3-003`: `isAnnulled` had become a pure alias of `isFullyRefunded` and every call
+  site ORed the two — one question under two names. The alias is gone.
+
+L104 (the slice's review ledger, complete): **nine candidates, seven approved, one
+deferred by the owner (T5), and this one.** T1 needed three transactions because the
+first two each found a real critical defect; T0, T3, T4, T6, T7, T8 and T2 each closed
+in one. Across all of them: 3 critical defects found by review (two in T1, one in T0),
+2 real defects found by the e2e, 1 spec/code contradiction found by the owner asking a
+question, and roughly a dozen weakened assertions found by mutation. No defect was ever
+found twice by the same tool.
+
+L105 (state, 2026-10-23, **T5 reviewed, approved, and NOT sealed — with the reason
+measured rather than guessed**): lineage `review-6d889c5d6ea7253d` was resumed from its
+deferral, ran both lenses, and returned `approved`. The acknowledgement then failed with
+`native-approved-acknowledgement-not-current`, and the cause is mechanical: the frozen
+target was `e77b2c9` (T5 alone, 9 files), while the workspace had advanced 15 commits to
+`eb6b2bd` (30 files) with T6, T7, T8 and T2 on top. **A seal means "this, exactly this,
+was reviewed", so it cannot certify a tree that is no longer the current one.** The
+alternative the provider offered — a new lineage over the whole branch — was tried and
+refused with `lens_context_budget_exceeded`, no authority created. This is not a process
+defect: it is the order. T5 was deferred while it was HEAD and reviewed after four tasks
+had landed on it.
+
+L106 (what the approval is still worth): the review judged T5's code against T5's tree,
+which is the thing it was asked to judge, and found no blocking issue. What is missing is
+the receipt, not the judgement. The distinction is recorded so a future session does not
+read T5 as unexamined — and does not read it as sealed either.
+
+L107 (**debt named for the collections slice**, measured): T5's one advisory,
+`R1-credit-note-cash-override-no-settlement-check`, is a real hole and it belongs to the
+slice that will own `customer_collections`, not to v3.
+
+The code accepts any explicit note method except the credit account
+(`sales.rs`, the `note_method` block). Nothing asks whether the sale was ever paid. So:
+
+```
+sale on credit, 100.00, never collected      credit +100.00   cash   0.00
+refund naming `cash` (nobody paid anything)  credit +100.00   cash -100.00
+```
+
+Reproduced end to end against a migrated database: the refund returned **201**, the till
+went to **−100.00**, and the debt stayed at **+100.00**. The shop paid a customer who had
+not paid it, and still believes it is owed the money.
+
+v3 cannot fix this because v3 has no notion of "this sale was collected" — that is what
+`customer_collections` introduces. The requirement for that slice is therefore explicit:
+**an explicit method on a credit note must be checked against the sale's settlement
+state**, and the check belongs beside the existing "a note may not target the debt
+account" rule, which enforces the mirror case. Until then the hole is reachable through
+the API and not through the screen: the UI never offers a method override on a refund.
+
+L108 (state, 2026-10-23, **three review lineages left open on purpose, and the decision
+recorded rather than the tidiness**): the inventory holds three authorities bound to
+candidate hashes that no longer exist —
+
+| lineage | froze | what killed it |
+|---|---|---|
+| `review-7e70748cd932714a` | `0d4e6006…` | `R3-001` fixed with `--amend` |
+| `review-a9a0b92eff7cdae1` | `af5db1a8…` | the second correction, same cause |
+| `review-2b406848e8df8fdd` | `247c13fe…` | T0's fix, same cause |
+
+The cause is one line and is already `L64`: **correcting with `--amend` after a review
+has opened authority**. Each one is in `correction_required` waiting for a correction
+plan that names a target which cannot be reconstructed, so no binding can satisfy it —
+tried twice, rejected with `capture-binding-rejected` both times.
+
+**The owner decided to leave them open.** The reasoning is worth keeping because it is
+the answer to a question that will be asked again: closing them improves nothing
+objective. All three reviewed trees that no later foundation used; their findings were
+fixed and re-reviewed in the transactions that did close. `ABANDON` would need three
+interactive approvals for an internal store, and `RECOVER` would open a live authority
+over the current tree — which the provider has already refused twice for context budget.
+A stranded receipt is a record, not a hazard, and it is reported here rather than
+silently cleaned.
+
+L109 (closing, 2026-10-23): v3 is complete. Nine tasks, nine reviews, eight sealed. The
+one unsealed review (T5) is unsealed because of **order, not quality** — it was deferred
+while it was HEAD and reviewed after four tasks had landed on it (`L105`). Its single
+real finding is reproduced and handed to the collections slice as a requirement
+(`L107`). What the slice leaves behind: 91 integration tests, 50 backend unit tests, 232
+frontend unit tests, 22 e2e, five migrations, and a system where a sale can name a bank
+transfer and the till stops claiming money it never received.
+
+L110 (delivery, 2026-10-23, **the branch is published and chained**): `feat/v3-accounts`
+was pushed to `origin` as the backup that did not exist, then split into a **two-PR
+chain**, both open and both 4/4 green on CI:
+
+| PR | base | head | budget |
+|---|---|---|---|
+| **#80** backend (T1, T0, T3, T4, T5, T6) | `main` | `feat/v3-backend` | 5 585 / 400 — `size:exception` |
+| **#81** frontend, e2e and the closing drop (T7, T8, T2) | `feat/v3-backend` | `feat/v3-frontend-close` | ~1 630 / 400 — `size:exception` |
+
+#81's base is a branch, and **CI ran on it** — the defect `#42`/`#76` cost, now fixed.
+
+L111 (why two PRs and not nine, recorded because the first plan was nine): nine
+task-sized PRs were planned and **rejected for an honest reason**. The commit history is
+ordered by task, but the ODD decision log is ordered by when decisions happened, so
+`414db30` (T0's spec correction) and `41e67b2` (T6's approval) sit after the natural
+split point. Grouping the log per task would mean **rewriting content in commits already
+reviewed and sealed**, which destroys the correspondence the receipt certifies. Two PRs
+keep the history untouched and simply declare which docs travel in the second one. The
+`size:exception` is structural: the log is 1 364 lines that ship with the code they
+explain, and `T1` alone is 2 221 lines of migrations and guards.
+
+L112 (one thing learned while doing it, worth stating): the first attempt at the chain
+was **wrong and was caught by checking ancestry** rather than by assuming. The PR-1 doc
+commit was made on `feat/v3-backend` *after* `feat/v3-frontend-close` had been branched
+from the old head, so the second branch did not contain it —
+`git merge-base --is-ancestor` said `NO`. Both branches were deleted and rebuilt in the
+right order: PR 1's doc commit first, then the second branch created from it and the 17
+remaining commits cherry-picked, which applied without conflict. An unchecked chain is a
+chain that looks right in the GitHub UI and rebases into a mess.

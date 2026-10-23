@@ -297,7 +297,7 @@ async fn create_sale(
     }
 
     // Read the persisted sale so the response carries the real defaults
-    // (status, created_at) instead of echoing the request.
+    // (created_at) instead of echoing the request.
     let sale = sqlx::query_as!(
         Sale,
         // round(...,2): the column declares scale 6 and returns its value at that
@@ -308,8 +308,8 @@ async fn create_sale(
         // column and the name lives on `payment_methods`. Joining by id is what
         // lets a rename correct history instead of freezing a typo.
         "SELECT s.id, s.customer_id, round(s.total, 2) AS \"total!\",
-                s.payment_method_id, pm.name AS \"payment_method_name!\", s.status,
-                s.reversed_at, s.created_at
+                s.payment_method_id, pm.name AS \"payment_method_name!\",
+                s.created_at
          FROM sales s
          JOIN payment_methods pm ON pm.id = s.payment_method_id
          WHERE s.id = $1",
@@ -633,8 +633,8 @@ async fn list_sales(
     let rows = sqlx::query!(
         // `payment_method` is the method's name, joined on the FK that 0012 added.
         "SELECT s.id, s.customer_id, round(s.total, 2) AS \"total!\",
-                s.payment_method_id, pm.name AS \"payment_method_name!\", s.status,
-                s.reversed_at, s.created_at, c.name AS customer_name
+                s.payment_method_id, pm.name AS \"payment_method_name!\",
+                s.created_at, c.name AS customer_name
          FROM sales s
          JOIN customers c ON c.id = s.customer_id
          JOIN payment_methods pm ON pm.id = s.payment_method_id
@@ -679,8 +679,6 @@ async fn list_sales(
                 total: row.total,
                 payment_method_id: row.payment_method_id,
                 payment_method_name: row.payment_method_name,
-                status: row.status,
-                reversed_at: row.reversed_at,
                 created_at: row.created_at,
             },
             customer_name: row.customer_name,
@@ -759,11 +757,10 @@ async fn sales_summary(
             SELECT s.total,
                    COALESCE((SELECT SUM(cn.total) FROM credit_notes cn WHERE cn.sale_id = s.id), 0) AS refunded
               FROM sales s
-             WHERE s.status = 'confirmed'
-               -- Absent bound means unbounded, the same contract `list_sales`
+             WHERE -- Absent bound means unbounded, the same contract `list_sales`
                -- has. A sentinel instant cannot be used here: MIN_UTC is outside
                -- Postgres's timestamp range and the whole period reads as empty.
-               AND ($1::timestamptz IS NULL OR s.created_at >= $1)
+               ($1::timestamptz IS NULL OR s.created_at >= $1)
                AND ($2::timestamptz IS NULL OR s.created_at < $2)
         )
         SELECT COALESCE(SUM(total), 0)::numeric           AS "gross!",

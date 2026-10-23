@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ApiError,
+  createAccount,
   createCreditNote,
   createProduct,
   createSale,
@@ -15,7 +16,10 @@ import {
   listProducts,
   listPurchases,
   listSales,
-  listSuppliers
+  listSuppliers,
+  patchAccount,
+  patchPaymentMethod,
+  createPaymentMethod
 } from '#lib/api.js';
 
 /** The URL the client actually called, as a URL object. */
@@ -662,5 +666,67 @@ describe('the client targets its own origin (S7, S9)', () => {
     // code's — which is a test asserting its own harness.
     expect(url.port).toBe(window.location.port);
     expect(url.href).not.toContain(':3001');
+  });
+});
+
+describe('the accounts client (v3)', () => {
+  it('creates an account and never sends is_default', async () => {
+    // A new account has no payment methods, so the server refuses `is_default: true`
+    // with a 400. The client does not offer the flag at all: promotion happens
+    // through PATCH, after a method is attached.
+    const fetchMock = vi.fn(async () => jsonResponse({ id: 'a1', name: 'banco' }, 201));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createAccount('banco');
+    expect(calledUrl(fetchMock).pathname).toBe('/api/accounts');
+    const body = JSON.parse(String(calledInit(fetchMock)?.body));
+    expect(body).toEqual({ name: 'banco' });
+    expect(body).not.toHaveProperty('is_default');
+  });
+
+  it('promotes an account with one PATCH and no local bookkeeping', async () => {
+    // The server clears the previous default in the same transaction, because the
+    // database guarantees exactly one at commit. A client that cleared the old one
+    // first would be doing the server's job, and doing it non-atomically.
+    const fetchMock = vi.fn(async () => jsonResponse({ id: 'a2', name: 'banco' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await patchAccount('a2', { is_default: true });
+    expect(calledUrl(fetchMock).pathname).toBe('/api/accounts/a2');
+    expect(calledInit(fetchMock)?.method).toBe('PATCH');
+    expect(JSON.parse(String(calledInit(fetchMock)?.body))).toEqual({ is_default: true });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('creates a method bound to one account', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ id: 'm1' }, 201));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createPaymentMethod('transferencia', 'a1');
+    expect(calledUrl(fetchMock).pathname).toBe('/api/payment-methods');
+    expect(JSON.parse(String(calledInit(fetchMock)?.body))).toEqual({
+      name: 'transferencia',
+      account_id: 'a1'
+    });
+  });
+
+  it('retires a method rather than deleting it', async () => {
+    // Deleting would erase the explanation of a past balance; `is_active` is the
+    // only retirement a method has, so the client must never reach for DELETE.
+    const fetchMock = vi.fn(async () => jsonResponse({ id: 'm1' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await patchPaymentMethod('m1', { is_active: false });
+    expect(calledInit(fetchMock)?.method).toBe('PATCH');
+    expect(JSON.parse(String(calledInit(fetchMock)?.body))).toEqual({ is_active: false });
+  });
+
+  it('surfaces the server refusal when a referenced method cannot move', async () => {
+    // The database refuses moving a method any document names; the client's job is to
+    // report that as a 409 rather than swallow it.
+    const fetchMock = vi.fn(async () => jsonResponse({ error: 'conflict' }, 409));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(patchPaymentMethod('m1', { account_id: 'a2' })).rejects.toBeInstanceOf(ApiError);
   });
 });

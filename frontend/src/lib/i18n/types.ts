@@ -16,6 +16,34 @@ export interface Dict {
   nav_sales: string;
   nav_products: string;
   /** Assistive-technology label for the rail (`Main`). */
+  nav_accounts: string;
+  accounts_title: string;
+  accounts_tagline: string;
+  accounts_till: string;
+  accounts_methods: string;
+  accounts_balance: string;
+  accounts_new: string;
+  accounts_new_placeholder: string;
+  accounts_new_method: string;
+  accounts_new_method_placeholder: string;
+  accounts_make_default: string;
+  accounts_is_default: string;
+  accounts_active: string;
+  accounts_inactive: string;
+  accounts_deactivate: string;
+  accounts_activate: string;
+  accounts_rename: string;
+  accounts_save: string;
+  accounts_empty: string;
+  accounts_read_failed: string;
+  accounts_loading: string;
+  accounts_write_failed: string;
+  accounts_till_hint: string;
+  accounts_method_belongs: (account: string) => string;
+  sales_method_failed: string;
+  sales_method_default: string;
+  sales_method: string;
+  purchases_method: string;
   nav_main: string;
   /** Assistive-technology label for the language toggle. */
   lang_toggle: string;
