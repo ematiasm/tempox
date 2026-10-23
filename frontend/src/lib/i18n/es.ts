@@ -35,6 +35,7 @@ const es: Dict = {
   accounts_rename: 'Renombrar',
   accounts_save: 'Guardar',
   accounts_empty: 'Todavía no hay cuentas',
+  accounts_loading: 'Leyendo cuentas…',
   accounts_read_failed: 'No se pudieron leer las cuentas',
   accounts_write_failed: 'No se pudo guardar el cambio',
   accounts_till_hint: 'Las ventas que no eligen un medio van a esta cuenta',

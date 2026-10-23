@@ -36,6 +36,7 @@ export interface Dict {
   accounts_save: string;
   accounts_empty: string;
   accounts_read_failed: string;
+  accounts_loading: string;
   accounts_write_failed: string;
   accounts_till_hint: string;
   accounts_method_belongs: (account: string) => string;

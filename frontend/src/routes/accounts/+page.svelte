@@ -28,6 +28,11 @@
   let accounts = $state<AccountWithMethods[] | null>(null);
   let error = $state<string | null>(null);
   let busy = $state<string | null>(null);
+  // Distinct from `accounts === null`, which is also the failed state. Without it
+  // the panel had to guess whether an empty list meant "still reading" or "the read
+  // broke", and the first version guessed wrong in BOTH directions: a failure
+  // rendered "no accounts yet" and a load rendered "could not read".
+  let reading = $state(true);
 
   let newAccountName = $state('');
   let renaming = $state<string | null>(null);
@@ -36,12 +41,15 @@
   let newMethodName = $state('');
 
   async function reload() {
+    reading = true;
     try {
       accounts = await listAccounts();
       error = null;
     } catch (e) {
       error = e instanceof ApiError ? `${lang.t.accounts_read_failed} (${e.status})` : String(e);
       accounts = null;
+    } finally {
+      reading = false;
     }
   }
 
@@ -141,8 +149,12 @@
         </form>
       </div>
 
-      {#if accounts === null}
-        <p class="empty">{error === null ? lang.t.accounts_read_failed : lang.t.accounts_empty}</p>
+      {#if reading}
+        <p class="empty">{lang.t.accounts_loading}</p>
+      {:else if accounts === null}
+        <!-- The alert above already names the failure; this line says there is
+             nothing to show, which is a different statement from "no accounts". -->
+        <p class="empty">{lang.t.accounts_read_failed}</p>
       {:else if accounts.length === 0}
         <p class="empty">{lang.t.accounts_empty}</p>
       {:else}

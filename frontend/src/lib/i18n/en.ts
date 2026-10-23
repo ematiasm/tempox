@@ -26,6 +26,7 @@ const en: Dict = {
   accounts_rename: 'Rename',
   accounts_save: 'Save',
   accounts_empty: 'No accounts yet',
+  accounts_loading: 'Reading accounts…',
   accounts_read_failed: 'Accounts could not be read',
   accounts_write_failed: 'The change could not be saved',
   accounts_till_hint: 'Sales that do not pick a method go to this account',
