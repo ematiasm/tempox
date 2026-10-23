@@ -18,9 +18,18 @@ destination column at all.
 
 ## Specs
 
-The `is_default` flag is configuration, not authorization. `POST` and `PATCH`
-account writes may set it; PATCH can unset it on a different row; the partial unique
-index guarantees at most one true. The seeded cash account is the default till.
+The `is_default` flag is configuration, not authorization. The partial unique index
+guarantees at most one true, and a deferrable constraint trigger guarantees exactly one
+at commit. The seeded cash account is the default till.
+
+**A new account is never born the default.** `POST /api/accounts` refuses
+`is_default: true` with a 400; the supported path is create, attach a method, then
+promote through `PATCH`. This corrects an earlier statement of the same rule ("POST and
+PATCH may set it"), which the implementation could not satisfy: a freshly inserted
+account has no payment methods, so `guard_new_default_account_has_active_method` refuses
+it, and the refusal surfaced as a **500** until it was made a 400. The wording was
+aligned to what the rule actually is rather than the route made to accept a flag that
+can never succeed.
 
 
 S1 a payment method belongs to **exactly one** account; an account has zero or
@@ -381,7 +390,7 @@ with no other change competing for attention (L49).
 | ID | Task | Specs | Route | Status | Commit |
 |---|---|---|---|---|---|
 | T1 | Migrations `0012` (accounts, payment methods, seeds, guards) and `0013` (four destinations, backfill, drop of `sales.payment_method`) | S1–S5, S8a, S14 | inline | done | `050779b` |
-| T0 | `GET`/`POST /api/accounts` and `GET`/`POST /api/payment-methods`, plus `PATCH` for name, `is_active` and `is_default`; account creation may set `is_default`; PATCH can set it or unset it on another account; at most one true (partial unique index); 409 on duplicate name, 400 on blank (trimmed first). Depends on T1 — it writes the tables T1 creates | S2, S3, S3a, S4 | inline | pending | — |
+| T0 | `GET`/`POST /api/accounts` and `GET`/`POST /api/payment-methods`, plus `PATCH` for name, `is_active` and `is_default`; **creation refuses `is_default`** (a new account has no method to make it legal) and promotion happens through `PATCH`, which clears the old default in the same transaction; 409 on duplicate name, 400 on blank (trimmed first). Depends on T1 | S2, S3, S3a, S4 | inline | done | `b260b1b` |
 | T3 | Migration `0014`: `VIEW money_movements` + derived `balance` on `GET /api/accounts` | S4, S6–S8 | inline | done | `da53a17` |
 | T4 | Sales write path and flat wire (S6b): `payment_method_id` + `payment_method_name` side by side at the top level, resolved by join (never `account_id`, never a name column, never a nested object), picker defaults to an active method belonging to the `is_default` account; API accepts inactive methods; enforce S9 walk-in guard | S4, S5, S6b, S8, S9 | inline | pending | — |
 | T5 | Purchases write path (same flat wire as T4), plus inheritance in credit notes (with override) and supplier returns; reject the `credit` method on purchases in the write path | S5, S6b, S9b, S10 | inline | pending | — |
@@ -1093,3 +1102,28 @@ is therefore **open but not stranded** — it was created against the correct ba
 amended, so it can still be run later as-is. Recorded so a future session does not read
 an unapproved candidate as approved: T5's code has 5 tests and 4/4 mutations, and no
 independent review.
+
+L84 (correction, 2026-10-23, found by the owner asking whether T0 needed review): **T0's
+correction was reviewed after all**, and `L63` overstated its absence. `T3`'s candidate
+(`da53a17`, reviewed as `review-c7b8c2e2b27cb95a`) had `b260b1b` as its base and its
+changed paths **included `backend/src/routes/accounts.rs`** — the file carrying the
+`R3-001` fix. A reviewer read the corrected handler in a 478-line candidate and approved
+it. Not a dedicated review of the fix, but the independent look `L63` claimed was missing.
+No further review of T0 is warranted; a transaction spent on it would re-read what T3
+already read.
+
+L85 (correction, 2026-10-23, and this one is a real inconsistency the owner's question
+exposed): **the `R3-001` fix contradicted the spec, and the spec was silently wrong.**
+`S8a` and T0's row said "POST and PATCH account writes may set `is_default`"; the fix
+made `POST` refuse it with a 400. The reasoning behind the fix is sound — a new account
+has no methods, so the schema's guard refuses it — but the honest conclusion was that
+**the rule had been stated wrongly**, not that the route should keep accepting a flag
+that can never succeed. The spec now says what the rule is: an account is never born the
+default; it is promoted through `PATCH` after a method is attached.
+
+The interesting part is why review could not catch it: the reviewer reads code against
+the intent declared **in the code**, and the fix's own comment explains itself well. What
+was broken was the link between the code and `S8a`, which only a human asking "does this
+match what we wrote?" surfaces. That is the fourth instance of this slice's pattern — a
+rule and its enforcement drifting apart — and the first where the drift was in the
+spec rather than in the tests.
