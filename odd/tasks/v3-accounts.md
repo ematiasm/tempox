@@ -1193,3 +1193,26 @@ L95 (note, 2026-10-23, the shape of T8's own mistake): the first version of the 
 looked for a picker labelled "Medio de pago", a `data-sale-id` that does not exist, and
 passed `money('0')` where the helper needs a full `0,00`. Three assumptions about the DOM,
 each caught by running it rather than reading it.
+
+L96 (state, 2026-10-23, T8 reviewed and approved): lineage `review-3ba92a34518f8ecc`
+(10 files, 202 lines) approved with two lenses and three advisory warnings, authority
+burned. Three of its warnings were real and two are fixed in `3409a1b`.
+
+L97 (lesson, 2026-10-23, and it cost three attempts): **a shared resource cannot carry
+an assertion about one spec's activity.** T8's e2e claimed the till did not receive the
+transfer sale, and every phrasing failed for a different honest reason:
+`not.toHaveText(total)` is blind to a coincidental match; an absolute `$ 0,00` failed
+because the suite shares one database and a purchase spec had left the till at
+`-$ 30,00`; a before/after comparison failed because **Playwright runs specs
+concurrently** and another worker changed the figure between the two reads. Nothing in
+`playwright.config.ts` sets `workers`, so the default applies.
+
+The claim moved to where a database belongs to one test. What the e2e keeps is the
+part that is exclusive to it: the account it created, and the method the ledger shows.
+The lesson generalises past this spec — an assertion is only as good as the isolation
+of the thing it measures, and the e2e level has almost none.
+
+L98 (fix, 2026-10-23, R3-002): a failed method read in `SaleDraft` was swallowed by an
+empty `catch`, leaving the picker with only its default entry and no hint why. It now
+reports the degraded state in the pending tone, because the sale can still be
+recorded — the difference between "this control is unusable" and "the page failed".
