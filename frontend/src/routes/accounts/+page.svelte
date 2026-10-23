@@ -42,7 +42,16 @@
   let newMethodName = $state('');
 
   async function reload() {
-    reading = true;
+    // **`reading` is only for the FIRST read.** It used to be set on every call, so
+    // every write — create, rename, promote, retire — replaced the whole list with
+    // "reading" for the length of its round-trip. Two consequences, both real: the
+    // screen flashed on every action, and the `<ul>` unmounted and remounted, which
+    // is what made the e2e flake — the locator was valid, then detached, then valid
+    // again, and Playwright lost it mid-wait.
+    //
+    // The `busy` key already says an action is in flight, per row. A refresh after a
+    // write keeps the previous list on screen and swaps it when the new one arrives.
+    if (accounts === null) reading = true;
     try {
       accounts = await listAccounts();
       error = null;

@@ -116,5 +116,33 @@ export default defineConfig({
     }
   ],
   testDir: 'tests/e2e',
+
+  /**
+   * **One worker, because the suite shares one database.**
+   *
+   * Playwright's default is half the CPUs — six here — and every spec in this
+   * directory writes to the same `tempox_test`. Nothing said so, and it did not
+   * matter while the specs only created documents nothing else read. v3 added the
+   * first spec that creates an account and then reads the account LIST, and that is
+   * a resource every other write may be holding: observed failing once in four runs,
+   * with the account present in the database and absent from the screen.
+   *
+   * **What is proven and what is not, stated rather than implied.** Six writers over
+   * one database is a race by construction, and serializing removes it. But the
+   * failure could not be reproduced on demand: four runs with this line restored to
+   * the default did not fail, and neither did four with an earlier plausible fix
+   * reverted. So this line removes a real source of non-determinism; it is not proven
+   * to be the cause of that particular failure. An unproven cause reported as fixed
+   * would be worse than the flake.
+   *
+   * The alternative — making each spec tolerate the race — was rejected because it
+   * buys back fifteen seconds with a rule every future spec would have to remember.
+   * A serial suite is slower and deterministic; a parallel one was faster and
+   * occasionally lied. The e2e level exists to be trusted, not to be quick.
+   *
+   * If this suite ever grows a per-spec database, this line is the thing to delete.
+   */
+  workers: 1,
+
   use: { baseURL: 'http://localhost:4173' }
 });
