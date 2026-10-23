@@ -382,7 +382,7 @@ with no other change competing for attention (L49).
 |---|---|---|---|---|---|
 | T1 | Migrations `0012` (accounts, payment methods, seeds, guards) and `0013` (four destinations, backfill, drop of `sales.payment_method`) | S1–S5, S8a, S14 | inline | done | `050779b` |
 | T0 | `GET`/`POST /api/accounts` and `GET`/`POST /api/payment-methods`, plus `PATCH` for name, `is_active` and `is_default`; account creation may set `is_default`; PATCH can set it or unset it on another account; at most one true (partial unique index); 409 on duplicate name, 400 on blank (trimmed first). Depends on T1 — it writes the tables T1 creates | S2, S3, S3a, S4 | inline | pending | — |
-| T3 | `VIEW money_movements` + `GET /api/accounts` (accounts including `is_default`, their methods, and each account's derived balance — no aggregate total: see S8a) | S4, S6–S8 | inline | pending | — |
+| T3 | Migration `0014`: `VIEW money_movements` + derived `balance` on `GET /api/accounts` | S4, S6–S8 | inline | done | `da53a17` |
 | T4 | Sales write path and flat wire (S6b): `payment_method_id` + `payment_method_name` side by side at the top level, resolved by join (never `account_id`, never a name column, never a nested object), picker defaults to an active method belonging to the `is_default` account; API accepts inactive methods; enforce S9 walk-in guard | S4, S5, S6b, S8, S9 | inline | pending | — |
 | T5 | Purchases write path (same flat wire as T4), plus inheritance in credit notes (with override) and supplier returns; reject the `credit` method on purchases in the write path | S5, S6b, S9b, S10 | inline | pending | — |
 | T6 | Retire `/api/cash` and move the `/sales` footer to `/api/accounts` (`is_default`) | S8, S13 | inline | pending | — |
@@ -963,3 +963,29 @@ assertion at all. The pattern is now unmistakable across T1 and T0: **every crit
 defect in this slice was a rule the code offered and no test exercised**, never a rule
 the tests exercised wrongly. Mutation finds the ones where the assertion is too weak;
 an independent reviewer finds the ones where the surface is wider than the tests.
+
+L66 (state, 2026-10-23, T3 done): `0014_money_movements_view.sql` creates the view (one
+row per effect, sign declared once, `status = 'confirmed'` kept on the sale branch until
+T2 removes the column) and `GET /api/accounts` carries each account's derived balance
+summed in one grouped statement. 5 new integration tests, suite at 80. Mutation checks:
+flipping the sale sign, flipping the supplier-return sign, and removing the confirmed
+filter each fail the suite after the assertions below were added.
+
+L67 (discovery, 2026-10-23, two of them): mutations found **two** assertions missing.
+(a) Removing `WHERE s.status = 'confirmed'` from the view left every v3 test green,
+because every sale those tests create is confirmed by default — the predicate that
+`/api/cash` carried over was unobservable. Added a test that moves a sale out of
+`confirmed` and asserts the balance drops. (b) The `COALESCE` returning `0.00` for an
+account with no movements is not a weak test but a type change: without it the query
+returns `Option<Decimal>` and does not compile, which is a better guard than a test.
+
+L68 (correction, 2026-10-23, my own mistake, recorded because it cost work): while
+mutating the balance query I restored `accounts.rs` with `git checkout --`, which threw
+away T3's uncommitted work in that file. It was rebuilt from the transcript. The lesson
+is mechanical and belongs in the protocol: **mutate a committed tree, or back the file
+up outside git before touching it** — `git checkout --` is a restore-from-commit, not an
+undo of the last edit.
+
+L69 (verification, 2026-10-23): the view's agreement with `/api/cash` is asserted
+directly — the same scenario computed both ways returns `-40.00` — which is what makes
+retiring that endpoint in T6 a safe change rather than a leap.
