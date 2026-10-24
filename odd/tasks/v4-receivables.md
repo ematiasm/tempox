@@ -468,3 +468,19 @@ exist.
 V6 **Verification of the two residuals.** `make test-backend` 121 (was 120; +1). All 19
 `v4_s6a` tests pass. The new guard proven to bite by neutering. Both end-to-end sequences
 re-measured against a live server, legitimate and illegitimate side by side.
+
+L25 **The two remaining `informational` findings, closed.** Neither changes behaviour, which is
+why they were carried rather than fixed in the correction.
+
+`R2-003`: three tests derived "outstanding" with their **own** SQL instead of `outstanding_of`.
+One of the three was already the weaker definition — it subtracted adjustments only, so it
+would have disagreed with the helper the day a settlement lowered the same debt. All three go
+through the helper now. **Proven by neutering the helper's adjustment term and watching both
+migrated tests fail**, which is the only way to know a test reads through a shared definition
+rather than beside it.
+
+`R2-004`: `insert_paid_sale` stamped `money_entries.occurred_at` with `NOW()` while production
+uses the sale's own `created_at` — one transaction, one instant. The helper claimed to mirror
+the route it did not mirror. It now returns `created_at` from the insert and binds it, so a test
+that compares the book's ordering against the document's asks the same question the route
+answers.

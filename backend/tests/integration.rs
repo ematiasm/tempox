@@ -6572,18 +6572,11 @@ async fn v3_t5_a_credit_note_inherits_the_sales_method_by_default(pool: sqlx::Pg
         .expect("item id")
         .to_string();
 
-    let outstanding = sqlx::query_scalar::<_, rust_decimal::Decimal>(
-        "SELECT o.amount - COALESCE(SUM(a.amount), 0)
-           FROM obligations o
-           LEFT JOIN obligations_adjustments a ON a.obligation_id = o.id
-          WHERE o.source_document_kind = 'sale' AND o.source_document_id = $1
-          GROUP BY o.id",
-    )
-    .bind(sale_id)
-    .fetch_one(&pool)
-    .await
-    .expect("read outstanding before refund");
-    assert_eq!(outstanding, rust_decimal::Decimal::from(90));
+    // **`outstanding_of`, not a local query** (`R2-003`). This test used to derive the figure
+    // itself with a `LEFT JOIN`, which is a second definition of "outstanding" — and it was
+    // already the weaker one: it subtracted adjustments only, so the day a settlement lowered
+    // the same debt this assertion and the helper would have disagreed about the same number.
+    assert_eq!(outstanding_of(&pool, &sale_id_path).await, "90");
 
     // With no method named, the note inherits NULL and lowers the obligation without
     // paying out cash.
@@ -6595,20 +6588,9 @@ async fn v3_t5_a_credit_note_inherits_the_sales_method_by_default(pool: sqlx::Pg
         .await;
     assert_eq!(note.status(), axum::http::StatusCode::CREATED);
 
-    let outstanding = sqlx::query_scalar::<_, rust_decimal::Decimal>(
-        "SELECT o.amount - COALESCE(SUM(a.amount), 0)
-           FROM obligations o
-           LEFT JOIN obligations_adjustments a ON a.obligation_id = o.id
-          WHERE o.source_document_kind = 'sale' AND o.source_document_id = $1
-          GROUP BY o.id",
-    )
-    .bind(sale_id)
-    .fetch_one(&pool)
-    .await
-    .expect("read outstanding after refund");
     assert_eq!(
-        outstanding,
-        rust_decimal::Decimal::ZERO,
+        outstanding_of(&pool, &sale_id_path).await,
+        "0",
         "the refund lowered the debt"
     );
     assert_eq!(balance_of(&client, cash).await, "0.00", "no money left the till");
@@ -7807,26 +7789,33 @@ async fn insert_paid_sale(
     method: uuid::Uuid,
 ) -> uuid::Uuid {
     let mut tx = pool.begin().await.expect("begin the paid sale");
-    let sale_id: uuid::Uuid = sqlx::query_scalar(
-        "INSERT INTO sales (customer_id, total, payment_method_id)
-         VALUES ($1, $2::numeric, $3) RETURNING id",
-    )
-    .bind(customer)
-    .bind(total)
-    .bind(method)
-    .fetch_one(&mut *tx)
-    .await
-    .expect("insert the sale header");
+    // **`created_at` comes back from the insert, not from `NOW()`** (`R2-004`). Production
+    // writes the entry at the sale's own `created_at` — one transaction, one instant — so a
+    // helper that stamped a second timestamp would answer a different question than the route
+    // it claims to mirror. That matters the moment a test compares the book's ordering
+    // against the document's.
+    let (sale_id, sale_created_at): (uuid::Uuid, chrono::DateTime<chrono::Utc>) =
+        sqlx::query_as(
+            "INSERT INTO sales (customer_id, total, payment_method_id)
+             VALUES ($1, $2::numeric, $3) RETURNING id, created_at",
+        )
+        .bind(customer)
+        .bind(total)
+        .bind(method)
+        .fetch_one(&mut *tx)
+        .await
+        .expect("insert the sale header");
     sqlx::query(
         "INSERT INTO money_entries
             (account_id, payment_method_id, document_kind, document_id, amount,
              occurred_at, created_by)
-         SELECT pm.account_id, $1, 'sale', $2, $3::numeric, NOW(), 'test'
+         SELECT pm.account_id, $1, 'sale', $2, $3::numeric, $4, 'test'
            FROM payment_methods pm WHERE pm.id = $1",
     )
     .bind(method)
     .bind(sale_id)
     .bind(total)
+    .bind(sale_created_at)
     .execute(&mut *tx)
     .await
     .expect("insert the sale's ledger entry");
@@ -8081,20 +8070,11 @@ async fn v4_s6a_a_refund_of_a_sale_nobody_paid_lowers_the_debt_and_moves_no_mone
     assert_eq!(balance_of(&client, DEBT_ACCOUNT).await, "0.00");
 
     // The debt dropped by the value of the returned unit, and the original stands.
-    let outstanding = sqlx::query_scalar::<_, rust_decimal::Decimal>(
-        "SELECT o.amount
-                - COALESCE((SELECT SUM(a.amount) FROM obligations_adjustments a
-                             WHERE a.obligation_id = o.id), 0)
-           FROM obligations o
-          WHERE o.source_document_kind = 'sale' AND o.source_document_id = $1",
-    )
-    .bind(uuid::Uuid::parse_str(&sale_id).expect("uuid"))
-    .fetch_one(&pool)
-    .await
-    .expect("outstanding debt");
+    // Through the helper, so this and every other assertion mean the same thing by
+    // "outstanding" (`R2-003`).
     assert_eq!(
-        outstanding.to_string(),
-        "100.000000",
+        outstanding_of(&pool, &sale_id).await,
+        "100",
         "200 owed less 100 returned"
     );
 
