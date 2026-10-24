@@ -350,6 +350,24 @@ async fn create_purchase(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
+    // The book entry (`0017`): a purchase takes money OUT, so the amount is negative.
+    let purchase_amount: Decimal = -total;
+    sqlx::query!(
+        "INSERT INTO money_entries
+            (account_id, payment_method_id, document_kind, document_id, amount, occurred_at, created_by)
+         SELECT pm.account_id, $1, 'purchase', $2, $3, now(), 'counter'
+           FROM payment_methods pm WHERE pm.id = $1",
+        payment_method_id,
+        purchase_id,
+        purchase_amount
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| {
+        tracing::error!(?e, "purchase money entry failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
     tx.commit().await.map_err(|e| {
         tracing::error!(?e, "tx commit failed");
         StatusCode::INTERNAL_SERVER_ERROR
@@ -706,6 +724,23 @@ async fn create_supplier_return(
     .await
     .map_err(|e| {
         tracing::error!(?e, "supplier return readback failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    // The book entry (`0017`): a supplier return brings money BACK, so it is positive.
+    sqlx::query!(
+        "INSERT INTO money_entries
+            (account_id, payment_method_id, document_kind, document_id, amount, occurred_at, created_by)
+         SELECT pm.account_id, $1, 'supplier_return', $2, $3, now(), 'counter'
+           FROM payment_methods pm WHERE pm.id = $1",
+        inherited_method,
+        return_id,
+        return_total
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| {
+        tracing::error!(?e, "supplier return money entry failed");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
