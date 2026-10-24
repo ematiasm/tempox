@@ -361,3 +361,28 @@ V4c **The development database's 3,000 still has no opening document.** S3 makes
 possible, but the figure that is already there arrived from sales, and inventing an
 opening for it would be fiction. Anyone who knows what the till held the first morning can
 record it; nobody should guess.
+
+V5 **S3 reviewed and sealed.** Lineage `review-caf2649251ed698b`, authority burned,
+`gentle-ai.review-acknowledged/v1`. Approved with **no correction**; three advisory
+findings, all `informational` and all in `ledger.rs`:
+
+| id | location | what it is |
+| --- | --- | --- |
+| `R3-001` | `ledger.rs:75-121` | the opening-balance flow |
+| `R3-002` | `ledger.rs:176-203` | the transfer flow |
+| `R3-003` | `ledger.rs:283-295` | the count-adjustment flow |
+
+They are non-blocking by the provider's own statement and are recorded here so a later
+session does not read them as unexamined. The common shape across all three is worth
+naming: **each route resolves the account through the account's first method and never
+returns the method it used**, so a client cannot tell which rail the money took. That is
+a real limitation of the three new endpoints, not a defect in the ledger, and it belongs
+to the slice that gives the UI these documents.
+
+V5b **A transport failure that was recovered, recorded because the rule matters.** The
+first reviewer run aborted (`pi-host-relay-transport-failure`, `reviewer-aborted`, after
+5.5s). The instruction was to call fresh STATUS and submit only an **exact reoffered**
+one-slot binding, never to replay the capture from transcript inference. STATUS reoffered
+the identical binding — same `subject-hash`, same revision — and the retry succeeded. The
+distinction is the whole point: a *reoffered* binding is authority to try again; a
+remembered one is not.
