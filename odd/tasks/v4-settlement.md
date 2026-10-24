@@ -153,7 +153,7 @@ S15 **All eight slices are separate review candidates.** The five marked **item 
 
 | ID | Spec | Slice | Route | Risk | Commit |
 | --- | --- | --- | --- | --- | --- |
-| T1 | S1, S2, S3 | S1 — the book | `money_entries` as a table, `money_movements` as a view over it, `accounts.kind`, backfill from the four existing document tables, write path in sale / credit-note / purchase / supplier-return | item 1 | — |
+| T1 | S1, S2, S3 | S1 — the book | `money_entries` as a table, `money_movements` as a view over it, `accounts.kind`, backfill from the four existing document tables, write path in sale / credit-note / purchase / supplier-return | item 1 | `8de5280` |
 | T2 | S13 | S2 — who | `created_by` on the entries and on the documents that will be created | — | — |
 | T3 | S12 | S3 — money that is not a sale | opening balance, transfer, count adjustment | item 1 | — |
 | T4 | S9 | S4 — the reversal budget | move the budget from `SUM(credit_note_items)` to `sale_items.reversed_quantity` | item 1 | — |
@@ -303,3 +303,39 @@ L23 **Open, and deliberately not decided here.** Two items were raised and left:
   refunding it possible (S7, `direction = out`); the policy is not set. Without one, a
   business keeps money that is not its — the same defect as rejected option 1, under a
   different name.
+
+## Verification log
+
+V1 **S1/T1, `8de5280`.** `make test-unit` 50 + 232 (was 50 + 227), `make test-backend`
+95 (was 93; +2 new tests), `make test-e2e` 23. The append-only guard proven to bite by
+neutering `BEFORE UPDATE OR DELETE` into `BEFORE DELETE`: the test fails on the update.
+
+V1b **The backfill verified on a database with data, not on an empty one.** A throwaway
+database was migrated to `0016`, a sale, a credit note and a purchase were created through
+the real API, and then `0017` was applied: three entries with the documented signs
+(`+200`, `-100`, `-100`), `created_by = 'backfill'`, and
+`SUM(money_entries) = SUM(money_movements)`. Doing it on an empty database would have
+proven nothing — that is what V1 alone would have hidden.
+
+V2 **Three defects this slice found, all measured first:**
+1. `ALTER TABLE accounts` after an `UPDATE` on it aborted with *"cannot ALTER TABLE
+   because it has pending trigger events"*. `0016`'s `accounts_exactly_one_default` is
+   `DEFERRABLE INITIALLY DEFERRED`, so any row-touching statement queues an event checked
+   at COMMIT, and a later `ALTER` in the same transaction cannot proceed. The constraint
+   is now created before the only statement that touches rows. This is a *new* constraint
+   on how `0016` shapes every future migration: **do your `ALTER`s before your `UPDATE`s
+   on `accounts`**.
+2. `CHECK (amount <> 0)` turned a bonus sale into a 500. `0005` allows `total = 0`, and a
+   sale of only bonuses moved no money; the book records the zero rather than refusing
+   the document. **An existing test caught it, not the new ones** — the value of the suite
+   is exactly this.
+3. The new test's own arithmetic was wrong: it assumed the refund covered the whole sale
+   when it covers one unit. Fixed against document totals.
+
+V3 **`SQLX_OFFLINE=true` is a trap in this loop.** `.cargo/config.toml` sets it, so
+`cargo build` cannot see a new table until `cargo sqlx prepare` is re-run — and
+`prepare` fails on a test database `make test-db` just recreated, because it has no
+schema. The working order is: `make test-db`, then `cargo sqlx migrate run`, then
+`cargo sqlx prepare -- --all-targets`, then the suite. Two full runs were lost to this.
+Also: `target/debug/incremental` produces a rustc ICE on this toolchain after a
+significant edit; `rm -rf target/debug/incremental` clears it.
