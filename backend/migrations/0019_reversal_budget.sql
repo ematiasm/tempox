@@ -35,17 +35,33 @@
 -- only grow toward — never past — the quantity sold.
 CREATE OR REPLACE FUNCTION reject_sale_item_mutation() RETURNS trigger AS $$
 BEGIN
+    -- **Every column is compared, `id` included.** The first version of this guard left
+    -- `id` out of the list, so an `UPDATE` that rewrote only the primary key fell into the
+    -- "only the budget changed" branch and was allowed. Found by review (`R3-001`,
+    -- CRITICAL) and reproduced against a live database before this fix.
     IF TG_OP = 'UPDATE'
+       AND NEW.id                    = OLD.id
+       AND NEW.sale_id               = OLD.sale_id
        AND NEW.product_id            = OLD.product_id
        AND NEW.product_name          = OLD.product_name
        AND NEW.quantity              = OLD.quantity
        AND NEW.unit_price            = OLD.unit_price
        AND NEW.line_total            = OLD.line_total
        AND NEW.unit                  = OLD.unit
-       AND NEW.sale_id               = OLD.sale_id
     THEN
-        -- Only `reversed_quantity` differs. Its own trigger judges the value.
-        RETURN NEW;
+        -- **A budget increase is allowed only from the consumer.** Everything privileged
+        -- inside this transaction sets `tpox.budget_writer`, and nothing else does; a bare
+        -- `UPDATE sale_items SET reversed_quantity = ...` from `psql` is refused. Without
+        -- this the counter could be inflated with no credit note at all, and the handler
+        -- — which reads it — would then refuse a refund that was legitimate (`R3-002`,
+        -- CRITICAL, also reproduced).
+        IF NEW.reversed_quantity = OLD.reversed_quantity
+           OR current_setting('tpox.budget_writer', true) = 'on'
+        THEN
+            RETURN NEW;
+        END IF;
+        RAISE EXCEPTION
+            'sale item % reversal budget may only move through the refund path', NEW.id;
     END IF;
     RAISE EXCEPTION 'sale_items are immutable: corrections are compensating rows, not edits';
 END;
@@ -141,9 +157,13 @@ BEGIN
             NEW.sale_item_id, remaining, NEW.quantity;
     END IF;
 
+    -- The only writer allowed to move the counter, announced in the transaction's own
+    -- session settings so a direct `UPDATE` cannot impersonate it.
+    PERFORM set_config('tpox.budget_writer', 'on', true);
     UPDATE sale_items
        SET reversed_quantity = reversed_quantity + NEW.quantity
      WHERE id = NEW.sale_item_id;
+    PERFORM set_config('tpox.budget_writer', 'off', true);
 
     RETURN NEW;
 END;

@@ -7499,6 +7499,51 @@ async fn v4_the_schema_refuses_an_override_reversal_even_without_the_handler(poo
     .execute(&pool)
     .await;
 
+    // **Two more holes the first version of the guard left, both found by review and both
+    // reproduced before the fix.** They share a root: the narrowed guard asked "did only
+    // `reversed_quantity` change?" and never asked who was asking or what else moved.
+    let item_uuid = uuid::Uuid::parse_str(&item_id).expect("uuid");
+
+    // `R3-001`: an `UPDATE` that rewrote only the primary key fell through the equality
+    // list, because `id` was not in it.
+    let id_rewrite = sqlx::query("UPDATE sale_items SET id = gen_random_uuid() WHERE id = $1")
+        .bind(item_uuid)
+        .execute(&pool)
+        .await;
+    assert!(
+        id_rewrite.is_err(),
+        "a sale line's primary key is history like every other column: the guard must \
+         compare `id` too. Measured before the fix: UPDATE 1."
+    );
+
+    // `R3-002`: the counter could be inflated with no credit note at all, and the handler
+    // — which reads it — would then refuse a refund that was legitimate.
+    //
+    // **This line is already fully reversed, so the statement has to be a real change to
+    // mean anything.** Written first as `SET reversed_quantity = quantity` it was a no-op
+    // on this row and the guard — which permits no-ops, as it must — let it through, and
+    // the test failed for the wrong reason. Asserting on a *fresh* line is the version
+    // that measures the hole.
+    let fresh = client
+        .post(
+            "/api/sales",
+            serde_json::json!({ "items": [{ "product_id": product_id, "quantity": 2 }] }),
+        )
+        .await;
+    let fresh_item = fresh.body["items"][0]["id"]
+        .as_str()
+        .expect("item")
+        .to_string();
+    let inflate = sqlx::query("UPDATE sale_items SET reversed_quantity = quantity WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(&fresh_item).expect("uuid"))
+        .execute(&pool)
+        .await;
+    assert!(
+        inflate.is_err(),
+        "the budget may only move through the refund path; a bare UPDATE is refused. \
+         Measured before the fix: the counter went 0 -> 2 with no note on record."
+    );
+
     // **Asserted by the message, not merely by the refusal.** Two guards can refuse this
     // statement — the consumer that counts what is left, and the budget guard that refuses
     // a counter above the quantity sold — and a bare `is_err()` passes when either one is
