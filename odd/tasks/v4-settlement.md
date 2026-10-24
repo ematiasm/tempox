@@ -415,3 +415,38 @@ V6d **The differential measurement says something different from S1 and S3.** Ru
 the API at all; it is visible through `psql`, where 5 units against a line of 1 used to
 succeed and now raises. **A differential over HTTP cannot prove this slice**, and saying so
 is more useful than the table.
+
+V7 **S4 reviewed, corrected and sealed.** Lineage `review-c20de858957fc384`, authority
+burned, `gentle-ai.review-acknowledged/v1`. The review raised **two CRITICAL findings, both
+introduced by `4ffb95e` and both real**; both were reproduced against a live database
+before being fixed, and the fix is `f1ac49a`.
+
+| id | what the guard missed | measured before the fix |
+| --- | --- | --- |
+| `R3-001` | the equality list omitted `id` | `UPDATE sale_items SET id = gen_random_uuid()` → `UPDATE 1` |
+| `R3-002` | a budget increase was not tied to the refund path | `SET reversed_quantity = quantity` → 0 → 2, no note on record |
+
+`R3-002`'s consequence is the worse of the two: the handler *reads* that counter, so a
+wrong state would have produced a wrong `CONFLICT` on the next legitimate refund.
+
+**The correction is a writer flag, and it is not claimed to be authentication.** A trigger
+cannot ask who is calling, so `consume_reversal_budget` announces itself in the
+transaction-local `tpox.budget_writer` and the immutability guard accepts a budget increase
+only when that is set. Any caller who knows the name can set it; what the flag does — and
+all the two findings require — is separate "the refund path moved it" from "something else
+did".
+
+V7b **The CLI is the route that works, and this is the second time it mattered.** The Pi
+relay rejected the `correction-lines` slot in every form for `review-8f102ad38b64c089` in
+v3, which is why that lineage is stranded. Here the same slot was submitted through
+`gentle-ai review capture-correction-plan --correction-lines=18` and accepted on the first
+attempt. Then the review asked for a **targeted validation**, which is also host-mediated:
+`--execute` is refused for `pi` (*"it is host-mediated"*), `--materialize` prints the exact
+role task, and the verdict goes back through `--input`. **When the facade blocks a slot,
+the native CLI is not a workaround; it is the sanctioned route.**
+
+V7c **What the validator concluded.** `original_criteria.passed = true` and
+`correction_regression.passed = true`, with two follow-ups recorded rather than silently
+carried: the backfill runs before the guards and does not set the writer flag (so a *future*
+re-backfill would be refused — the safe order is the one this migration already uses), and
+the flag is a session setting, not authorization.
