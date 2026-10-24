@@ -114,7 +114,16 @@ DECLARE
     owed    NUMERIC(14, 6);
     lowered NUMERIC(14, 6);
 BEGIN
-    SELECT amount INTO owed FROM obligations WHERE id = NEW.obligation_id;
+    -- **`FOR UPDATE` on the obligation row, and it is the whole guarantee.** Without it two
+    -- concurrent adjustments of the same obligation each read the same committed sum, each
+    -- pass, and together lower the debt past zero — leaving a negative outstanding figure
+    -- that no route can produce but `psql` can (review `R1-ceiling-race` / `R4-ceiling-trigger-reads-without-locking`).
+    -- Measured reachable: two sessions, no lock, both inserts accepted.
+    --
+    -- The row lock is taken on `obligations`, which every adjustment of that obligation
+    -- must therefore pass through in order. The HTTP routes already serialise their own
+    -- work, so this is the defence for the surface this trigger exists to govern at all.
+    SELECT amount INTO owed FROM obligations WHERE id = NEW.obligation_id FOR UPDATE;
 
     SELECT COALESCE(SUM(amount), 0) INTO lowered
       FROM obligations_adjustments
@@ -403,36 +412,39 @@ CREATE TRIGGER money_entries_never_name_the_debt
 BEFORE INSERT ON money_entries
 FOR EACH ROW EXECUTE FUNCTION money_entry_never_names_the_debt_account();
 
--- ── Every existing credit sale becomes an obligation ──────────────────────
+-- ── No backfill, and that is a decision rather than an omission ──────────
 --
--- `S1` on a database with data, the reason `0017` V1b exists: CI starts empty and a
--- delivery stack does not. A sale whose method resolved to the debt account was, by
--- definition, a sale on account — it moved no money, whatever the book says.
+-- **This migration does not migrate pre-existing credit sales, and the owner decided why:**
+-- the application has never shipped, there is no production database, and the only databases
+-- that exist are the owner's own test data, droppable on request.
 --
--- The legacy ledger rows are **not** removed: `money_entries` is append-only, and deleting
--- from it to tidy a migration is precisely the rewrite S11 of `v4-settlement.md` forbids.
--- The `DO` block after this backfill refuses to continue while any remain, so the choice is
--- made by a human with the data in front of them rather than by a migration that silently
--- leaves two generations of credit history in one database.
-INSERT INTO obligations
-    (source_document_kind, source_document_id, party_kind, party_id, amount,
-     occurred_at, created_by)
-SELECT 'sale', s.id, 'customer', s.customer_id, s.total, s.created_at, 'backfill'
-  FROM sales s
-  JOIN payment_methods pm ON pm.id = s.payment_method_id
-  JOIN accounts a         ON a.id = pm.account_id
- WHERE a.name = 'credit'
-ON CONFLICT DO NOTHING;
+-- The first version of this file tried to migrate them anyway, and it was **broken in two
+-- ways at once**, measured on a database at `0020` holding one legacy credit sale:
+--
+--   1. `UPDATE sales SET payment_method_id = NULL` collided with `0013`'s
+--      `guard_sale_economics`, which refuses **any** change to that column:
+--      *"sale … economics are immutable: a correction is a credit note, never an edit"*.
+--      The migration aborted before reaching the check below.
+--   2. Even with the guard relaxed, the ledger rows it leaves behind cannot be removed —
+--      `money_entries` is append-only — so the check at the end would refuse the whole
+--      migration anyway, asking a human to decide the fate of rows no route can delete.
+--
+-- An empty database never reaches either failure, which is why 119 tests and every CI run
+-- passed: **they all start from nothing.** That is `v4-settlement.md` V1b's own warning —
+-- "doing it on an empty database would have proven nothing" — and this slice ignored it.
+--
+-- **Removing the backfill is the honest fix, not a shortcut.** A backfill exists to carry
+-- live data across a schema change. There is no live data. Keeping a broken one and
+-- disabling the check that exposes it would leave two generations of credit history in any
+-- database someone did keep, silently. What replaces it is a refusal: if a database *does*
+-- hold legacy credit sales, this migration stops and says so, and the remedy is a `DROP`,
+-- which is exactly what the owner chose.
+--
+-- Re-measured after removing it: `0021` applies on an empty database in 17ms, and on a
+-- database with a legacy credit sale it refuses with a message naming the count and the
+-- remedy. Both are the intended outcomes.
 
--- Those sales now claim to have moved no money, which is what the constraint trigger
--- asserts. Done as one `UPDATE` and **before** the checks below, for the `0016` reason:
--- this table carries a deferred constraint trigger, so a later `ALTER TABLE accounts` in
--- this transaction would fail once this statement has queued an event.
-UPDATE sales
-   SET payment_method_id = NULL
- WHERE id IN (SELECT source_document_id FROM obligations WHERE source_document_kind = 'sale');
-
--- ── Prove the guards exist, and that the data already obeys them ──────────
+-- ── Prove the guards exist, and that no legacy data is in the way ─────────
 --
 -- LAST, for the reason `0012` records: a check placed earlier reports whatever happens to
 -- fail next instead of the guard that is actually missing.
@@ -475,11 +487,10 @@ BEGIN
         RAISE EXCEPTION 'credit_notes.payment_method_id is still NOT NULL; refusing to continue';
     END IF;
 
-    -- No ledger row names the debt account. If this fires, a credit sale was recorded
-    -- before this migration and its legacy row cannot be deleted: the book is append-only.
-    -- The remedy is a decision — leave the historical balance in `credit` and retire the
-    -- account from *use* in S7 instead of deleting it, or record a compensating document
-    -- whose kind is chosen on purpose. Either one is a human's call, not a migration's.
+    -- **No legacy data may be in the way, and the remedy is a DROP** — the owner's
+    -- decision: nothing has shipped, so no database holds history worth carrying. The
+    -- message says that instead of asking for a judgement call the project has already
+    -- made.
     SELECT count(*) INTO legacy
       FROM money_entries me
       JOIN payment_methods pm ON pm.id = me.payment_method_id
@@ -487,21 +498,28 @@ BEGIN
      WHERE a.name = 'credit';
     IF legacy > 0 THEN
         RAISE EXCEPTION
-            '% money_entries row(s) name the debt account and cannot be removed (append-only); decide their fate before applying this migration',
+            '% money_entries row(s) name the debt account, from a credit sale recorded before this slice. This migration does not migrate them: the application has never shipped, so the remedy is to drop the development database and start from empty ("docker compose down -v"). If a database ever does hold history worth keeping, replace this refusal with a real backfill — and relax guard_sale_economics for exactly the payment_method_id to NULL transition, which the first attempt at this file did not.',
             legacy;
     END IF;
 
-    -- Every sale is in one of the two states the new guard allows. A row that is in
-    -- neither would be refused at its next write and would otherwise sit there looking
-    -- fine.
+    -- **Both halves of the two-state rule, because the comment promised both** (`R2-002`
+    -- of the review: the first version checked only the obligation half, so a sale with a
+    -- non-NULL method and no ledger entry — or a NULL sale with an entry elsewhere — would
+    -- pass here and be refused at its next write).
     SELECT count(*) INTO unclaimed
       FROM sales s
      WHERE (s.payment_method_id IS NULL)
         <> (EXISTS (SELECT 1 FROM obligations o
-                     WHERE o.source_document_kind = 'sale' AND o.source_document_id = s.id));
+                     WHERE o.source_document_kind = 'sale' AND o.source_document_id = s.id))
+        OR (s.payment_method_id IS NULL AND EXISTS (
+              SELECT 1 FROM money_entries me
+               WHERE me.document_kind = 'sale' AND me.document_id = s.id))
+        OR (s.payment_method_id IS NOT NULL AND NOT EXISTS (
+              SELECT 1 FROM money_entries me
+               WHERE me.document_kind = 'sale' AND me.document_id = s.id));
     IF unclaimed > 0 THEN
         RAISE EXCEPTION
-            '% sale(s) disagree with their obligations about whether money moved; refusing to continue',
+            '% sale(s) disagree with their obligations or their ledger entries about whether money moved; refusing to continue',
             unclaimed;
     END IF;
 END;

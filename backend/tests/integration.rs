@@ -9134,3 +9134,91 @@ async fn v4_s6a_the_new_endpoints_refuse_an_amount_that_is_not_whole_cents(pool:
         fractional_settlement.text
     );
 }
+
+#[sqlx::test(migrations = false)]
+async fn v4_s6a_migrations_refuse_a_legacy_credit_sale_instead_of_half_migrating(
+    pool: sqlx::PgPool,
+) {
+    // **The BLOCKER of review `review-14d05c7f7f92e0bf`, pinned so it cannot return.**
+    //
+    // `0021` first carried a backfill for pre-existing credit sales. It was broken twice and
+    // only visible on a database that HAD one: `UPDATE sales SET payment_method_id = NULL`
+    // collided with `0013`'s `guard_sale_economics`, and the ledger rows it left behind
+    // cannot be deleted because `money_entries` is append-only. Every other test in this
+    // file starts from an empty database, so 119 of them passed while the migration could
+    // not upgrade anything real — `v4-settlement.md` V1b's own warning, ignored.
+    //
+    // The owner's decision is that no database worth carrying exists, so the fix is a
+    // refusal with a remedy rather than a backfill. This test drives the real migration
+    // chain and asserts **which** refusal: "some error" would also pass if the migration
+    // broke for an unrelated reason, which is the lesson `V6c` of `v4-settlement.md`
+    // records.
+    //
+    // `migrations = false` leaves the database empty so the pre-slice state can be built
+    // by hand: apply the chain, then insert a legacy sale, then run the chain again.
+    let migrator = sqlx::migrate!("./migrations");
+
+    // Everything the chain can apply to an empty database applies. `0021` is part of this
+    // chain, so this first pass is the *fresh install* case, and it must succeed — that is
+    // half of what this test claims.
+    migrator
+        .run(&pool)
+        .await
+        .expect("a fresh database must migrate cleanly");
+
+    // Rewind to the pre-slice state: drop what `0021` created and forget it was applied, so
+    // the second pass is a real upgrade rather than a no-op.
+    for sql in [
+        "DROP TRIGGER IF EXISTS money_entries_never_name_the_debt ON money_entries",
+        "DROP TRIGGER IF EXISTS credit_notes_claim_their_effect ON credit_notes",
+        "DROP TRIGGER IF EXISTS sales_payment_method_claimed ON sales",
+        "DROP TABLE IF EXISTS obligations_adjustments",
+        "DROP TABLE IF EXISTS obligations",
+        "ALTER TABLE credit_notes ALTER COLUMN payment_method_id SET NOT NULL",
+        "ALTER TABLE sales ALTER COLUMN payment_method_id SET NOT NULL",
+        "DELETE FROM _sqlx_migrations WHERE description LIKE '%obligations%'",
+    ] {
+        sqlx::query(sql).execute(&pool).await.unwrap_or_else(|e| {
+            panic!("rewinding to the pre-slice state failed on {sql}: {e}")
+        });
+    }
+
+    // A legacy credit sale, exactly as the pre-slice code wrote it.
+    sqlx::query(
+        "INSERT INTO customers (id, name)
+         VALUES ('00000000-0000-0000-0000-0000000000aa', 'legacy-fixture')",
+    )
+    .execute(&pool)
+    .await
+    .expect("legacy customer");
+    let sale: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO sales (customer_id, total, payment_method_id)
+         VALUES ('00000000-0000-0000-0000-0000000000aa', 100.00,
+                 '00000000-0000-0000-0000-000000000006') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("legacy credit sale");
+    sqlx::query(
+        "INSERT INTO money_entries
+            (account_id, payment_method_id, document_kind, document_id, amount,
+             occurred_at, created_by)
+         VALUES ('00000000-0000-0000-0000-000000000005',
+                 '00000000-0000-0000-0000-000000000006', 'sale', $1, 100.00, NOW(), 'legacy')",
+    )
+    .bind(sale)
+    .execute(&pool)
+    .await
+    .expect("the legacy ledger row");
+
+    // Now the upgrade. It must refuse, and it must name what is in the way and the remedy.
+    let failure = migrator
+        .run(&pool)
+        .await
+        .expect_err("the upgrade must refuse a database holding legacy credit sales");
+    let message = failure.to_string();
+    assert!(
+        message.contains("name the debt account") && message.contains("down -v"),
+        "the refusal must say what is in the way and what to do, got: {message}"
+    );
+}

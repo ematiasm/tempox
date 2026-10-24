@@ -853,6 +853,17 @@ async fn create_credit_note(
             .execute(&mut *tx)
             .await
             .map_err(|e| {
+                // **A ceiling violation is the caller's, not the server's** (review
+                // `R4-ceiling-trigger-returns-500`). The pre-check above answers 409 for the
+                // case it can see; this catches what it cannot — a concurrent settlement
+                // that committed between the read and the insert. The database refuses
+                // correctly either way; only the status code differed, and 500 blamed the
+                // server for a race a caller can retry.
+                if let sqlx::Error::Database(db) = &e
+                    && db.code().as_deref() == Some("P0001")
+                {
+                    return StatusCode::CONFLICT;
+                }
                 tracing::error!(?e, "credit note obligation adjustment failed");
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
