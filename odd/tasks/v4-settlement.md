@@ -499,3 +499,39 @@ V8c **The two documents share one budget, which is what `0019` was for.** The te
 the arithmetic rather than the mechanism: one unit by a credit note plus two by an
 annulment equals three of three. If the annulment had its own counter, that assertion would
 read 4 and the same unit would have been reversed twice.
+
+V9 **S5 reviewed, corrected and sealed.** Lineage `review-9e0c575936d6e78f`, authority
+burned. The review raised **two BLOCKER findings, both introduced by `4accf82`, both
+reproduced against a live server before being fixed** (`52d0679`).
+
+| id | what it did | measured |
+| --- | --- | --- |
+| `R3-001` | reversed `sales.total` and every line's full quantity, ignoring what a credit note had already returned | sale of 3 × 100, one unit refunded, annulled → till **−100**, stock **11 of 10** |
+| `R3-002` | the trigger ran its `UPDATE`, matched nothing, and returned a document anyway | a fully refunded sale still got an annulment row |
+
+The first is the worse one in kind: it gave back 300 for 200 owed and returned goods that
+never left, and the till went negative — money the shop never had.
+
+V9b **A third defect, found while fixing the first, and it is the most instructive of the
+three.** Reading the remaining lines *after* inserting the annulment returns nothing,
+because the annulment's own trigger consumes the budget on insert. The annulment became a
+no-op: the till stayed at 200 and the stock at 8, and the route answered `201` while doing
+nothing. Measured, then the read was moved before the insert.
+**Order is the correctness argument, not style** — the same sentence `S5` needed for the
+`CASE` branches in `0020`, and the second time in one slice that statement was true.
+
+V9c **Why both layers exist.** The route answers `409` from its empty pre-read; the trigger
+raises from its `ROW_COUNT`. Only the route's is reachable through HTTP, and only the
+trigger's through `psql`. That duplication is deliberate and recorded as a follow-up: they
+must move together if the rule ever changes.
+
+V9d **The validator's verdict.** `original_criteria.passed = true` and
+`correction_regression.passed = true`, with two follow-ups carried rather than silenced: the
+annulment now depends on the sale path's rounding arithmetic (it recomputes
+`unit_price × remaining`, while `sales.total` is stored), and the two-layer refusal above.
+
+V9e **A tooling note that cost a step.** `git add -A` swept a Kate swap file
+(`.AGENTS.md.kate-swp`) into the slice commit. `.gitignore` had `*.swp`, which does not match
+that suffix. It was removed in a **new commit** (`cffee22`) rather than with `--amend` —
+rewriting a commit that is already a review candidate is exactly what stranded three
+lineages in v3 — and `*.kate-swp` joined the ignore list beside the older pattern.
