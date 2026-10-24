@@ -101,16 +101,22 @@ DECLARE
     paid    NUMERIC(14, 6);
     applied NUMERIC(14, 6);
 BEGIN
-    -- **Both rows are locked, in a fixed order** (`R1-settlement-ceiling-unlocked` /
-    -- `R3-004`). Without it two concurrent direct-SQL settlements — the same payment against
-    -- different obligations, or the same obligation from different payments — each read the same
-    -- committed sums, both pass, and commit past a ceiling. The routes serialise on their own
-    -- locks; this trigger is what covers the surface it exists to govern.
+    -- **Both rows are locked, in ONE global order: payment first, then obligation**
+    -- (`R1-settlement-ceiling-unlocked` / `R3-004`, and the order is the fix for
+    -- `R1-settlement-lock-order-inversion` / `R3-001`).
     --
-    -- Obligation then payment, the same order the route takes, so a route writer and a direct
-    -- SQL writer cannot deadlock each other.
-    SELECT o.amount INTO owed FROM obligations o WHERE o.id = NEW.obligation_id FOR UPDATE;
+    -- Without the locks, two concurrent direct-SQL settlements — the same payment against
+    -- different obligations, or the same obligation from different payments — each read the same
+    -- committed sums, both pass, and commit past a ceiling.
+    --
+    -- **The order is not free to choose.** The route takes the party's payment rows first (a
+    -- superset that includes the row being settled) and the obligation second. This trigger
+    -- originally took them obligation-first, which cycled against the route: a route settlement
+    -- held the payment rows and waited for the obligation while a direct insert held the
+    -- obligation and waited for the payment — a deadlock where the base could not have one.
+    -- Payment before obligation, everywhere, is what makes the cycle inexpressible.
     SELECT p.total  INTO paid FROM payments p    WHERE p.id = NEW.payment_id FOR UPDATE;
+    SELECT o.amount INTO owed FROM obligations o WHERE o.id = NEW.obligation_id FOR UPDATE;
 
     IF owed IS NULL OR paid IS NULL THEN
         RAISE EXCEPTION

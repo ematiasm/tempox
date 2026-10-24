@@ -9649,3 +9649,130 @@ async fn v4_s6a_the_database_refuses_a_settlement_outside_its_invariants(pool: s
         "the refusal must say what is wrong with the direction, got: {message}"
     );
 }
+
+#[sqlx::test]
+async fn v4_s6a_the_trigger_refuses_a_settlement_from_another_party(pool: sqlx::PgPool) {
+    // **`R3-003` of review `review-52d3b2c6c4f09589`.** The previous test proved only the
+    // direction half of the trigger's new invariant; a broken party check would still have
+    // passed it. This is the other half, and it is the one that matters most: one customer's
+    // money retiring another customer's debt leaves both books wrong — the payer still thinks
+    // they owe and the debtor thinks they paid.
+    let client = common::client(pool.clone());
+    let cash_method = "00000000-0000-0000-0000-000000000004";
+
+    let (sale_id, _) = sale_on_account(&client, "party-a", "100.00", 1).await;
+    let obligation_id = obligation_id_of(&pool, &sale_id).await;
+
+    // A DIFFERENT customer, with money that really did come in.
+    let other = client
+        .post("/api/customers", serde_json::json!({ "name": "party-b" }))
+        .await;
+    let other_id = other.body["id"].as_str().expect("customer id").to_string();
+    let paid = client
+        .post(
+            "/api/payments",
+            serde_json::json!({
+                "party_kind": "customer",
+                "party_id": other_id,
+                "payment_method_id": cash_method,
+                "total": "100.00",
+                "direction": "in"
+            }),
+        )
+        .await;
+    assert_eq!(paid.status(), axum::http::StatusCode::CREATED);
+    let other_payment = paid.body["id"].as_str().expect("payment id").to_string();
+
+    // Below the route, where only the trigger is watching.
+    let mutated = sqlx::query(
+        "INSERT INTO settlements (obligation_id, payment_id, amount, created_by)
+         VALUES ($1, $2, 100.00, 'test')",
+    )
+    .bind(uuid::Uuid::parse_str(&obligation_id).expect("uuid"))
+    .bind(uuid::Uuid::parse_str(&other_payment).expect("uuid"))
+    .execute(&pool)
+    .await;
+
+    let message = match mutated {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("the trigger accepted another party's payment for this debt"),
+    };
+    assert!(
+        message.contains("belonging to a different party"),
+        "the refusal must name the party mismatch, got: {message}"
+    );
+    assert_eq!(
+        outstanding_of(&pool, &sale_id).await,
+        "100",
+        "the debt stands, because nobody who owes it has paid"
+    );
+}
+
+#[sqlx::test]
+async fn v4_s6a_the_adjustment_ceiling_still_serialises_direct_writers(pool: sqlx::PgPool) {
+    // **`R3-002` of review `review-52d3b2c6c4f09589`.** The `FOR UPDATE` that `0022` had dropped
+    // is restored, and until this test nothing proved it: the exact regression this change fixes
+    // could recur without a single failure.
+    //
+    // A lock cannot be observed from a single-connection test, so this asserts the *behaviour*
+    // the lock protects — the ceiling still refuses an over-lowering that arrives below the
+    // route — and, as a second assertion, that the trigger function really carries the lock. The
+    // second is a structural check on purpose: it is the only way to catch the specific mistake
+    // that happened, which was a `CREATE OR REPLACE` silently dropping one clause.
+    // **`prosrc` keeps the comments**, so the first version of this assertion passed with the
+    // lock removed: the explanatory comment beside the `SELECT` still said `FOR UPDATE`. Measured
+    // by neutering the migration — it stayed green. The check now strips SQL comments before
+    // looking, which is the difference between reading the code and reading prose about it.
+    let body: String = sqlx::query_scalar(
+        "SELECT prosrc FROM pg_proc WHERE proname = 'obligation_adjustments_within_amount'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read the trigger body");
+    let code: String = body
+        .lines()
+        .map(|line| match line.find("--") {
+            Some(at) => &line[..at],
+            None => line,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        code.contains("FOR UPDATE"),
+        "the adjustment ceiling must take the obligation lock; its executable body no longer does. body:\n{code}"
+    );
+
+    let client = common::client(pool.clone());
+    let cash_method = "00000000-0000-0000-0000-000000000004";
+    let (sale_id, customer_id) = sale_on_account(&client, "ceiling-lock", "100.00", 1).await;
+    let obligation_id = obligation_id_of(&pool, &sale_id).await;
+    let _ = customer_id;
+
+    // 100.00 of the debt is lowered by a note.
+    let note_total = 100.00_f64;
+    sqlx::query(
+        "INSERT INTO obligations_adjustments
+            (obligation_id, amount, document_kind, document_id, created_by)
+         VALUES ($1, $2::numeric, 'credit_note', gen_random_uuid(), 'test')",
+    )
+    .bind(uuid::Uuid::parse_str(&obligation_id).expect("uuid"))
+    .bind(note_total)
+    .execute(&pool)
+    .await
+    .expect("the legitimate lowering");
+
+    // A second one, below the route, would go past zero.
+    let over = sqlx::query(
+        "INSERT INTO obligations_adjustments
+            (obligation_id, amount, document_kind, document_id, created_by)
+         VALUES ($1, 1.00, 'credit_note', gen_random_uuid(), 'test')",
+    )
+    .bind(uuid::Uuid::parse_str(&obligation_id).expect("uuid"))
+    .execute(&pool)
+    .await;
+    assert!(
+        over.is_err(),
+        "the ceiling must still refuse an over-lowering that never passed the route"
+    );
+    let _ = cash_method;
+}

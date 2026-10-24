@@ -557,3 +557,32 @@ route does. **Reaching below a route does not excuse you from its invariants.**
 V7d Re-measured against a live server: the supplier payment answers 201 and the till goes to
 −100; the rail-blind refund answers 409 with the bank at 0 and the receiving rail still refunds;
 `make test` green with 50 unit + 232 frontend + **125** backend + 23 e2e.
+
+L31 **`review-52d3b2c6c4f09589`, two lenses over the correction itself (403 lines, 4 files).** The
+first review of a fix that judged the fix, and it found that **my deadlock fix created a deadlock**.
+
+`R1-settlement-lock-order-inversion` / `R3-001` (CRITICAL): to close `R3-003` I moved the route to
+take the party's payment rows first and the obligation second — while in the same commit I armed
+the settlement trigger to take them **obligation first**. A route settlement held the payment rows
+and waited for the obligation; a concurrent direct-SQL insert held the obligation and waited for
+the payment. The base could not deadlock there; my correction made it possible.
+
+The fix is one order, everywhere: **payment first, then obligation**, in the route and in the
+trigger. The order is not free to choose — it is whatever both writers can agree on.
+
+L32 **Two findings about tests, and both were right.**
+
+`R3-003`: the trigger's party-match invariant had no test. The existing one proved only the
+direction half, so a broken party check would still have passed it. Now proved separately, below
+the route.
+
+`R3-002`: the restored `FOR UPDATE` had no test either. Writing one exposed a worse problem —
+**the first version of that test passed with the lock removed.** `prosrc` keeps the *comments*
+in a function body, and the explanatory comment beside the `SELECT` still said `FOR UPDATE`, so
+the assertion was reading prose about the code instead of the code. It now strips SQL comments
+before looking, and neutering the lock turns it red.
+
+That is the third time in this slice that a test of mine was green while measuring the wrong
+thing. It is the same lesson each time: **a test that reads text about the behaviour, or that
+asserts only one half of a two-part invariant, proves nothing until you break the code and watch
+it fail.**
