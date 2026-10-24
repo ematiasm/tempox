@@ -1,8 +1,25 @@
 # v4-settlement — money that moves, money that is owed, and the book that proves it
 
-Design settled in conversation on 2026-10-24, not yet implemented. This file is the
+Design settled in conversation on 2026-10-24. **State: S1, S3, S4 and S5 are merged to
+`main`; S2 is deferred to v5; S6a, S6b and S7 are pending.** This file is the
 specification subagents read; `L1` onwards in the Log is where it came from, including
-the three proposals that were rejected and why.
+the three proposals that were rejected and why, and `V1`–`V9e` under Verification record
+what each delivered slice measured.
+
+| Slice | Delivered | PR | Sealed |
+| --- | --- | --- | --- |
+| **S1** the book | `0017_money_entries.sql` | #82 → `5ce9920` | `review-27b4eecb25526cbd` |
+| **S3** money that is not a sale | `0018_three_way_documents.sql`, `ledger.rs` | #83 → `f2fb87f` | `review-caf2649251ed698b` |
+| **S4** the reversal budget | `0019_reversal_budget.sql` | #84 → `6a0abe9` | `review-c20de858957fc384` |
+| **S5** annulment | `0020_annulments.sql` | #85 → `e081077` | `review-9e0c575936d6e78f` |
+| S2 `created_by` | **deferred to v5** — the field cannot be corrected afterwards (`L24`) | — | — |
+| S6a obligations, collections | pending | — | — |
+| S6b payables, supplier returns | pending | — | — |
+| S7 retire `credit` | pending, and it deletes `0016`'s four triggers | — | — |
+
+The next slice is **S6a**, which closes the hole this document exists for: today a refund
+of a sale nobody paid can still take real money out of the till (`L107` of
+`v3-accounts.md`).
 
 It exists because v3 closed a hole and left a worse one open: **the system cannot tell
 "this sale was paid" apart from "this sale is owed", so it lets a refund of a sale
@@ -535,3 +552,58 @@ V9e **A tooling note that cost a step.** `git add -A` swept a Kate swap file
 that suffix. It was removed in a **new commit** (`cffee22`) rather than with `--amend` —
 rewriting a commit that is already a review candidate is exactly what stranded three
 lineages in v3 — and `*.kate-swp` joined the ignore list beside the older pattern.
+
+## Carried over from the retired HANDOFF (2026-10-24)
+
+`HANDOFF.md` was deleted from this repository as redundant: everything it held either
+already lived in `odd/` or `docs/`, or belongs here. These three items had no other home,
+and they are recorded so deleting the file does not delete the knowledge.
+
+### Lessons from the review loop, and they cost real time
+
+- **Correct with a new commit, never `--amend`,** once a review has opened authority.
+  Three transitive lineages died that way in v3, and the fix for a fourth almost repeated
+  it. A rewritten commit is a new candidate and the provider's binding still names the old
+  one.
+- **Review each slice in isolation with an explicit `baseRef`.** The whole-branch
+  projection exceeds the provider's reviewer budget and refuses without creating authority
+  (`lens_context_budget_exceeded`). A full 40-character sha; an abbreviated one is rejected
+  as `base-ref-unresolvable`.
+- **When the Pi facade blocks a slot, the native CLI is the sanctioned route.** Measured
+  twice: `gentle_review_capture` rejects `correction-lines` and `targeted-validation` in
+  every form, while `gentle-ai review capture-correction-plan --correction-lines=N` and
+  `gentle-ai review capture-validation --input <json>` accept them first try. `--materialize`
+  prints the exact role task when the role is host-mediated, and `inspect-candidate --purpose
+  targeted-validation --operation patch --path-index N` reads the frozen trees.
+- **Cherry-picked hashes are not ancestry.** Use `git diff` of content, never
+  `merge-base --is-ancestor` with hashes.
+- **A diff between two branch tips is not what a merge does.** `git merge-tree --write-tree`
+  answers that question; reading the diff as if it did nearly cost a merge preceded by a
+  false diagnosis.
+- **An assertion on a shared resource proves nothing about one test.** Playwright ran six
+  specs in parallel over one database; now `workers: 1`.
+
+### Informative findings, none of which blocked anything
+
+From the reviews of #73, #75 and v3. The first is the one worth doing first.
+
+- **The API proxy forwards headers unsanitised** (`apiProxy.ts`). Harmless today; it matters
+  the day the backend is exposed directly.
+- The proxy forwards only `content-type` of the response headers.
+- The proxy follows redirects by default.
+- **The button that moves the till has no confirmation** (`/accounts`). The server keeps it
+  and moving it back is symmetric, so this is a design decision rather than a defect.
+- `catalog.spec.ts:122` waits on a fixed `setTimeout(600)`.
+- `money.test.ts` lacks the `Number.isSafeInteger` boundary in `parseInitialStock`.
+
+### Environment facts that are not in `docs/`
+
+- The development volume is **`pgdata_dev`**. The previous one was backed up to
+  `/tmp/tempox-backup/` and deleted; `/tmp` does not survive a reboot, so that backup is
+  already gone.
+- `docker compose up --build` **does not** start the backend or the frontend. The loop is
+  `docker compose up -d`, then `cargo run`, then `npm run dev`.
+- `npm run dev` failing with `ECONNREFUSED` means the backend is down, not that `BACKEND_URL`
+  is wrong.
+- The development database is now at migration **16 locally** and `main` is at `0020`; the
+  next `cargo run` applies the rest.

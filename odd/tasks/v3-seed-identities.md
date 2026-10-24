@@ -81,7 +81,8 @@ feature already follows, not a new one.
 own, which is correct for the screen; but the `409` it relies on lives in #80. Between
 the two merges, and only then, a client calling the API directly still gets a `500`
 for the promotion while its method is inactive. That is the state `main` would be in
-for one PR, and it is the reason the merge order in `HANDOFF.md` matters.
+for one PR, and it is why the merge order of the two PRs matters: #80 first, then a
+retarget of #81 to `main`.
 
 ## Log
 
@@ -209,8 +210,7 @@ change that needs none of that branch's work. Nothing had been pushed, so
 with an empty diff against origin; `git diff` also confirmed the rebase had changed
 no content, only hashes. T5 was then done on the published tip.
 
-The rule this repeats, already in `HANDOFF.md` §5, is about correcting a commit once
-a review opened authority — but the cost here was different and worth naming: a
+The rule this repeats is about correcting a commit once a review opened authority — but the cost here was different and worth naming: a
 rewritten tip is a new target for the provider, and the seals that cover #81's trees
 would no longer cover it. Stacking a branch that cannot use the parent's work is not
 a rebase; it is two independent fixes.
