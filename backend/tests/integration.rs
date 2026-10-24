@@ -8638,7 +8638,7 @@ async fn v4_s6a_a_refund_through_a_real_rail_needs_money_that_actually_arrived(p
 
     // A sale on account of 100, nobody has paid anything.
     let (sale_id, customer_id) = sale_on_account(&client, "l107", "100.00", 1).await;
-    let sale = client.get(&format!("/api/sales?limit=200")).await;
+    let sale = client.get("/api/sales?limit=200").await;
     let item_id = sale
         .json()
         .as_array()
