@@ -108,6 +108,71 @@ async fn lock_party_balance(
     Ok(available)
 }
 
+/// How much of a party's money is still theirs **on one rail**, with the party's payment rows
+/// locked for the rest of the transaction.
+///
+/// **A refund leaves through a rail, so the rail is what must have received it**
+/// (`R1-payments-refund-rail-blind` / `R3-001`). The party-scoped balance is the right ceiling
+/// for *whether* the money exists; it is the wrong one for *where it goes*. Measured before this
+/// helper: 100.00 collected in cash, refunded by transfer, answered 201 and drove the bank to
+/// **-100.00** — a rail that never received a cent paid it out.
+///
+/// So the same three terms as [`lock_party_balance`], each restricted to `payment_method_id`:
+///
+/// ```text
+///   + SUM(payments in  on this method)   money that arrived here
+///   - SUM(settlements of those)          of which is already spoken for
+///   - SUM(payments out on this method)   of which already left here
+/// ```
+///
+/// The lock is taken on the party's rows, not the rail's, because a concurrent refund on a
+/// *different* rail still changes the party's balance and the two must not interleave.
+async fn lock_party_balance_on_rail(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    party_kind: &str,
+    party_id: Uuid,
+    payment_method_id: Uuid,
+) -> Result<Decimal, StatusCode> {
+    // Lock the party's payments first, in one statement, exactly as the party-wide helper does.
+    let _rows: Vec<(Uuid,)> = sqlx::query_as(
+        "SELECT id FROM payments
+          WHERE party_kind = $1 AND party_id = $2
+          FOR UPDATE",
+    )
+    .bind(party_kind)
+    .bind(party_id)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| {
+        tracing::error!(?e, "party payment lock failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let available: Decimal = sqlx::query_scalar(
+        "SELECT COALESCE((SELECT SUM(p.total) FROM payments p
+                           WHERE p.party_kind = $1 AND p.party_id = $2
+                             AND p.direction = 'in' AND p.payment_method_id = $3), 0)
+                - COALESCE((SELECT SUM(s.amount) FROM settlements s
+                              JOIN payments sp ON sp.id = s.payment_id
+                             WHERE sp.party_kind = $1 AND sp.party_id = $2
+                               AND sp.direction = 'in' AND sp.payment_method_id = $3), 0)
+                - COALESCE((SELECT SUM(p.total) FROM payments p
+                             WHERE p.party_kind = $1 AND p.party_id = $2
+                               AND p.direction = 'out' AND p.payment_method_id = $3), 0)",
+    )
+    .bind(party_kind)
+    .bind(party_id)
+    .bind(payment_method_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| {
+        tracing::error!(?e, "party rail balance lookup failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(available)
+}
+
 // ── A payment ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -232,8 +297,17 @@ async fn create_payment(
     // The lock comes first, through `lock_party_balance`, so two concurrent refunds cannot
     // each read the same balance and each find room — the shape `create_credit_note`
     // records for over-refunding a line.
-    if body.direction == "out" {
-        let available = lock_party_balance(&mut tx, &body.party_kind, body.party_id).await?;
+    // **The ceiling guards a CUSTOMER's money, and only that** (`R1-supplier-out-always-409` /
+    // `R2-001` / `R3-002`). The first version keyed on `direction == "out"` alone and applied to
+    // suppliers too — but `payments_direction_matches_party` forbids `in` from a supplier, so a
+    // supplier's balance can only ever be zero or negative and *every* supplier payment was
+    // refused with 409 before writing a row. Measured: paying a supplier answered 409 on a route
+    // whose own CHECK allows it. We paying a supplier is our money leaving, not a credit balance
+    // being refunded, so it has no party balance to draw from.
+    if body.direction == "out" && body.party_kind == "customer" {
+        let available =
+            lock_party_balance_on_rail(&mut tx, &body.party_kind, body.party_id, body.payment_method_id)
+                .await?;
         if body.total > available {
             return Err(StatusCode::CONFLICT);
         }
@@ -349,6 +423,23 @@ async fn create_settlement(
     // room, and each write — over-applying in exactly the shape `create_credit_note`
     // records for over-refunding a line. The lock order is obligation then payment, and it
     // is fixed here so two callers cannot deadlock by taking them in opposite orders.
+    // **Read the payment's party first, without a lock, only to know whose rows to lock**
+    // (`R3-003`). The locked read below is still the authoritative one; this exists so the
+    // party's payment rows — the resource a refund also takes — are acquired before the
+    // obligation and the single payment row, in that order, by every writer.
+    let payer_ids: Option<(String, Uuid)> =
+        sqlx::query_as("SELECT party_kind, party_id FROM payments WHERE id = $1")
+            .bind(body.payment_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| {
+                tracing::error!(?e, "payment party read failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+    let (lock_party_kind, lock_party_id) = payer_ids.ok_or(StatusCode::NOT_FOUND)?;
+    let party_available =
+        lock_party_balance(&mut tx, &lock_party_kind, lock_party_id).await?;
+
     let owed: Option<Decimal> =
         sqlx::query_scalar("SELECT amount FROM obligations WHERE id = $1 FOR UPDATE")
             .bind(body.obligation_id)
@@ -454,8 +545,9 @@ async fn create_settlement(
     //
     // The same helper the refund path uses answers this, which is why it exists: three call
     // sites, one definition, so none of them can forget the third term (`payments out`).
-    let party_available =
-        lock_party_balance(&mut tx, &payer_kind, payer_id).await?;
+    // **The balance was read and locked at the top of this transaction**, before the obligation
+    // and the payment row, so the ordering above holds and the value is already consistent with
+    // what this transaction will write.
     if body.amount > party_available {
         return Err(StatusCode::CONFLICT);
     }

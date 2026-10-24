@@ -9442,3 +9442,210 @@ async fn v4_s6a_a_refund_may_not_leave_a_rail_that_never_received_the_money(pool
     );
     assert_eq!(balance_of(&client, cash_account).await, "0.00");
 }
+
+#[sqlx::test]
+async fn v4_s6a_paying_a_supplier_is_not_a_customer_refund(pool: sqlx::PgPool) {
+    // **`R1-supplier-out-always-409` / `R2-001` / `R3-002` of review `review-b40b15076ff2c498`,
+    // all three CRITICAL.** The refund ceiling keyed on `direction == "out"` alone and applied
+    // to suppliers — but `payments_direction_matches_party` forbids `in` from a supplier, so a
+    // supplier's balance can only ever be zero or negative and *every* supplier payment was
+    // refused with 409 before writing a row.
+    //
+    // Measured before the fix: `POST /api/payments` for a supplier answered 409 on a route whose
+    // own CHECK allows it. We paying a supplier is our money leaving, not a credit balance being
+    // refunded, so it has no party balance to draw from.
+    let client = common::client(pool.clone());
+    let cash_method = "00000000-0000-0000-0000-000000000004";
+    let cash_account = "00000000-0000-0000-0000-000000000003";
+    let one_off_supplier = "00000000-0000-0000-0000-000000000002";
+
+    let paid = client
+        .post(
+            "/api/payments",
+            serde_json::json!({
+                "party_kind": "supplier",
+                "party_id": one_off_supplier,
+                "payment_method_id": cash_method,
+                "total": "100.00",
+                "direction": "out"
+            }),
+        )
+        .await;
+    assert_eq!(
+        paid.status(),
+        axum::http::StatusCode::CREATED,
+        "a supplier payment is a legitimate outflow with no balance to draw from; body: {}",
+        paid.text
+    );
+
+    // The money really left, which is the whole point of the route.
+    assert_eq!(balance_of(&client, cash_account).await, "-100.00");
+
+    // And the customer ceiling still bites: a customer cannot refund what never arrived.
+    let (_, customer_id) = sale_on_account(&client, "supplier-vs-customer", "10.00", 1).await;
+    let refused = client
+        .post(
+            "/api/payments",
+            serde_json::json!({
+                "party_kind": "customer",
+                "party_id": customer_id,
+                "payment_method_id": cash_method,
+                "total": "10.00",
+                "direction": "out"
+            }),
+        )
+        .await;
+    assert_eq!(
+        refused.status(),
+        axum::http::StatusCode::CONFLICT,
+        "a customer still cannot refund money that never arrived; body: {}",
+        refused.text
+    );
+}
+
+#[sqlx::test]
+async fn v4_s6a_a_refund_through_payments_is_bounded_by_its_own_rail(pool: sqlx::PgPool) {
+    // **`R1-payments-refund-rail-blind` / `R3-001`.** The party balance is the right ceiling for
+    // *whether* the money exists and the wrong one for *where it goes*. Measured before the fix:
+    // 100.00 collected in cash, refunded by transfer, answered 201 and drove the bank to
+    // -100.00 — a rail that never received a cent paid it out.
+    //
+    // The credit-note path already had this guard; `/api/payments` did not, and the same rule
+    // has to hold in both or the weaker one is the real policy.
+    let client = common::client(pool.clone());
+    let cash_account = "00000000-0000-0000-0000-000000000003";
+    let cash_method = "00000000-0000-0000-0000-000000000004";
+    let (_, customer_id) = sale_on_account(&client, "pay-rail", "100.00", 1).await;
+
+    let account = client
+        .post("/api/accounts", serde_json::json!({ "name": "banco-pay-rail" }))
+        .await;
+    let account_id = account.body["id"].as_str().expect("account id").to_string();
+    let method = client
+        .post(
+            "/api/payment-methods",
+            serde_json::json!({ "name": "transf-pay-rail", "account_id": account_id }),
+        )
+        .await;
+    let bank_method = method.body["id"].as_str().expect("method id").to_string();
+
+    // 100.00 arrives IN CASH.
+    let collected = client
+        .post(
+            "/api/payments",
+            serde_json::json!({
+                "party_kind": "customer",
+                "party_id": customer_id,
+                "payment_method_id": cash_method,
+                "total": "100.00",
+                "direction": "in"
+            }),
+        )
+        .await;
+    assert_eq!(collected.status(), axum::http::StatusCode::CREATED);
+
+    // A transfer refund has nothing to draw from: that rail received nothing.
+    let wrong_rail = client
+        .post(
+            "/api/payments",
+            serde_json::json!({
+                "party_kind": "customer",
+                "party_id": customer_id,
+                "payment_method_id": bank_method,
+                "total": "100.00",
+                "direction": "out"
+            }),
+        )
+        .await;
+    assert_eq!(
+        wrong_rail.status(),
+        axum::http::StatusCode::CONFLICT,
+        "a rail that never received the money cannot refund it; body: {}",
+        wrong_rail.text
+    );
+    assert_eq!(balance_of(&client, &account_id).await, "0.00");
+    assert_eq!(balance_of(&client, cash_account).await, "100.00");
+
+    // The rail that did receive it refunds it.
+    let right_rail = client
+        .post(
+            "/api/payments",
+            serde_json::json!({
+                "party_kind": "customer",
+                "party_id": customer_id,
+                "payment_method_id": cash_method,
+                "total": "100.00",
+                "direction": "out"
+            }),
+        )
+        .await;
+    assert_eq!(
+        right_rail.status(),
+        axum::http::StatusCode::CREATED,
+        "the rail that took the money gives it back; body: {}",
+        right_rail.text
+    );
+    assert_eq!(balance_of(&client, cash_account).await, "0.00");
+}
+
+#[sqlx::test]
+async fn v4_s6a_the_database_refuses_a_settlement_outside_its_invariants(pool: sqlx::PgPool) {
+    // **`R3-005`.** Direction and party lived only in `create_settlement`, so a direct SQL
+    // insert — or any future route — could settle a debt with money that left the till, or with
+    // another party's money. A ceiling enforced only above the database is a suggestion to
+    // everyone who reaches below it.
+    //
+    // This test goes under the route on purpose: that is the surface the trigger exists for.
+    let client = common::client(pool.clone());
+    let cash_method = "00000000-0000-0000-0000-000000000004";
+    let (sale_id, customer_id) = sale_on_account(&client, "trigger-party", "100.00", 1).await;
+    let obligation_id = obligation_id_of(&pool, &sale_id).await;
+
+    // An outbound payment by that same customer: real money that left.
+    //
+    // **The payment and its ledger entry go in ONE transaction.** `0022`'s
+    // `payments_claim_their_entry` is deferred and asserts the pair at COMMIT, so inserting the
+    // header alone — even here, in a test reaching below the route — is refused. That refusal is
+    // the guard working, and the first version of this test hit it.
+    let mut tx = pool.begin().await.expect("begin the outbound payment");
+    let outbound: (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO payments
+            (party_kind, party_id, payment_method_id, total, direction, occurred_at, created_by)
+         VALUES ('customer', $1, $2, 50.00, 'out', NOW(), 'test') RETURNING id",
+    )
+    .bind(uuid::Uuid::parse_str(&customer_id).expect("uuid"))
+    .bind(uuid::Uuid::parse_str(cash_method).expect("uuid"))
+    .fetch_one(&mut *tx)
+    .await
+    .expect("insert the outbound payment");
+    sqlx::query(
+        "INSERT INTO money_entries
+            (account_id, payment_method_id, document_kind, document_id, amount,
+             occurred_at, created_by)
+         VALUES ('00000000-0000-0000-0000-000000000003', $1, 'payment', $2, -50.00, NOW(), 'test')",
+    )
+    .bind(uuid::Uuid::parse_str(cash_method).expect("uuid"))
+    .bind(outbound.0)
+    .execute(&mut *tx)
+    .await
+    .expect("the outbound entry");
+    tx.commit().await.expect("commit the outbound payment");
+
+    let mutated = sqlx::query(
+        "INSERT INTO settlements (obligation_id, payment_id, amount, created_by)
+         VALUES ($1, $2, 50.00, 'test')",
+    )
+    .bind(uuid::Uuid::parse_str(&obligation_id).expect("uuid"))
+    .bind(outbound.0)
+    .execute(&pool)
+    .await;
+
+    let message = match mutated {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("the trigger accepted an outbound payment as a settlement"),
+    };
+    assert!(
+        message.contains("money that left cannot settle a debt"),
+        "the refusal must say what is wrong with the direction, got: {message}"
+    );
+}

@@ -510,3 +510,50 @@ closed** by `b0735f4` and `590de3f`. The candidate under review was `b0cfe16`, t
 That is not a wasted review: `R1-refund-guard-rail-blind` is real, was open in HEAD, and no
 correction had touched it. But it does say something about reviewing a chain: **a candidate that
 is not the state you intend to ship finds the defects of a state you already left.**
+
+L28 **`review-b40b15076ff2c498`, three lenses over the real state (`d520b11..HEAD`, 2641 lines,
+7 files).** This is the first review that judged the corrections rather than the state they
+replaced, and it found **four defects I had introduced while fixing earlier ones**.
+
+| finding | what I broke | measured |
+| --- | --- | --- |
+| `R1-supplier-out-always-409`, `R2-001`, `R3-002` (CRITICAL) | the refund ceiling keyed on `direction == "out"` alone, so it applied to suppliers | paying a supplier answered **409** on a route its own CHECK allows |
+| `R1-payments-refund-rail-blind`, `R3-001` (CRITICAL) | the ceiling was party-scoped and rail-blind | 100 collected in cash, refunded by transfer → **201**, bank **-100** |
+| `R3-003` (CRITICAL) | `create_settlement` locked one payment row, then all of the party's | two settlements could hold one each and wait — a **deadlock**, 500 for a valid request |
+| `R1-adjustment-ceiling-lock-dropped`, `R3-004` | `CREATE OR REPLACE` in `0022` rewrote `obligation_adjustments_within_amount` **without** the `FOR UPDATE` that `0021` had added | the `psql`-level guarantee silently vanished while both files still read as if they had it |
+| `R3-005` | direction and party lived only in `create_settlement` | a direct `INSERT` could settle a debt with money that left the till |
+
+L29 **The lesson that cost the most, and it is about my own corrections.** Two of the four were
+the same class of mistake: **a guard keyed on the wrong axis.** The refund ceiling keyed on
+direction instead of on party *and* rail; the settlement lock keyed on one payment row instead of
+on the resource every writer shares. Each correction was locally reasonable and globally wrong,
+and only an outside lens could see it — my own tests were written to the axis I had chosen, so
+they passed.
+
+L30 **`CREATE OR REPLACE` is not additive**, and this repository has now paid for that twice
+(`0013` re-cutting `guard_sale_economics`, and `0022` re-cutting `obligation_adjustments_within_amount`).
+A function body rewritten in a later migration loses everything the earlier body guaranteed
+unless it is written again. Both files carried comments claiming the guarantee; neither could
+fail a test, because the HTTP paths take their own locks and the tests only use HTTP.
+
+## Verification of the four corrections
+
+V7 **Three REDs observed before each fix, each with the measured number:**
+
+| test | before | after |
+| --- | --- | --- |
+| `v4_s6a_paying_a_supplier_is_not_a_customer_refund` | 409 for a legitimate supplier payment | 201, till −100 |
+| `v4_s6a_a_refund_through_payments_is_bounded_by_its_own_rail` | 201, bank −100 | 409, bank 0 |
+| `v4_s6a_the_database_refuses_a_settlement_outside_its_invariants` | accepted below the route | refused with the direction named |
+
+V7b **Each guard proven to bite by neutering it**, in turn: the supplier exemption (a customer
+can still not refund what never arrived), the rail restriction, and the trigger's direction check.
+
+V7c **One test of mine was wrong and the schema corrected it.** The first version of the trigger
+test inserted a payment header alone, and `payments_claim_their_entry` refused it — the deferred
+pair guard doing its job. The test now writes the payment and its entry in one transaction, as the
+route does. **Reaching below a route does not excuse you from its invariants.**
+
+V7d Re-measured against a live server: the supplier payment answers 201 and the till goes to
+−100; the rail-blind refund answers 409 with the bank at 0 and the receiving rail still refunds;
+`make test` green with 50 unit + 232 frontend + **125** backend + 23 e2e.

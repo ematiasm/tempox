@@ -101,8 +101,16 @@ DECLARE
     paid    NUMERIC(14, 6);
     applied NUMERIC(14, 6);
 BEGIN
-    SELECT o.amount INTO owed FROM obligations o WHERE o.id = NEW.obligation_id;
-    SELECT p.total  INTO paid FROM payments p    WHERE p.id = NEW.payment_id;
+    -- **Both rows are locked, in a fixed order** (`R1-settlement-ceiling-unlocked` /
+    -- `R3-004`). Without it two concurrent direct-SQL settlements — the same payment against
+    -- different obligations, or the same obligation from different payments — each read the same
+    -- committed sums, both pass, and commit past a ceiling. The routes serialise on their own
+    -- locks; this trigger is what covers the surface it exists to govern.
+    --
+    -- Obligation then payment, the same order the route takes, so a route writer and a direct
+    -- SQL writer cannot deadlock each other.
+    SELECT o.amount INTO owed FROM obligations o WHERE o.id = NEW.obligation_id FOR UPDATE;
+    SELECT p.total  INTO paid FROM payments p    WHERE p.id = NEW.payment_id FOR UPDATE;
 
     IF owed IS NULL OR paid IS NULL THEN
         RAISE EXCEPTION
@@ -132,6 +140,31 @@ BEGIN
             NEW.payment_id, paid, applied, applied, NEW.amount;
     END IF;
 
+    -- **Direction, and the party on both sides** (`R3-005`). These two invariants lived only in
+    -- `create_settlement`, so a direct SQL insert — or any future route — could settle a debt
+    -- with money that left the till, or with another party's money. A ceiling that is only
+    -- enforced above the database is a suggestion to everyone who reaches below it.
+    IF NOT EXISTS (
+        SELECT 1 FROM payments WHERE id = NEW.payment_id AND direction = 'in'
+    ) THEN
+        RAISE EXCEPTION
+            'settlement % names payment % which is not money coming in; money that left cannot settle a debt',
+            NEW.id, NEW.payment_id;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+          FROM obligations o
+          JOIN payments p ON p.id = NEW.payment_id
+         WHERE o.id = NEW.obligation_id
+           AND o.party_kind = p.party_kind
+           AND o.party_id = p.party_id
+    ) THEN
+        RAISE EXCEPTION
+            'settlement % pays obligation % with payment % belonging to a different party',
+            NEW.id, NEW.obligation_id, NEW.payment_id;
+    END IF;
+
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
@@ -156,7 +189,17 @@ DECLARE
     lowered NUMERIC(14, 6);
     settled NUMERIC(14, 6);
 BEGIN
-    SELECT amount INTO owed FROM obligations WHERE id = NEW.obligation_id;
+    -- **`FOR UPDATE`, and this re-cut DROPPED it** (`R1-adjustment-ceiling-lock-dropped` /
+    -- `R3-004`). `0021` added the lock to this very function and called it "the whole
+    -- guarantee"; `CREATE OR REPLACE` replaced the body without it, so over the full chain the
+    -- trigger-level protection silently disappeared while both files still read as if they had
+    -- it. The HTTP paths take their own locks, which is why no test noticed — the guard that
+    -- covers the `psql` surface was the one that vanished.
+    --
+    -- A function redefinition is not additive: everything the previous body guaranteed has to
+    -- be written again. That is the cost of `CREATE OR REPLACE`, and it is worth stating in the
+    -- file that paid it.
+    SELECT amount INTO owed FROM obligations WHERE id = NEW.obligation_id FOR UPDATE;
 
     SELECT COALESCE(SUM(amount), 0) INTO lowered
       FROM obligations_adjustments
