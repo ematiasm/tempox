@@ -691,6 +691,65 @@ async fn create_credit_note(
                 return Err(StatusCode::CONFLICT);
             }
 
+            // **And it must have arrived on the rail the note names** (`R1-refund-guard-rail-blind`).
+            // The check above is a budget over the sale, and a budget is rail-blind: the money
+            // came in somewhere, so *some* rail received it. But a refund leaves through the
+            // account the note names, and money that arrived in the till did not arrive in the
+            // bank. Measured before this guard: a sale collected in cash, refunded by transfer,
+            // answered 201 and drove the bank to -100.00 — the harm this whole guard exists to
+            // close, through a side door.
+            //
+            // **A rail's arrival is a sum over this sale's own documents**, not over the party:
+            // what this sale put into that account.
+            //   - paid outright: the sale's single entry, on the sale's own method
+            //   - on account:     the settlements whose payment used that method
+            //
+            // and what earlier explicit notes already took back out through that same account.
+            let arrived_on_rail: Decimal = sqlx::query_scalar(
+                "SELECT COALESCE((
+                    SELECT SUM(me.amount) FROM money_entries me
+                     WHERE me.document_kind = 'sale' AND me.document_id = $1
+                       AND me.payment_method_id = $2
+                 ), 0)
+                 + COALESCE((
+                    SELECT SUM(s.amount) FROM settlements s
+                      JOIN obligations o ON o.id = s.obligation_id
+                      JOIN payments p ON p.id = s.payment_id
+                     WHERE o.source_document_kind = 'sale' AND o.source_document_id = $1
+                       AND p.direction = 'in'
+                       AND p.payment_method_id = $2
+                 ), 0)",
+            )
+            .bind(sale_id)
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| {
+                tracing::error!(?e, "sale rail arrival failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+
+            // What earlier notes already paid out through this same rail, as a magnitude.
+            let left_on_rail: Decimal = sqlx::query_scalar(
+                "SELECT COALESCE(SUM(me.amount), 0)
+                   FROM money_entries me
+                   JOIN credit_notes cn ON cn.id = me.document_id
+                  WHERE me.document_kind = 'credit_note' AND cn.sale_id = $1
+                    AND me.payment_method_id = $2",
+            )
+            .bind(sale_id)
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| {
+                tracing::error!(?e, "sale rail refunds failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+
+            if arrived_on_rail + left_on_rail < note_total {
+                return Err(StatusCode::CONFLICT);
+            }
+
             Some(id)
         }
         None => sale_method,

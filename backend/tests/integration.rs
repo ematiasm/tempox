@@ -9326,3 +9326,119 @@ async fn v4_s6a_a_settlement_cannot_spend_money_that_was_already_refunded(pool: 
     );
     assert_eq!(outstanding_of(&pool, &sale_id).await, "50");
 }
+
+#[sqlx::test]
+async fn v4_s6a_a_refund_may_not_leave_a_rail_that_never_received_the_money(pool: sqlx::PgPool) {
+    // **`R1-refund-guard-rail-blind` of review `review-2e03230018397328`.** The reworked guard
+    // measures what arrived **in aggregate** and never on the rail the note names, so a sale
+    // collected in cash can be refunded through a different account and drive that account
+    // negative — the same harm the guard exists to close, through a side door.
+    //
+    // The distinction the guard was missing: money is not fungible across rails *for the
+    // purposes of a refund*. A customer pays into one account; the refund goes back through
+    // an account the note names, and that account must have received enough through this sale.
+    let client = common::client(pool.clone());
+    let cash_account = "00000000-0000-0000-0000-000000000003";
+    let cash_method = "00000000-0000-0000-0000-000000000004";
+
+    // A second account with its own rail, so the refund has somewhere else to go.
+    let account = client
+        .post("/api/accounts", serde_json::json!({ "name": "banco-R1" }))
+        .await;
+    let account_id = account.body["id"].as_str().expect("account id").to_string();
+    let method = client
+        .post(
+            "/api/payment-methods",
+            serde_json::json!({ "name": "transferencia-R1", "account_id": account_id }),
+        )
+        .await;
+    let bank_method = method.body["id"].as_str().expect("method id").to_string();
+
+    // A sale on account, then collected IN CASH.
+    let (sale_id, customer_id) = sale_on_account(&client, "rail", "100.00", 1).await;
+    let sales = client.get("/api/sales?limit=200").await;
+    let item_id = sales
+        .json()
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|s| s["id"] == sale_id.as_str())
+        .expect("listed")["items"][0]["id"]
+        .as_str()
+        .expect("item id")
+        .to_string();
+
+    let collected = client
+        .post(
+            "/api/payments",
+            serde_json::json!({
+                "party_kind": "customer",
+                "party_id": customer_id,
+                "payment_method_id": cash_method,
+                "total": "100.00",
+                "direction": "in"
+            }),
+        )
+        .await;
+    assert_eq!(collected.status(), axum::http::StatusCode::CREATED);
+    let payment_id = collected.body["id"].as_str().expect("id").to_string();
+    let applied = client
+        .post(
+            "/api/settlements",
+            serde_json::json!({
+                "obligation_id": obligation_id_of(&pool, &sale_id).await,
+                "payment_id": payment_id,
+                "amount": "100.00"
+            }),
+        )
+        .await;
+    assert_eq!(applied.status(), axum::http::StatusCode::CREATED);
+    assert_eq!(balance_of(&client, cash_account).await, "100.00");
+    assert_eq!(balance_of(&client, &account_id).await, "0.00");
+
+    // **The refund through the bank, which never received a cent for this sale.**
+    let wrong_rail = client
+        .post(
+            &format!("/api/sales/{sale_id}/credit-notes"),
+            serde_json::json!({
+                "items": [{ "sale_item_id": item_id, "quantity": 1 }],
+                "payment_method_id": bank_method
+            }),
+        )
+        .await;
+    assert_eq!(
+        wrong_rail.status(),
+        axum::http::StatusCode::CONFLICT,
+        "a rail that never received this sale's money cannot refund it; body: {}",
+        wrong_rail.text
+    );
+    assert_eq!(
+        balance_of(&client, &account_id).await,
+        "0.00",
+        "the bank never went negative"
+    );
+    assert_eq!(
+        balance_of(&client, cash_account).await,
+        "100.00",
+        "and the till kept what it received"
+    );
+
+    // The rail that DID receive the money can refund it, so the refusal above is not a veto
+    // on refunding a collected sale at all.
+    let right_rail = client
+        .post(
+            &format!("/api/sales/{sale_id}/credit-notes"),
+            serde_json::json!({
+                "items": [{ "sale_item_id": item_id, "quantity": 1 }],
+                "payment_method_id": cash_method
+            }),
+        )
+        .await;
+    assert_eq!(
+        right_rail.status(),
+        axum::http::StatusCode::CREATED,
+        "the rail that took the money gives it back; body: {}",
+        right_rail.text
+    );
+    assert_eq!(balance_of(&client, cash_account).await, "0.00");
+}

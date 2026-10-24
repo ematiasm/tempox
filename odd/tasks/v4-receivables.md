@@ -484,3 +484,29 @@ uses the sale's own `created_at` — one transaction, one instant. The helper cl
 the route it did not mirror. It now returns `created_at` from the insert and binds it, so a test
 that compares the book's ordering against the document's asks the same question the route
 answers.
+
+L26 **`R1-refund-guard-rail-blind`, found by the `risk` lens of `review-2e03230018397328` and
+not closed by any earlier correction.** The refund guard measured what arrived **in aggregate**
+and never on the rail the note names. `SUM(settlements)` carries no rail information, so a sale
+collected in the till could be refunded by transfer — the harm the guard exists to close, through
+a side door.
+
+Reproduced before the fix: a 100.00 sale on account collected in cash, refunded by transfer,
+answered **201** and drove the bank to **-100.00**.
+
+The distinction the guard was missing: **money is not fungible across rails for the purposes of
+a refund.** A sale's arrival on a rail is a sum over that sale's own documents — the sale's entry
+when it was paid outright, the settlements whose payment used that rail when it was owed — minus
+what earlier explicit notes already paid out through the same account. Measured after: **409**,
+bank at 0.00, till keeps its 100.00, and the rail that *did* receive the money still refunds it
+(the note through cash answers 201 and the till goes to 0).
+
+L27 **A note on how this was found, because it changes what this review was worth.** The three
+lenses of `review-2e03230018397328` also raised two CRITICAL findings — a refund without a
+balance ceiling, and a settlement without a direction or party guard — and both were **already
+closed** by `b0735f4` and `590de3f`. The candidate under review was `b0cfe16`, the commit
+*before* those corrections, so the review rediscovered defects that no longer existed.
+
+That is not a wasted review: `R1-refund-guard-rail-blind` is real, was open in HEAD, and no
+correction had touched it. But it does say something about reviewing a chain: **a candidate that
+is not the state you intend to ship finds the defects of a state you already left.**
