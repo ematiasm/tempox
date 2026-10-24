@@ -615,18 +615,52 @@ async fn create_credit_note(
                 return Err(StatusCode::BAD_REQUEST);
             }
 
-            // **`v3-accounts.md` L107, and its closing in two steps.** An explicit method
-            // means money goes back through a rail, so that rail must have received that
-            // money first. Until the settlement layer exists (`0022`) nothing can have been
-            // collected on an owed sale, so the honest answer for every one of them is a
-            // refusal — the number L107 measured was a till at −100 after a refund of a sale
-            // nobody paid.
+            // **`v3-accounts.md` L107, closed here.** An explicit method means money goes
+            // back through a rail — so that rail must have received that money first. The
+            // measured defect was a refund of a sale nobody paid taking 100 out of the
+            // till and leaving the debt standing: the shop paid a customer who had not
+            // paid it. `SUM(settlements)` is the answer the question always needed, and it
+            // only exists from this slice on.
             //
-            // **This narrows when `0022` lands**, and the narrowing is the point: the
-            // question becomes "did at least this much arrive", which a settled sale can
-            // answer yes to. A boolean today is the honest version of a question that has no
-            // number to read yet.
-            if sale_method.is_none() {
+            // **Only the explicit path is checked, and that asymmetry is the design**
+            // (`v4-settlement.md` S14). The inherited path lowers the obligation and moves
+            // nothing, so it has no precondition to check.
+            //
+            // The sum is taken with the sale's row already locked (`FOR UPDATE` above), so
+            // a concurrent collection cannot be counted after the read.
+            let settled: Decimal = sqlx::query_scalar(
+                "SELECT COALESCE(SUM(s.amount), 0)
+                   FROM settlements s
+                   JOIN obligations o ON o.id = s.obligation_id
+                  WHERE o.source_document_kind = 'sale' AND o.source_document_id = $1",
+            )
+            .bind(sale_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| {
+                tracing::error!(?e, "sale settled sum failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+
+            // A note on a sale that was paid outright has no obligation at all, and its
+            // `SUM(settlements)` is zero — but its money *did* arrive, at the sale. So the
+            // question is not "was it settled" but "did this sale ever take in at least
+            // this much": a paid sale took in its total, and an owed one took in its
+            // settlements.
+            let arrived = if sale_method.is_some() {
+                sqlx::query_scalar::<_, Decimal>("SELECT total FROM sales WHERE id = $1")
+                    .bind(sale_id)
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(|e| {
+                        tracing::error!(?e, "sale total read failed");
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    })?
+            } else {
+                settled
+            };
+
+            if arrived < note_total {
                 return Err(StatusCode::CONFLICT);
             }
 

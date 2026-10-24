@@ -1,8 +1,8 @@
 # v4-receivables — what we are owed, and the money that settles it
 
 Slice **S6a / T6** of `odd/tasks/v4-settlement.md`, split into its own document because it
-is the slice where an obligation stops being a fake account. **State: T6.1 implemented and
-green (108 backend tests); T6.2-T6.4 are the next commits of this branch.** S1, S3, S4 and S5 are
+is the slice where an obligation stops being a fake account. **State: T6.1-T6.4 implemented
+and green (114 backend tests), committed as two slices on `feat/v4-annulment`, not reviewed.** S1, S3, S4 and S5 are
 merged to `main` (`e081077`); S2 is deferred to v5; S6b and S7 are still ahead.
 
 The state that must hold when this slice closes, and it is one sentence:
@@ -138,10 +138,10 @@ S11 **Scope ends at the API.** No collection screen, no balance-applying button,
 
 | ID | Spec | Slice | Route | Risk | Commit |
 | --- | --- | --- | --- | --- | --- |
-| T6.1 | S1, S2, S3, S7, S8 | S6a — the four documents stop faking a wallet | `0021`: `obligations`, `obligations_adjustments`, nullable `payment_method_id` on `sales` and `credit_notes`, the two-state constraint trigger, sale on account in `sales.rs`, a credit note that moves no money | item 1, item 3 | done, uncommitted |
-| T6.2 | S4, S5 | S6a — a collection is a document | `0022`: `payments`, `settlements`, their ceilings and append-only guards, `POST /api/payments` and `POST /api/settlements` | item 1 | — |
-| T6.3 | S6 | S6a — a balance nobody assigned | the derived unapplied figure, settlement against a newer obligation from a payment with free amount, the manual rule stated in one place | item 1 | — |
-| T6.4 | S7, S9 | S6a — the `L107` hole | the explicit-method guard on `create_credit_note`, the `v3-accounts.md` L107 scenario as a test | item 1 | — |
+| T6.1 | S1, S2, S3, S7, S8 | S6a — the four documents stop faking a wallet | `0021`: `obligations`, `obligations_adjustments`, nullable `payment_method_id` on `sales` and `credit_notes`, the two-state constraint trigger, sale on account in `sales.rs`, a credit note that moves no money | item 1, item 3 | `d520b11` |
+| T6.2 | S4, S5 | S6a — a collection is a document | `0022`: `payments`, `settlements`, their ceilings and append-only guards, `POST /api/payments` and `POST /api/settlements` | item 1 | this commit |
+| T6.3 | S6 | S6a — a balance nobody assigned | the derived unapplied figure, settlement against a newer obligation from a payment with free amount, the manual rule stated in one place | item 1 | this commit |
+| T6.4 | S7, S9 | S6a — the `L107` hole | the explicit-method guard on `create_credit_note`, the `v3-accounts.md` L107 scenario as a test | item 1 | this commit |
 
 Order is dependency: T6.1 before everything (nothing settles an obligation that cannot
 exist), T6.2 before T6.3 (a balance is a payment with free amount), T6.4 last (it needs
