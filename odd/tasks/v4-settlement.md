@@ -156,7 +156,7 @@ S15 **All eight slices are separate review candidates.** The five marked **item 
 | T1 | S1, S2, S3 | S1 — the book | `money_entries` as a table, `money_movements` as a view over it, `accounts.kind`, backfill from the four existing document tables, write path in sale / credit-note / purchase / supplier-return | item 1 | `8de5280` |
 | T2 | S13 | S2 — who | `created_by` on the entries and on the documents that will be created | — | — |
 | T3 | S12 | S3 — money that is not a sale | opening balance, transfer, count adjustment (`0018`) | item 1 | `1a539d9` |
-| T4 | S9 | S4 — the reversal budget | move the budget from `SUM(credit_note_items)` to `sale_items.reversed_quantity` | item 1 | — |
+| T4 | S9 | S4 — the reversal budget | move the budget from `SUM(credit_note_items)` to `sale_items.reversed_quantity` (`0019`) | item 1 | `4ffb95e` |
 | T5 | S10, S11 | S5 — annulment | the annulment document, stock always returned, budget consumed | — | — |
 | T6 | S5, S6, S7, S8, S14 | S6a — what is owed to us | `obligations`, `payments(direction=in)`, `settlements`, sale on account, credit balance, the `L107` guard | item 1 | — |
 | T7 | S5, S6, S7, S14 | S6b — what we owe | `payables`, `payments(direction=out)`, the `supplier_returns` override and its guard | item 1 | — |
@@ -386,3 +386,32 @@ one-slot binding, never to replay the capture from transcript inference. STATUS 
 the identical binding — same `subject-hash`, same revision — and the retry succeeded. The
 distinction is the whole point: a *reoffered* binding is authority to try again; a
 remembered one is not.
+
+V6 **S4/T4, `4ffb95e`.** `make test-unit` 50 + 232, `make test-backend` 100 (was 98),
+`make test-e2e` 23, four CI commands clean.
+
+V6b **Two things `0019` broke on its first run, both found by running it rather than by
+reading it.**
+1. `sale_items_immutable` (`0003`) refuses **every** `UPDATE` with an unconditional
+   `RAISE`, so the backfill aborted with *"sale_items are immutable"*. The guard is now
+   narrowed the way `guard_sale_economics` already is: every column except
+   `reversed_quantity` stays refused. **The rule for future slices: this table permits
+   exactly one mutable column, and a second one is a design change, not a patch.**
+2. The migration itself could not be tested on a fresh database — an empty
+   `credit_note_items` hides every problem the backfill has. The real evidence came from a
+   database with a sale, a credit note and a consumed budget.
+
+V6c **A false green in my own test, and it is the second time this repo has paid for
+this.** The bypass test asserted only `is_err()`. Neutralising the consumer guard left it
+green, because the consumer's `UPDATE` still ran and the *budget* guard answered instead.
+The test now pins the message and fails with
+*"reversed 2 of 1 sold"* when the consumer is neutered — which proves it was measuring the
+other guard. `v3_the_default_account_always_keeps_an_active_method` records the same
+lesson in this repository; it has now been relearned here.
+
+V6d **The differential measurement says something different from S1 and S3.** Running
+`f2fb87f` and this commit side by side over HTTP gives the **same** answers — `201`, `409`
+— because the handler already refused to over-reverse. The change is not visible through
+the API at all; it is visible through `psql`, where 5 units against a line of 1 used to
+succeed and now raises. **A differential over HTTP cannot prove this slice**, and saying so
+is more useful than the table.
