@@ -93,3 +93,6 @@ Thumbs.db
 
 # Pi project-local agent definitions (mirrors .github/agents for the Pi runtime)
 /.pi/
+
+# Kate editor swap files (the .gitignore above covers *.swp but not this suffix)
+*.kate-swp
