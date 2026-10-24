@@ -817,6 +817,14 @@ async fn create_credit_note(
             // pre-checks the same ceiling and answers 409; this path did not, which left a
             // reachable ordinary operation with no actionable status. Measured before the
             // check: returning the goods on an already-settled on-account sale answered 500.
+            // **`FOR UPDATE`, and it is the lock the settlement writer also takes** (`R1-003`).
+            // Without it a settlement could commit between this read and the note's COMMIT:
+            // the pre-check would pass, `0022`'s deferred ceiling would then raise, and the
+            // caller would get the 500 this pre-check exists to remove. The database still
+            // refuses correctly — no over-lowering survives — but the status code lied.
+            //
+            // Ordering matters and matches `create_settlement`: obligation first. Two writers
+            // taking the same rows in the same order cannot deadlock.
             let room: Option<(Decimal, Decimal, Decimal)> = sqlx::query_as(
                 "SELECT o.amount,
                         COALESCE((SELECT SUM(a.amount) FROM obligations_adjustments a
@@ -824,7 +832,8 @@ async fn create_credit_note(
                         COALESCE((SELECT SUM(s.amount) FROM settlements s
                                    WHERE s.obligation_id = o.id), 0)
                    FROM obligations o
-                  WHERE o.source_document_kind = 'sale' AND o.source_document_id = $1",
+                  WHERE o.source_document_kind = 'sale' AND o.source_document_id = $1
+                  FOR UPDATE",
             )
             .bind(sale_id)
             .fetch_optional(&mut *tx)

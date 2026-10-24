@@ -441,6 +441,25 @@ async fn create_settlement(
         return Err(StatusCode::CONFLICT);
     }
 
+    // **The party's own balance, and it is the ceiling `R1-001`/`R3-001` were missing.**
+    // The check above asks how much of *this payment* is left, which is necessary and not
+    // sufficient: a payment can be wholly unapplied while the party has already taken the
+    // money back out through a refund. Measured before this guard:
+    //
+    //     collect 100  ->  refund 100  ->  settle the debt with the original inbound payment
+    //
+    // passed every check — direction, party, per-payment remainder, obligation room — and
+    // resolved the same money twice. The per-payment remainder was 100 because nothing had
+    // been settled against it; it could not see that the 100 had left the till.
+    //
+    // The same helper the refund path uses answers this, which is why it exists: three call
+    // sites, one definition, so none of them can forget the third term (`payments out`).
+    let party_available =
+        lock_party_balance(&mut tx, &payer_kind, payer_id).await?;
+    if body.amount > party_available {
+        return Err(StatusCode::CONFLICT);
+    }
+
     let created: (Uuid, DateTime<Utc>) = sqlx::query_as(
         "INSERT INTO settlements (obligation_id, payment_id, amount, created_by)
          VALUES ($1, $2, $3, 'counter') RETURNING id, created_at",

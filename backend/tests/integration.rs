@@ -9230,3 +9230,119 @@ async fn v4_s6a_migrations_refuse_a_legacy_credit_sale_instead_of_half_migrating
         "the refusal must say what is in the way and what to do, got: {message}"
     );
 }
+
+#[sqlx::test]
+async fn v4_s6a_a_settlement_cannot_spend_money_that_was_already_refunded(pool: sqlx::PgPool) {
+    // **`R1-001` and `R3-001` of review `review-1becd57b99cb3a1f`, found independently by both
+    // lenses and left open as a residual.** Every guard the correction added passes and the
+    // money is still resolved twice:
+    //
+    //     collect 100.00        available = 100
+    //     refund  100.00        passes: 100 <= 100, the till is now 0, balance -100
+    //     settle the 100 debt with the ORIGINAL inbound payment
+    //                           direction ok, party ok, per-payment remainder ok,
+    //                           obligation room ok -> debt 0, and the cash is gone
+    //
+    // The correction closed only the variant that settles *with the outbound refund itself*
+    // (400, tested). The per-payment ceiling it kept counts one payment's own settlements and
+    // cannot see that the party already took that money back out.
+    //
+    // The rule this test pins: **a settlement may not spend more than the party still has.**
+    let client = common::client(pool.clone());
+    let cash_account = "00000000-0000-0000-0000-000000000003";
+    let cash_method = "00000000-0000-0000-0000-000000000004";
+    let (sale_id, customer_id) = sale_on_account(&client, "residual", "100.00", 1).await;
+
+    let collected = client
+        .post(
+            "/api/payments",
+            serde_json::json!({
+                "party_kind": "customer",
+                "party_id": customer_id,
+                "payment_method_id": cash_method,
+                "total": "100.00",
+                "direction": "in"
+            }),
+        )
+        .await;
+    assert_eq!(collected.status(), axum::http::StatusCode::CREATED);
+    let inbound_id = collected.body["id"].as_str().expect("id").to_string();
+
+    // The refund takes the whole balance back out. It is legitimate: 100 arrived, 100 leaves.
+    let refund = client
+        .post(
+            "/api/payments",
+            serde_json::json!({
+                "party_kind": "customer",
+                "party_id": customer_id,
+                "payment_method_id": cash_method,
+                "total": "100.00",
+                "direction": "out"
+            }),
+        )
+        .await;
+    assert_eq!(
+        refund.status(),
+        axum::http::StatusCode::CREATED,
+        "refunding the full available balance is allowed; body: {}",
+        refund.text
+    );
+    assert_eq!(balance_of(&client, cash_account).await, "0.00");
+
+    // **Now the residual.** The money has left, so the debt cannot be settled with it.
+    let settled = client
+        .post(
+            "/api/settlements",
+            serde_json::json!({
+                "obligation_id": obligation_id_of(&pool, &sale_id).await,
+                "payment_id": inbound_id,
+                "amount": "100.00"
+            }),
+        )
+        .await;
+    assert_eq!(
+        settled.status(),
+        axum::http::StatusCode::CONFLICT,
+        "the customer's money already left; it cannot also clear the debt; body: {}",
+        settled.text
+    );
+    assert_eq!(
+        outstanding_of(&pool, &sale_id).await,
+        "100",
+        "the debt stands, because nothing is left to pay it with"
+    );
+
+    // And the legitimate sequence still works, so the refusal above cannot be a blanket one:
+    // 50 more arrives, and 50 of the debt is settled with it.
+    let topup = client
+        .post(
+            "/api/payments",
+            serde_json::json!({
+                "party_kind": "customer",
+                "party_id": customer_id,
+                "payment_method_id": cash_method,
+                "total": "50.00",
+                "direction": "in"
+            }),
+        )
+        .await;
+    assert_eq!(topup.status(), axum::http::StatusCode::CREATED);
+    let topup_id = topup.body["id"].as_str().expect("id").to_string();
+    let partial = client
+        .post(
+            "/api/settlements",
+            serde_json::json!({
+                "obligation_id": obligation_id_of(&pool, &sale_id).await,
+                "payment_id": topup_id,
+                "amount": "50.00"
+            }),
+        )
+        .await;
+    assert_eq!(
+        partial.status(),
+        axum::http::StatusCode::CREATED,
+        "money that really is available may settle; body: {}",
+        partial.text
+    );
+    assert_eq!(outstanding_of(&pool, &sale_id).await, "50");
+}

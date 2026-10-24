@@ -425,3 +425,46 @@ that every argument token and the subject hash match the provider's own bytes be
 submitting**. Both captures after that rule passed first try, including the retry after a
 `pi-host-relay-transport-failure`, which was only retried because fresh STATUS reoffered the
 **identical** revision and subject hashes.
+
+## The two residual findings of the review, closed
+
+L22 **`R1-001` / `R3-001`, found independently by `risk` and `reliability`.** The correction
+closed the variant that settles *with the outbound refund itself*; the sequential one survived:
+
+```
+collect 100   available = 100
+refund  100   passes: 100 <= 100. The till is now 0 and the balance -100.
+settle the 100 debt with the ORIGINAL inbound payment
+              direction ok, party ok, per-payment remainder ok, obligation room ok
+              -> debt 0, and the cash has already left
+```
+
+The per-payment ceiling counted one payment's own settlements and could not see that the party
+had taken that money back out. **The fix is the ceiling the helper already names:** a settlement
+may not spend more than the party still has, asked through `lock_party_balance` — the same
+function the refund path uses, which is why it exists as one definition rather than three.
+
+Test first: `v4_s6a_a_settlement_cannot_spend_money_that_was_already_refunded`, observed
+failing at 201 with the debt cleared, then green at 409 with the debt standing. Neutering the
+guard (`&& false`) turns it red again. Measured against a live server: the sequence answers
+409, the debt stays 100, the till stays 0 — and the legitimate path in the same test (100 more
+arrives, then it settles) still works, so the refusal is not a blanket one.
+
+L23 **`R1-003`, a narrow race rather than an amount.** The inherited credit-note pre-check read
+the obligation and its sums without a lock the settlement writer respects, so a settlement
+committing between that read and the note's COMMIT reached `0022`'s deferred ceiling and the
+caller got the 500 the pre-check exists to remove. The database refused correctly either way —
+no over-lowering survived — so only the status code lied. The pre-check now takes `FOR UPDATE`
+on the obligation, in the same order `create_settlement` takes it, so two writers cannot
+deadlock. **This one has no dedicated test, and that is stated rather than hidden:** a race
+between two transactions is not observable from an in-process test without a second connection
+and a held lock, which is a harness this suite does not have. The lock is the fix; the proof is
+the reasoning about lock order, not an assertion.
+
+L24 **No migration was written for either.** The owner said migrations are not needed yet, and
+neither fix requires one: both are route-level ceilings and locks over tables that already
+exist.
+
+V6 **Verification of the two residuals.** `make test-backend` 121 (was 120; +1). All 19
+`v4_s6a` tests pass. The new guard proven to bite by neutering. Both end-to-end sequences
+re-measured against a live server, legitimate and illegitimate side by side.
