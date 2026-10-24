@@ -154,7 +154,7 @@ S15 **All eight slices are separate review candidates.** The five marked **item 
 | ID | Spec | Slice | Route | Risk | Commit |
 | --- | --- | --- | --- | --- | --- |
 | T1 | S1, S2, S3 | S1 — the book | `money_entries` as a table, `money_movements` as a view over it, `accounts.kind`, backfill from the four existing document tables, write path in sale / credit-note / purchase / supplier-return | item 1 | `8de5280` |
-| T2 | S13 | S2 — who | `created_by` on the entries and on the documents that will be created | — | — |
+| T2 | S13 | S2 — who | **deferred to v5**; see `L24` | — | — |
 | T3 | S12 | S3 — money that is not a sale | opening balance, transfer, count adjustment (`0018`) | item 1 | `1a539d9` |
 | T4 | S9 | S4 — the reversal budget | move the budget from `SUM(credit_note_items)` to `sale_items.reversed_quantity` (`0019`) | item 1 | `4ffb95e` |
 | T5 | S10, S11 | S5 — annulment | the annulment document, stock always returned, budget consumed | — | — |
@@ -450,3 +450,29 @@ V7c **What the validator concluded.** `original_criteria.passed = true` and
 carried: the backfill runs before the guards and does not set the writer flag (so a *future*
 re-backfill would be refused — the safe order is the one this migration already uses), and
 the flag is a session setting, not authorization.
+
+L24 (owner, verbatim): "no es mejor esperar a v5 para arreglar eso cuando ya existan
+usuarios?" — **S2 is deferred to v5**, and the reason is stronger than "there are no users
+yet": `money_entries` is append-only, so a `created_by` written now can never be corrected.
+
+Measured while answering: `UPDATE money_entries SET created_by = ...` is refused by
+`money_entries_append_only`. So S2 as designed would stamp `'counter'` on every entry
+produced from this point, permanently, and when v5 arrives there would be no way to tell
+which rows were a self-declared guess and which a verified user. **An audit field that
+cannot be corrected and starts with a fabricated value is not audit, it is permanent
+noise.**
+
+This is the opposite of what S1's backfill does, and the distinction is the whole point:
+`'backfill'` is *true* — those entries did come from a backfill — while `'counter'` on a
+new sale is *unknown* and saying it is worse than leaving it unsaid.
+
+What v5 should do instead: leave the old rows with what they honestly know, and stamp the
+user id on the entries written from then on. "Who loaded this" then has an answer from that
+date forward, and the absence of an answer before it is true information rather than a
+hole.
+
+**Consequence recorded so nobody is surprised later:** S1, S3 and S4 already write
+`'counter'` in every entry they produce (`ledger.rs`, `sales.rs`, `purchases.rs`). With S2
+deferred, that literal stays in `main` until v5. It is a literal and not a column with
+meaning, and no production database has rows yet, so v5 can change it without migrating
+data — stated here rather than discovered then.
