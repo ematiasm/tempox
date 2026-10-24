@@ -6413,14 +6413,16 @@ async fn v3_t4_a_credit_sale_must_name_a_customer(pool: sqlx::PgPool) {
     .fetch_one(&pool)
     .await
     .expect("count accepted sale obligations");
-    assert_eq!(accepted_obligations, 1, "accepted sale has exactly one debt row");
+    assert_eq!(
+        accepted_obligations, 1,
+        "accepted sale has exactly one debt row"
+    );
 
-    let (sales, obligations): (i64, i64) = sqlx::query_as(
-        "SELECT (SELECT count(*) FROM sales), (SELECT count(*) FROM obligations)",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("count sale and obligation rows");
+    let (sales, obligations): (i64, i64) =
+        sqlx::query_as("SELECT (SELECT count(*) FROM sales), (SELECT count(*) FROM obligations)")
+            .fetch_one(&pool)
+            .await
+            .expect("count sale and obligation rows");
     assert_eq!(sales, 1, "the refused sale left no sale behind");
     assert_eq!(obligations, 1, "the refused sale left no obligation behind");
 }
@@ -6593,17 +6595,27 @@ async fn v3_t5_a_credit_note_inherits_the_sales_method_by_default(pool: sqlx::Pg
         "0",
         "the refund lowered the debt"
     );
-    assert_eq!(balance_of(&client, cash).await, "0.00", "no money left the till");
+    assert_eq!(
+        balance_of(&client, cash).await,
+        "0.00",
+        "no money left the till"
+    );
 
-    let note_id: uuid::Uuid = note.body["id"].as_str().expect("note id").parse().expect("note UUID");
-    let note_method_is_null: bool = sqlx::query_scalar(
-        "SELECT payment_method_id IS NULL FROM credit_notes WHERE id = $1",
-    )
-    .bind(note_id)
-    .fetch_one(&pool)
-    .await
-    .expect("read note method");
-    assert!(note_method_is_null, "the note inherits the sale's NULL method");
+    let note_id: uuid::Uuid = note.body["id"]
+        .as_str()
+        .expect("note id")
+        .parse()
+        .expect("note UUID");
+    let note_method_is_null: bool =
+        sqlx::query_scalar("SELECT payment_method_id IS NULL FROM credit_notes WHERE id = $1")
+            .bind(note_id)
+            .fetch_one(&pool)
+            .await
+            .expect("read note method");
+    assert!(
+        note_method_is_null,
+        "the note inherits the sale's NULL method"
+    );
 }
 
 #[sqlx::test]
@@ -7772,7 +7784,6 @@ async fn v4_an_annulment_and_a_credit_note_cannot_reverse_the_same_unit(pool: sq
     );
 }
 
-
 /// Inserts a sale **and its ledger entry** through raw SQL, in one transaction.
 ///
 /// `0021` turned the sale's two states into a rule checked at COMMIT: a sale that names a
@@ -7794,17 +7805,16 @@ async fn insert_paid_sale(
     // helper that stamped a second timestamp would answer a different question than the route
     // it claims to mirror. That matters the moment a test compares the book's ordering
     // against the document's.
-    let (sale_id, sale_created_at): (uuid::Uuid, chrono::DateTime<chrono::Utc>) =
-        sqlx::query_as(
-            "INSERT INTO sales (customer_id, total, payment_method_id)
+    let (sale_id, sale_created_at): (uuid::Uuid, chrono::DateTime<chrono::Utc>) = sqlx::query_as(
+        "INSERT INTO sales (customer_id, total, payment_method_id)
              VALUES ($1, $2::numeric, $3) RETURNING id, created_at",
-        )
-        .bind(customer)
-        .bind(total)
-        .bind(method)
-        .fetch_one(&mut *tx)
-        .await
-        .expect("insert the sale header");
+    )
+    .bind(customer)
+    .bind(total)
+    .bind(method)
+    .fetch_one(&mut *tx)
+    .await
+    .expect("insert the sale header");
     sqlx::query(
         "INSERT INTO money_entries
             (account_id, payment_method_id, document_kind, document_id, amount,
@@ -7842,15 +7852,17 @@ const DEBT_ACCOUNT: &str = "00000000-0000-0000-0000-000000000005";
 const DEBT_METHOD: &str = "00000000-0000-0000-0000-000000000006";
 
 /// A named customer and a product, because a sale on account needs both.
-async fn receivable_fixture(
-    client: &common::Client,
-    tag: &str,
-    price: &str,
-) -> (String, String) {
+async fn receivable_fixture(client: &common::Client, tag: &str, price: &str) -> (String, String) {
     let customer = client
-        .post("/api/customers", serde_json::json!({ "name": format!("recv-{tag}") }))
+        .post(
+            "/api/customers",
+            serde_json::json!({ "name": format!("recv-{tag}") }),
+        )
         .await;
-    let customer_id = customer.body["id"].as_str().expect("customer id").to_string();
+    let customer_id = customer.body["id"]
+        .as_str()
+        .expect("customer id")
+        .to_string();
     let product = client
         .post(
             "/api/products",
@@ -8014,11 +8026,12 @@ async fn v4_s6a_a_paid_sale_writes_the_book_and_owes_nothing(pool: sqlx::PgPool)
     .expect("count entries");
     assert_eq!(entries, 1, "a paid sale writes one entry");
 
-    let owed: i64 = sqlx::query_scalar("SELECT count(*) FROM obligations WHERE source_document_id = $1")
-        .bind(uuid::Uuid::parse_str(&sale_id).expect("uuid"))
-        .fetch_one(&pool)
-        .await
-        .expect("count obligations");
+    let owed: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM obligations WHERE source_document_id = $1")
+            .bind(uuid::Uuid::parse_str(&sale_id).expect("uuid"))
+            .fetch_one(&pool)
+            .await
+            .expect("count obligations");
     assert_eq!(owed, 0, "money moved, so there is no debt");
 }
 
@@ -8045,7 +8058,10 @@ async fn v4_s6a_a_refund_of_a_sale_nobody_paid_lowers_the_debt_and_moves_no_mone
         .await;
     assert_eq!(sale.status(), axum::http::StatusCode::CREATED);
     let sale_id = sale.body["id"].as_str().expect("sale id").to_string();
-    let item_id = sale.body["items"][0]["id"].as_str().expect("item").to_string();
+    let item_id = sale.body["items"][0]["id"]
+        .as_str()
+        .expect("item")
+        .to_string();
 
     // One unit of two comes back, inheriting the sale's method — which is now NULL.
     let note = client
@@ -8206,8 +8222,7 @@ async fn v4_s6a_a_collection_moves_money_and_settles_the_debt(pool: sqlx::PgPool
     let client = common::client(pool.clone());
     let cash_account = "00000000-0000-0000-0000-000000000003";
     let cash_method = "00000000-0000-0000-0000-000000000004";
-    let (sale_id, customer_id) =
-        sale_on_account(&client, "collect", "100.00", 1).await;
+    let (sale_id, customer_id) = sale_on_account(&client, "collect", "100.00", 1).await;
     assert_eq!(outstanding_of(&pool, &sale_id).await, "100");
 
     let payment = client
@@ -8899,9 +8914,7 @@ async fn v4_s6a_only_money_that_came_in_can_settle_a_debt(pool: sqlx::PgPool) {
 }
 
 #[sqlx::test]
-async fn v4_s6a_a_refund_through_a_rail_counts_what_left_not_just_what_arrived(
-    pool: sqlx::PgPool,
-) {
+async fn v4_s6a_a_refund_through_a_rail_counts_what_left_not_just_what_arrived(pool: sqlx::PgPool) {
     // `R1-003` and `R3-003`, and this is the one that most resembles L107: the guard
     // compared each note against the settled total and never against what earlier
     // explicit notes had already taken out. Measured: a 200.00 on-account sale settled
@@ -9166,9 +9179,10 @@ async fn v4_s6a_migrations_refuse_a_legacy_credit_sale_instead_of_half_migrating
         "ALTER TABLE sales ALTER COLUMN payment_method_id SET NOT NULL",
         "DELETE FROM _sqlx_migrations WHERE description LIKE '%obligations%'",
     ] {
-        sqlx::query(sql).execute(&pool).await.unwrap_or_else(|e| {
-            panic!("rewinding to the pre-slice state failed on {sql}: {e}")
-        });
+        sqlx::query(sql)
+            .execute(&pool)
+            .await
+            .unwrap_or_else(|e| panic!("rewinding to the pre-slice state failed on {sql}: {e}"));
     }
 
     // A legacy credit sale, exactly as the pre-slice code wrote it.
@@ -9518,7 +9532,10 @@ async fn v4_s6a_a_refund_through_payments_is_bounded_by_its_own_rail(pool: sqlx:
     let (_, customer_id) = sale_on_account(&client, "pay-rail", "100.00", 1).await;
 
     let account = client
-        .post("/api/accounts", serde_json::json!({ "name": "banco-pay-rail" }))
+        .post(
+            "/api/accounts",
+            serde_json::json!({ "name": "banco-pay-rail" }),
+        )
         .await;
     let account_id = account.body["id"].as_str().expect("account id").to_string();
     let method = client

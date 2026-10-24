@@ -305,9 +305,13 @@ async fn create_payment(
     // whose own CHECK allows it. We paying a supplier is our money leaving, not a credit balance
     // being refunded, so it has no party balance to draw from.
     if body.direction == "out" && body.party_kind == "customer" {
-        let available =
-            lock_party_balance_on_rail(&mut tx, &body.party_kind, body.party_id, body.payment_method_id)
-                .await?;
+        let available = lock_party_balance_on_rail(
+            &mut tx,
+            &body.party_kind,
+            body.party_id,
+            body.payment_method_id,
+        )
+        .await?;
         if body.total > available {
             return Err(StatusCode::CONFLICT);
         }
@@ -437,8 +441,7 @@ async fn create_settlement(
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
     let (lock_party_kind, lock_party_id) = payer_ids.ok_or(StatusCode::NOT_FOUND)?;
-    let party_available =
-        lock_party_balance(&mut tx, &lock_party_kind, lock_party_id).await?;
+    let party_available = lock_party_balance(&mut tx, &lock_party_kind, lock_party_id).await?;
 
     let owed: Option<Decimal> =
         sqlx::query_scalar("SELECT amount FROM obligations WHERE id = $1 FOR UPDATE")
@@ -519,15 +522,16 @@ async fn create_settlement(
         return Err(StatusCode::CONFLICT);
     }
 
-    let already_applied: Decimal =
-        sqlx::query_scalar("SELECT COALESCE(SUM(amount), 0) FROM settlements WHERE payment_id = $1")
-            .bind(body.payment_id)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(|e| {
-                tracing::error!(?e, "payment applied sum failed");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
+    let already_applied: Decimal = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(amount), 0) FROM settlements WHERE payment_id = $1",
+    )
+    .bind(body.payment_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| {
+        tracing::error!(?e, "payment applied sum failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     if already_applied + body.amount > paid {
         return Err(StatusCode::CONFLICT);
     }

@@ -98,7 +98,9 @@ where
     }
     Uuid::parse_str(&raw)
         .map(|id| Some(Destination::Method(id)))
-        .map_err(|_| serde::de::Error::custom("payment_method_id must be a method id or \"on_account\""))
+        .map_err(|_| {
+            serde::de::Error::custom("payment_method_id must be a method id or \"on_account\"")
+        })
 }
 
 #[derive(Debug, Deserialize)]

@@ -177,7 +177,13 @@ sqlx-check:
 	@test -n "$(HOST_DATABASE_URL)" || { echo "error: no DATABASE_URL; copy .env.example to .env, or pass DATABASE_URL=..." >&2; exit 1; }
 	cd backend && SQLX_OFFLINE=false DATABASE_URL='$(HOST_DATABASE_URL)' cargo sqlx prepare --check -- --all-targets
 
+# `cargo fmt --check` belongs here and did not, which cost a CI round: the
+# workflow runs it (`.github/workflows/ci.yml`) and this target did not, so a
+# local `make lint` could be green while CI failed on formatting. A lint target
+# that is not the same lint the pipeline runs is worse than no target, because
+# it is trusted.
 lint:
+	cd backend && cargo fmt --check
 	cd backend && cargo clippy --all-targets -- -D warnings
 	cd frontend && npm run lint && npm run check
 
