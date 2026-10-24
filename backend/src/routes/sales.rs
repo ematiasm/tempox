@@ -403,13 +403,15 @@ async fn create_credit_note(
     let mut lines: Vec<RefundLine> = Vec::with_capacity(body.items.len());
     let mut requested: std::collections::HashMap<Uuid, i64> = std::collections::HashMap::new();
     for item in &body.items {
+        // **The budget comes from the line, not from a sum over the notes** (`0019`, S9).
+        // It used to be `SUM(credit_note_items.quantity)`, which meant a second document
+        // that reverses stock had no way to consume it — and a `psql` session could
+        // exceed it entirely. The column is the one place both documents write.
         let line = sqlx::query!(
             "SELECT si.product_id, si.product_name, si.quantity, si.unit_price, si.unit,
-                    COALESCE(SUM(cni.quantity), 0)::int AS \"refunded!\"
+                    si.reversed_quantity
              FROM sale_items si
-             LEFT JOIN credit_note_items cni ON cni.sale_item_id = si.id
-             WHERE si.id = $1 AND si.sale_id = $2
-             GROUP BY si.product_id, si.product_name, si.quantity, si.unit_price, si.unit",
+             WHERE si.id = $1 AND si.sale_id = $2",
             item.sale_item_id,
             sale_id
         )
@@ -425,7 +427,7 @@ async fn create_credit_note(
         // through: what is already on record, plus every entry naming it.
         let already = requested
             .entry(item.sale_item_id)
-            .or_insert(line.refunded as i64);
+            .or_insert(line.reversed_quantity as i64);
         *already += item.quantity as i64;
         if *already > line.quantity as i64 {
             return Err(StatusCode::CONFLICT);

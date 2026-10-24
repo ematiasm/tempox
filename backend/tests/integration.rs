@@ -7350,3 +7350,172 @@ async fn v4_a_count_adjustment_records_a_real_difference_without_rewriting_histo
         pointless.status()
     );
 }
+
+// ── v4 S4: the reversal budget lives on the sale, not on the credit-note table ──
+//
+// `odd/tasks/v4-settlement.md` S9. Until `0019` the rule "a line may not be reversed
+// more than it was sold" lived in **two places that could disagree**: the handler
+// computed `SUM(credit_note_items.quantity)` inside the sale's row lock, and the schema
+// enforced nothing at all.
+//
+// Measured before `0019`: a `psql` session inserted 5 units against a line of 1 and
+// nothing objected. That is the hole this slice closes, and it closes it in the schema —
+// because the annulment (`S10`) will also reverse stock, and two documents consuming one
+// ledger-side `SUM` is how a line gets reversed twice.
+
+#[sqlx::test]
+async fn v4_the_reversal_budget_lives_on_the_sale(pool: sqlx::PgPool) {
+    // S9's shape, asserted directly: the budget is a column, and it starts at zero.
+    let column: Option<String> = sqlx::query_scalar(
+        "SELECT column_name FROM information_schema.columns
+          WHERE table_name = 'sale_items' AND column_name = 'reversed_quantity'",
+    )
+    .fetch_optional(&pool)
+    .await
+    .expect("read the column");
+    assert_eq!(
+        column.as_deref(),
+        Some("reversed_quantity"),
+        "the budget belongs to the resource two documents act on, not to one of them"
+    );
+
+    let client = common::client(pool.clone());
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "budget-probe", "list_price": "10.00", "initial_stock": 10 }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("product id").to_string();
+    let sale = client
+        .post(
+            "/api/sales",
+            serde_json::json!({ "items": [{ "product_id": product_id, "quantity": 3 }] }),
+        )
+        .await;
+    assert_eq!(sale.status(), axum::http::StatusCode::CREATED);
+    let sale_id = sale.body["id"].as_str().expect("sale id").to_string();
+    let item_id = sale.body["items"][0]["id"]
+        .as_str()
+        .expect("item")
+        .to_string();
+
+    let start: i32 = sqlx::query_scalar("SELECT reversed_quantity FROM sale_items WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(&item_id).expect("uuid"))
+        .fetch_one(&pool)
+        .await
+        .expect("read the budget");
+    assert_eq!(start, 0, "a fresh line has reversed nothing");
+
+    // The handler still refuses to over-reverse — that was already true.
+    let note = client
+        .post(
+            &format!("/api/sales/{sale_id}/credit-notes"),
+            serde_json::json!({ "items": [{ "sale_item_id": item_id, "quantity": 2 }] }),
+        )
+        .await;
+    assert_eq!(note.status(), axum::http::StatusCode::CREATED);
+
+    // **And now the budget moved, which is what makes the rule one rule.** The handler
+    // consumes it rather than recomputing a ledger-side sum.
+    let after: i32 = sqlx::query_scalar("SELECT reversed_quantity FROM sale_items WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(&item_id).expect("uuid"))
+        .fetch_one(&pool)
+        .await
+        .expect("read the budget");
+    assert_eq!(after, 2, "the credit note consumed two of the three sold");
+
+    // One left, so one more is allowed and two more are not.
+    let last = client
+        .post(
+            &format!("/api/sales/{sale_id}/credit-notes"),
+            serde_json::json!({ "items": [{ "sale_item_id": item_id, "quantity": 1 }] }),
+        )
+        .await;
+    assert_eq!(
+        last.status(),
+        axum::http::StatusCode::CREATED,
+        "the last unit is still refundable; body was: {}",
+        last.text
+    );
+
+    let over = client
+        .post(
+            &format!("/api/sales/{sale_id}/credit-notes"),
+            serde_json::json!({ "items": [{ "sale_item_id": item_id, "quantity": 1 }] }),
+        )
+        .await;
+    assert_eq!(
+        over.status(),
+        axum::http::StatusCode::CONFLICT,
+        "a line may not be reversed more than it was sold; body was: {}",
+        over.text
+    );
+}
+
+#[sqlx::test]
+async fn v4_the_schema_refuses_an_override_reversal_even_without_the_handler(pool: sqlx::PgPool) {
+    // The measured hole: before `0019` this exact statement succeeded through `psql`.
+    // It has to fail now, because the annulment is a **second** document that reverses
+    // stock, and two documents sharing one ledger-side sum is how a line gets reversed
+    // twice. A guard that only the handler applies is a guard one route can forget.
+    let client = common::client(pool.clone());
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "schema-probe", "list_price": "10.00", "initial_stock": 5 }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("product id").to_string();
+    let sale = client
+        .post(
+            "/api/sales",
+            serde_json::json!({ "items": [{ "product_id": product_id, "quantity": 1 }] }),
+        )
+        .await;
+    let sale_id = sale.body["id"].as_str().expect("sale id").to_string();
+    let item_id = sale.body["items"][0]["id"]
+        .as_str()
+        .expect("item")
+        .to_string();
+    let note = client
+        .post(
+            &format!("/api/sales/{sale_id}/credit-notes"),
+            serde_json::json!({ "items": [{ "sale_item_id": item_id, "quantity": 1 }] }),
+        )
+        .await;
+    assert_eq!(note.status(), axum::http::StatusCode::CREATED);
+    let note_id = note.body["id"].as_str().expect("note id").to_string();
+
+    // The line is fully reversed. A second item naming it must be refused by the schema.
+    let bypass = sqlx::query(
+        "INSERT INTO credit_note_items
+            (credit_note_id, sale_item_id, product_id, product_name, quantity, unit_price, line_total, unit)
+         SELECT $1, si.id, si.product_id, si.product_name, 1, si.unit_price, si.unit_price, si.unit
+           FROM sale_items si WHERE si.id = $2",
+    )
+    .bind(uuid::Uuid::parse_str(&note_id).expect("uuid"))
+    .bind(uuid::Uuid::parse_str(&item_id).expect("uuid"))
+    .execute(&pool)
+    .await;
+
+    // **Asserted by the message, not merely by the refusal.** Two guards can refuse this
+    // statement — the consumer that counts what is left, and the budget guard that refuses
+    // a counter above the quantity sold — and a bare `is_err()` passes when either one is
+    // present. Measured while writing this: neutralising the consumer's `RAISE` left the
+    // test green, because its `UPDATE` still ran and the *other* guard answered. Pinning
+    // the message is what makes the assertion belong to one guard, the same lesson
+    // `v3_the_default_account_always_keeps_an_active_method` records.
+    let message = bypass
+        .as_ref()
+        .err()
+        .and_then(|e| e.as_database_error())
+        .map(|e| e.message().to_string())
+        .unwrap_or_default();
+    assert!(
+        message.contains("left to reverse"),
+        "the refusal must come from the consumer that counts what remains, got: {message}. \
+         Measured before `0019`: this inserted 5 units against a line of 1 and nothing \
+         objected."
+    );
+}
