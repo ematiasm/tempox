@@ -33,11 +33,79 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::db::conflict_or_500;
 use crate::models::account::CREDIT_ACCOUNT_ID;
-
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/payments", post(create_payment))
         .route("/settlements", post(create_settlement))
+}
+
+// ── The one definition of "how much of this party's money is still theirs" ──
+//
+/// How much of a party's money has arrived and is **not yet spoken for**, with the party's
+/// payment rows locked for the rest of the transaction.
+///
+/// Three facts compose it, and each of the three was a separate measured defect when it
+/// was left out:
+///
+/// ```text
+///   + SUM(payments in)        money that arrived
+///   - SUM(settlements)        money already applied to a debt  (R3-002)
+///   - SUM(payments out)       money already refunded           (R1-001, R3-001)
+/// ```
+///
+/// **It is defined once because three call sites ask it** — a refund's ceiling, and both
+/// halves of a settlement's — and three hand-written versions is how two of them end up
+/// forgetting the third term. That is not a hypothetical: this function exists because the
+/// first version counted only the first term.
+///
+/// **The lock is the point of the `FOR UPDATE`.** Reading a balance and then inserting is a
+/// race with no symptom until two requests overlap; taking the party's payment rows first
+/// serialises them. `settlements` is read without its own lock because a settlement can only
+/// be written by a caller that already holds the payment row — the lock chain closes it.
+async fn lock_party_balance(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    party_kind: &str,
+    party_id: Uuid,
+) -> Result<Decimal, StatusCode> {
+    // Lock first, in one statement, so the rows this balance is computed from cannot change
+    // between the read and the insert below.
+    let rows: Vec<(Uuid,)> = sqlx::query_as(
+        "SELECT id FROM payments
+          WHERE party_kind = $1 AND party_id = $2
+          FOR UPDATE",
+    )
+    .bind(party_kind)
+    .bind(party_id)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| {
+        tracing::error!(?e, "party payment lock failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let _ = rows;
+
+    // Money that arrived, less what has been applied, less what has been refunded. A single
+    // statement over three aggregates, so the three terms cannot drift apart.
+    let available: Decimal = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(CASE WHEN p.direction = 'in' THEN p.total ELSE -p.total END), 0)
+                - COALESCE((SELECT SUM(s.amount)
+                              FROM settlements s
+                              JOIN payments sp ON sp.id = s.payment_id
+                             WHERE sp.party_kind = $1 AND sp.party_id = $2
+                               AND sp.direction = 'in'), 0)
+           FROM payments p
+          WHERE p.party_kind = $1 AND p.party_id = $2",
+    )
+    .bind(party_kind)
+    .bind(party_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| {
+        tracing::error!(?e, "party balance lookup failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(available)
 }
 
 // ── A payment ───────────────────────────────────────────────────────────────
@@ -80,7 +148,12 @@ async fn create_payment(
 ) -> Result<(StatusCode, Json<Payment>), StatusCode> {
     // Shape first, with nothing opened and nothing locked. The database refuses each of
     // these with a CHECK; asking first is what gives the caller a status it can act on.
-    if body.total <= Decimal::ZERO {
+    //
+    // **`is_whole_cents` is one of those CHECKs**, and it was the one this list missed:
+    // the original comment claimed every database CHECK was pre-checked while three
+    // decimals went straight to `payments_whole_cents` and came back as a 500. A comment
+    // that overstates is worse than no comment, so the rule is now stated and enforced.
+    if body.total <= Decimal::ZERO || !crate::money::is_whole_cents(body.total) {
         return Err(StatusCode::BAD_REQUEST);
     }
     if !matches!(body.direction.as_str(), "in" | "out") {
@@ -142,6 +215,28 @@ async fn create_payment(
     })?;
     if found == 0 {
         return Err(StatusCode::NOT_FOUND);
+    }
+
+    // **A refund is bounded by the balance it refunds, and this is the finding the review
+    // of this candidate wrote as `R1-001` and `R3-001`.** Measured before the guard
+    // existed: a customer with no collections at all received a 500.00 `out` payment, the
+    // request answered `201`, and the till went to `-500.00` — the same defect as
+    // `v3-accounts.md` L107, reintroduced in the newest route of the slice that exists to
+    // close it.
+    //
+    // The ceiling is the customer's **available balance**: what came in, minus what has
+    // since been applied to a debt, minus what was already refunded. Not their payment
+    // history: money that arrived and then settled an invoice is no longer theirs to
+    // withdraw, and a check that only asked "do they have any payments" would say yes.
+    //
+    // The lock comes first, through `lock_party_balance`, so two concurrent refunds cannot
+    // each read the same balance and each find room — the shape `create_credit_note`
+    // records for over-refunding a line.
+    if body.direction == "out" {
+        let available = lock_party_balance(&mut tx, &body.party_kind, body.party_id).await?;
+        if body.total > available {
+            return Err(StatusCode::CONFLICT);
+        }
     }
 
     let payment = sqlx::query_as::<_, (Uuid, DateTime<Utc>, DateTime<Utc>)>(
@@ -239,7 +334,8 @@ async fn create_settlement(
     State(state): State<AppState>,
     Json(body): Json<NewSettlement>,
 ) -> Result<(StatusCode, Json<Settlement>), StatusCode> {
-    if body.amount <= Decimal::ZERO {
+    // `R2-001`: whole cents, the CHECK this list was missing. A settlement is money too.
+    if body.amount <= Decimal::ZERO || !crate::money::is_whole_cents(body.amount) {
         return Err(StatusCode::BAD_REQUEST);
     }
 
@@ -264,16 +360,45 @@ async fn create_settlement(
             })?;
     let owed = owed.ok_or(StatusCode::NOT_FOUND)?;
 
-    let paid: Option<Decimal> =
-        sqlx::query_scalar("SELECT total FROM payments WHERE id = $1 FOR UPDATE")
-            .bind(body.payment_id)
+    // **The payment's direction and party, not just its total** — `R1-002` and `R3-002`,
+    // the same finding from two lenses. Measured: a 100.00 on-account sale, a 100.00
+    // outbound "refund", settle it with that refund — the debt went to zero while the money
+    // had only left the till. The customer's money was resolved twice: once as a debt, once
+    // as cash they walked out with.
+    //
+    // So a settlement asks three things of the payment, and each is a different mistake:
+    // it must exist (404), it must be money that came IN (400), and it must belong to the
+    // same party the debt belongs to (400) — a debt to one customer cannot be settled with
+    // another customer's money.
+    let paid: Option<(Decimal, String, String, Uuid)> = sqlx::query_as(
+        "SELECT total, direction, party_kind, party_id FROM payments WHERE id = $1 FOR UPDATE",
+    )
+    .bind(body.payment_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| {
+        tracing::error!(?e, "payment lock failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let (paid, direction, payer_kind, payer_id) = paid.ok_or(StatusCode::NOT_FOUND)?;
+
+    let debtor: Option<(String, Uuid)> =
+        sqlx::query_as("SELECT party_kind, party_id FROM obligations WHERE id = $1")
+            .bind(body.obligation_id)
             .fetch_optional(&mut *tx)
             .await
             .map_err(|e| {
-                tracing::error!(?e, "payment lock failed");
+                tracing::error!(?e, "obligation party read failed");
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
-    let paid = paid.ok_or(StatusCode::NOT_FOUND)?;
+    let (debtor_kind, debtor_id) = debtor.ok_or(StatusCode::NOT_FOUND)?;
+
+    if direction != "in" {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if payer_kind != debtor_kind || payer_id != debtor_id {
+        return Err(StatusCode::BAD_REQUEST);
+    }
 
     // The two ceilings, each asking the question the database will ask again. The
     // obligation's is net of what a *document* already lowered — a credit note on an unpaid

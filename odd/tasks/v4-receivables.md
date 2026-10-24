@@ -290,3 +290,81 @@ e2e purchase spec on a product-picker timeout, then passed 23/23 on three subseq
 including two full `make test` runs. Nothing in this slice touches the frontend or the
 picker, and the failure is a 5 s timeout on a listbox, but it is recorded because an
 intermittent green is not the same as a green.
+
+## The review of the first candidate, and the five severe findings it measured
+
+L8 **Review `review-336e2618582310f9`, tier high, four lenses, 23 paths, 3540 lines.** Five
+CRITICAL findings, all `causal_disposition: introduced`, all corroborated by the refuter.
+**The worst of them was this slice's own defect, in this slice's own new route.**
+
+L9 **`R1-001` / `R3-001` — a refund from nowhere.** `create_payment` accepted any positive
+`direction = "out"` total. Measured against a live server before the fix: a customer with no
+collections at all, `POST /api/payments {"total": "500.00", "direction": "out"}`, answered
+**201**, and the till read **−500.00**. This is `v3-accounts.md` L107 with a different verb:
+the shop pays out money nobody ever handed it. The fix is `lock_party_balance`, which computes
+`payments in − settlements − payments out` with the party's payment rows locked, and the
+handler answers 409 above it.
+
+L10 **`R1-002` / `R3-002` — money that left the till settling a debt.** `create_settlement`
+read `payments.total` and never `payments.direction` or its party. Measured: a 100.00
+on-account sale, a 100.00 outbound "refund", then settling the debt with that same refund
+answered **201** and left the debt at **0** while the cash had only gone out. The customer's
+money was resolved twice — once as a debt, once as cash in their hand. Three checks now: the
+payment exists (404), it is money that came **in** (400), and it belongs to the **same party**
+the debt belongs to (400).
+
+L11 **`R1-003` / `R3-003` — the L107 guard only looked at what arrived, never at what already
+left.** The gate compared each note against `SUM(settlements)` and did not subtract the
+explicit notes already issued, so several notes each passed alone. Measured: a 200.00
+on-account sale settled for 100.00 admitted **two** 100.00 cash notes, and the till ended at
+**−800.00** on a day 100.00 came in. The guard now spends a budget: `arrived − SUM(explicit
+credit_note entries)`.
+
+L12 **`R1-004` / `R4-001` — a reachable ordinary operation answering 500.** The inherited
+no-method path inserted the whole note total as an adjustment; when the obligation had no room
+left, `0022`'s combined ceiling raised at COMMIT and the caller got a **500**. Returning goods
+on an already-settled on-account sale did exactly that. The handler now pre-checks the same
+combined ceiling the settlement route pre-checks, and answers 409.
+
+L13 **`R2-001` — a comment that overstated, and the CHECK it hid.** "Shape first" claimed every
+database CHECK was pre-checked while whole-cents was not: three decimals reached
+`payments_whole_cents` and came back as a **500**. Both new endpoints now validate
+`is_whole_cents` and answer 400. A comment that overstates is worse than none, because it is
+the reason nobody looked.
+
+L14 **Two findings I record and do not fix here, both deliberately.** `R1-005` is the repository-
+wide unauthenticated posture: every write route is open, sales and credit notes included, and
+this slice gives that posture higher stakes. Closing it is an authentication design, not a
+correction, and pretending otherwise in a bounded correction would be worse than naming it.
+`R2-002` and `R2-003` are diagnostic-wording suggestions (a message that prints two of three
+summands; count variables named as if they were amounts); they change no behaviour and are
+carried to the next slice.
+
+L15 **Two of my own tests had the finding baked in.** `v4_s6a_a_payment_may_cover_several_debts`
+and `v4_s6a_both_ceilings_refuse_and_say_which_one` each gave its two sales a *different*
+customer and then settled both from one payment — which the old total-only check allowed and
+the new party check refuses. Both now build their second debt for the paying customer. A test
+that encodes the defect cannot detect it, which is why they passed for a day.
+
+## Verification of the correction
+
+V5 **Five REDs observed before the fix, each with the measured number:**
+
+| test | before | after |
+| --- | --- | --- |
+| `v4_s6a_a_refund_may_not_exceed_what_the_customer_actually_has` | 201, till −500.00 | 409, till 0.00 |
+| `v4_s6a_only_money_that_came_in_can_settle_a_debt` | 201, debt 0 | 400, debt 100 |
+| `v4_s6a_a_refund_through_a_rail_counts_what_left_not_just_what_arrived` | 201 twice, till −800.00 | 201 then 409, till 0.00 |
+| `v4_s6a_returning_goods_on_a_settled_debt_is_a_conflict_not_a_500` | 500 | 409 |
+| `v4_s6a_the_new_endpoints_refuse_an_amount_that_is_not_whole_cents` | 500 | 400 |
+
+V5b **Every new guard proven to bite by neutering it**, in turn, each `&& false` restored
+afterwards: the refund balance guard, the direction check, the earlier-refunds budget, and the
+inherited-path room pre-check. Each turned its own test red and nothing else.
+
+V5c **Re-measured against a live server, the three end-to-end sequences.** The ghost refund
+answers 409 with the till at 0. The outbound refund cannot be settled (400, debt stays 100).
+Two explicit notes against 100.00 collected answer 201 then 409, and the till lands at 0.00
+instead of −800.00.
+
+V5d `make test` green after the correction: 50 unit + 232 frontend + **119** backend + 23 e2e.

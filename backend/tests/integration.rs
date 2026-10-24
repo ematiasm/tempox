@@ -8297,9 +8297,28 @@ async fn v4_s6a_a_payment_may_cover_several_debts_and_a_debt_may_be_paid_in_part
     let cash_account = "00000000-0000-0000-0000-000000000003";
 
     let (first_sale, customer_id) = sale_on_account(&client, "multi-a", "100.00", 1).await;
-    let (second_sale, _) = sale_on_account(&client, "multi-b", "50.00", 1).await;
-    // Both sales belong to the same customer only by name; `sale_on_account` creates its
-    // own. The payment names the first customer, which is the one that pays.
+    // **Both debts must belong to the paying customer, and the settlement guard now says
+    // so** (`R1-002` / `R3-002`): one customer's money may not settle another's debt. The
+    // first version of this test gave each sale its own customer and settled both from one
+    // payment, which a total-and-ceiling check let through and a party check does not.
+    let (second_sale, _) = {
+        let (_, product_id) = receivable_fixture(&client, "multi-b", "50.00").await;
+        let sale = client
+            .post(
+                "/api/sales",
+                serde_json::json!({
+                    "customer_id": customer_id,
+                    "items": [{ "product_id": product_id, "quantity": 1 }],
+                    "payment_method_id": "on_account"
+                }),
+            )
+            .await;
+        assert_eq!(sale.status(), axum::http::StatusCode::CREATED);
+        (
+            sale.body["id"].as_str().expect("sale id").to_string(),
+            customer_id.clone(),
+        )
+    };
 
     let payment = client
         .post(
@@ -8396,7 +8415,23 @@ async fn v4_s6a_both_ceilings_refuse_and_say_which_one(pool: sqlx::PgPool) {
     let client = common::client(pool.clone());
     let cash_method = "00000000-0000-0000-0000-000000000004";
     let (sale_a, customer_id) = sale_on_account(&client, "ceil-a", "100.00", 1).await;
-    let (sale_b, _) = sale_on_account(&client, "ceil-b", "100.00", 1).await;
+    // A second debt for the SAME customer, for the reason recorded in the multi-debt test
+    // above: a payment settles only its own party's debts.
+    let sale_b = {
+        let (_, product_id) = receivable_fixture(&client, "ceil-b", "100.00").await;
+        let sale = client
+            .post(
+                "/api/sales",
+                serde_json::json!({
+                    "customer_id": customer_id,
+                    "items": [{ "product_id": product_id, "quantity": 1 }],
+                    "payment_method_id": "on_account"
+                }),
+            )
+            .await;
+        assert_eq!(sale.status(), axum::http::StatusCode::CREATED);
+        sale.body["id"].as_str().expect("sale id").to_string()
+    };
 
     // A payment of 60.
     let payment = client
@@ -8712,5 +8747,390 @@ async fn v4_s6a_a_refund_through_a_real_rail_needs_money_that_actually_arrived(p
         balance_of(&client, cash_account).await,
         "0.00",
         "and the money went back out of the till it came into"
+    );
+}
+
+// ── v4 S6a, the five severe findings the review of this candidate measured ──────
+//
+// Each of these reproduced against a live server before the fix, and each is a case of
+// the slice's own invariant leaking through a new door: money that never arrived being
+// paid out, or a debt being resolved twice — once by money that left.
+//
+// The invariant, stated once so the six tests below are read against it:
+//
+//     money may only leave a customer's balance up to what arrived, and a debt may only
+//     be resolved by money that came IN.
+//
+// Every test is written positive-first: the legitimate operation is asserted to succeed
+// before the illegitimate one is asserted to be refused, because a refusal alone cannot
+// prove it was refused for the right reason.
+
+#[sqlx::test]
+async fn v4_s6a_a_refund_may_not_exceed_what_the_customer_actually_has(pool: sqlx::PgPool) {
+    // `R1-001` and `R3-001`, the same defect seen by two lenses: `create_payment`
+    // accepted any positive `direction = "out"` total. Measured before the fix: a
+    // customer with no collections at all received a 500.00 refund, the request answered
+    // 201, and the till went to -500.00.
+    let client = common::client(pool.clone());
+    let cash_account = "00000000-0000-0000-0000-000000000003";
+    let cash_method = "00000000-0000-0000-0000-000000000004";
+    let (_, customer_id) = sale_on_account(&client, "refund-gate", "10.00", 1).await;
+
+    // Nothing arrived, so nothing may leave — not even a cent.
+    let nothing_to_refund = client
+        .post(
+            "/api/payments",
+            serde_json::json!({
+                "party_kind": "customer",
+                "party_id": customer_id,
+                "payment_method_id": cash_method,
+                "total": "0.01",
+                "direction": "out"
+            }),
+        )
+        .await;
+    assert_eq!(
+        nothing_to_refund.status(),
+        axum::http::StatusCode::CONFLICT,
+        "a customer with no credit balance has nothing to refund; body: {}",
+        nothing_to_refund.text
+    );
+    assert_eq!(balance_of(&client, cash_account).await, "0.00");
+
+    // Money that really arrived may really leave. 100 in, 90 out.
+    let collected = client
+        .post(
+            "/api/payments",
+            serde_json::json!({
+                "party_kind": "customer",
+                "party_id": customer_id,
+                "payment_method_id": cash_method,
+                "total": "100.00",
+                "direction": "in"
+            }),
+        )
+        .await;
+    assert_eq!(collected.status(), axum::http::StatusCode::CREATED);
+    assert_eq!(balance_of(&client, cash_account).await, "100.00");
+
+    let refund = client
+        .post(
+            "/api/payments",
+            serde_json::json!({
+                "party_kind": "customer",
+                "party_id": customer_id,
+                "payment_method_id": cash_method,
+                "total": "90.00",
+                "direction": "out"
+            }),
+        )
+        .await;
+    assert_eq!(
+        refund.status(),
+        axum::http::StatusCode::CREATED,
+        "refunding within the balance is allowed; body: {}",
+        refund.text
+    );
+    assert_eq!(balance_of(&client, cash_account).await, "10.00");
+
+    // And the balance is now 10, so 90 more is refused. This is the half that a naive
+    // "does the customer have any payments at all" check would let through.
+    let too_much = client
+        .post(
+            "/api/payments",
+            serde_json::json!({
+                "party_kind": "customer",
+                "party_id": customer_id,
+                "payment_method_id": cash_method,
+                "total": "90.00",
+                "direction": "out"
+            }),
+        )
+        .await;
+    assert_eq!(
+        too_much.status(),
+        axum::http::StatusCode::CONFLICT,
+        "the balance is the ceiling, not the customer's history; body: {}",
+        too_much.text
+    );
+    assert_eq!(balance_of(&client, cash_account).await, "10.00");
+}
+
+#[sqlx::test]
+async fn v4_s6a_only_money_that_came_in_can_settle_a_debt(pool: sqlx::PgPool) {
+    // `R1-002` and `R3-002`. `create_settlement` read only `payments.total`, never the
+    // direction, so a refund that took money OUT could be applied to a debt. Measured:
+    // a 100.00 on-account sale, a 100.00 outbound "refund", settle it — debt 0, till
+    // -700.00 accumulated across the probe. The customer's money was resolved twice.
+    let client = common::client(pool.clone());
+    let cash_method = "00000000-0000-0000-0000-000000000004";
+    let (sale_id, customer_id) = sale_on_account(&client, "dir-gate", "100.00", 1).await;
+
+    let refund = client
+        .post(
+            "/api/payments",
+            serde_json::json!({
+                "party_kind": "customer",
+                "party_id": customer_id,
+                "payment_method_id": cash_method,
+                "total": "100.00",
+                "direction": "in"
+            }),
+        )
+        .await;
+    assert_eq!(refund.status(), axum::http::StatusCode::CREATED);
+
+    let outbound = client
+        .post(
+            "/api/payments",
+            serde_json::json!({
+                "party_kind": "customer",
+                "party_id": customer_id,
+                "payment_method_id": cash_method,
+                "total": "100.00",
+                "direction": "out"
+            }),
+        )
+        .await;
+    assert_eq!(outbound.status(), axum::http::StatusCode::CREATED);
+    let outbound_id = outbound.body["id"].as_str().expect("id").to_string();
+
+    let applied = client
+        .post(
+            "/api/settlements",
+            serde_json::json!({
+                "obligation_id": obligation_id_of(&pool, &sale_id).await,
+                "payment_id": outbound_id,
+                "amount": "100.00"
+            }),
+        )
+        .await;
+    assert_eq!(
+        applied.status(),
+        axum::http::StatusCode::BAD_REQUEST,
+        "money that left the till cannot settle a debt; body: {}",
+        applied.text
+    );
+    assert_eq!(
+        outstanding_of(&pool, &sale_id).await,
+        "100",
+        "the debt stands, because nothing has actually been collected"
+    );
+}
+
+#[sqlx::test]
+async fn v4_s6a_a_refund_through_a_rail_counts_what_left_not_just_what_arrived(
+    pool: sqlx::PgPool,
+) {
+    // `R1-003` and `R3-003`, and this is the one that most resembles L107: the guard
+    // compared each note against the settled total and never against what earlier
+    // explicit notes had already taken out. Measured: a 200.00 on-account sale settled
+    // for 100.00 admitted two 100.00 cash notes, and the till went 200 lower than it had
+    // ever been higher.
+    let client = common::client(pool.clone());
+    let cash_account = "00000000-0000-0000-0000-000000000003";
+    let cash_method = "00000000-0000-0000-0000-000000000004";
+    let (sale_id, customer_id) = sale_on_account(&client, "double-refund", "100.00", 2).await;
+    let items = client.get("/api/sales?limit=200").await;
+    let item_id = items
+        .json()
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|s| s["id"] == sale_id.as_str())
+        .expect("listed")["items"][0]["id"]
+        .as_str()
+        .expect("item id")
+        .to_string();
+
+    // 100.00 really collected against a 200.00 debt.
+    let collected = client
+        .post(
+            "/api/payments",
+            serde_json::json!({
+                "party_kind": "customer",
+                "party_id": customer_id,
+                "payment_method_id": cash_method,
+                "total": "100.00",
+                "direction": "in"
+            }),
+        )
+        .await;
+    assert_eq!(collected.status(), axum::http::StatusCode::CREATED);
+    let payment_id = collected.body["id"].as_str().expect("id").to_string();
+    let applied = client
+        .post(
+            "/api/settlements",
+            serde_json::json!({
+                "obligation_id": obligation_id_of(&pool, &sale_id).await,
+                "payment_id": payment_id,
+                "amount": "100.00"
+            }),
+        )
+        .await;
+    assert_eq!(applied.status(), axum::http::StatusCode::CREATED);
+    assert_eq!(balance_of(&client, cash_account).await, "100.00");
+
+    // The first note may take out exactly what came in.
+    let first = client
+        .post(
+            &format!("/api/sales/{sale_id}/credit-notes"),
+            serde_json::json!({
+                "items": [{ "sale_item_id": item_id, "quantity": 1 }],
+                "payment_method_id": cash_method
+            }),
+        )
+        .await;
+    assert_eq!(
+        first.status(),
+        axum::http::StatusCode::CREATED,
+        "the first note is within what arrived; body: {}",
+        first.text
+    );
+    assert_eq!(balance_of(&client, cash_account).await, "0.00");
+
+    // The second may not: every cent that arrived has already gone back out.
+    let second = client
+        .post(
+            &format!("/api/sales/{sale_id}/credit-notes"),
+            serde_json::json!({
+                "items": [{ "sale_item_id": item_id, "quantity": 1 }],
+                "payment_method_id": cash_method
+            }),
+        )
+        .await;
+    assert_eq!(
+        second.status(),
+        axum::http::StatusCode::CONFLICT,
+        "a second note would pay out money that never arrived; body: {}",
+        second.text
+    );
+    assert_eq!(
+        balance_of(&client, cash_account).await,
+        "0.00",
+        "the till did not move a second time"
+    );
+}
+
+#[sqlx::test]
+async fn v4_s6a_returning_goods_on_a_settled_debt_is_a_conflict_not_a_500(pool: sqlx::PgPool) {
+    // `R1-004` and `R4-001`, the same defect from two lenses: the inherited no-method
+    // path inserted the whole note total as an adjustment, and when the obligation had
+    // no room left the ceiling trigger raised at COMMIT and the caller got a 500. The
+    // status-code discipline this slice applies everywhere else applies here too.
+    let client = common::client(pool.clone());
+    let cash_method = "00000000-0000-0000-0000-000000000004";
+    // A 100.00 on-account sale, already collected in full.
+    let (sale_id, customer_id) = sale_on_account(&client, "settled-return", "100.00", 1).await;
+    let items = client.get("/api/sales?limit=200").await;
+    let item_id = items
+        .json()
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|s| s["id"] == sale_id.as_str())
+        .expect("listed")["items"][0]["id"]
+        .as_str()
+        .expect("item id")
+        .to_string();
+
+    let collected = client
+        .post(
+            "/api/payments",
+            serde_json::json!({
+                "party_kind": "customer",
+                "party_id": customer_id,
+                "payment_method_id": cash_method,
+                "total": "100.00",
+                "direction": "in"
+            }),
+        )
+        .await;
+    let payment_id = collected.body["id"].as_str().expect("id").to_string();
+    client
+        .post(
+            "/api/settlements",
+            serde_json::json!({
+                "obligation_id": obligation_id_of(&pool, &sale_id).await,
+                "payment_id": payment_id,
+                "amount": "100.00"
+            }),
+        )
+        .await;
+
+    // Returning the goods without naming a method would try to lower a debt that money
+    // already cleared in full. That is a conflict the caller can act on, not a fault.
+    let returned = client
+        .post(
+            &format!("/api/sales/{sale_id}/credit-notes"),
+            serde_json::json!({ "items": [{ "sale_item_id": item_id, "quantity": 1 }] }),
+        )
+        .await;
+    assert_eq!(
+        returned.status(),
+        axum::http::StatusCode::CONFLICT,
+        "a return against an already-settled debt is a conflict; body: {}",
+        returned.text
+    );
+}
+
+#[sqlx::test]
+async fn v4_s6a_the_new_endpoints_refuse_an_amount_that_is_not_whole_cents(pool: sqlx::PgPool) {
+    // `R2-001`. The comment claimed every database CHECK was pre-checked, and the
+    // whole-cents CHECK was not: three decimals reached the database and the caller got a
+    // 500 from `conflict_or_500`. Worth a test rather than a comment fix, because the
+    // claim was the reason nobody looked.
+    let client = common::client(pool.clone());
+    let cash_method = "00000000-0000-0000-0000-000000000004";
+    let (sale_id, customer_id) = sale_on_account(&client, "cents", "10.00", 1).await;
+
+    let fractional = client
+        .post(
+            "/api/payments",
+            serde_json::json!({
+                "party_kind": "customer",
+                "party_id": customer_id,
+                "payment_method_id": cash_method,
+                "total": "10.001",
+                "direction": "in"
+            }),
+        )
+        .await;
+    assert_eq!(
+        fractional.status(),
+        axum::http::StatusCode::BAD_REQUEST,
+        "an amount that is not whole cents is the caller's mistake; body: {}",
+        fractional.text
+    );
+
+    let payment = client
+        .post(
+            "/api/payments",
+            serde_json::json!({
+                "party_kind": "customer",
+                "party_id": customer_id,
+                "payment_method_id": cash_method,
+                "total": "10.00",
+                "direction": "in"
+            }),
+        )
+        .await;
+    let payment_id = payment.body["id"].as_str().expect("id").to_string();
+
+    let fractional_settlement = client
+        .post(
+            "/api/settlements",
+            serde_json::json!({
+                "obligation_id": obligation_id_of(&pool, &sale_id).await,
+                "payment_id": payment_id,
+                "amount": "1.005"
+            }),
+        )
+        .await;
+    assert_eq!(
+        fractional_settlement.status(),
+        axum::http::StatusCode::BAD_REQUEST,
+        "a settlement is money too; body: {}",
+        fractional_settlement.text
     );
 }

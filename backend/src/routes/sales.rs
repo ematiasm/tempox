@@ -626,8 +626,15 @@ async fn create_credit_note(
             // (`v4-settlement.md` S14). The inherited path lowers the obligation and moves
             // nothing, so it has no precondition to check.
             //
-            // The sum is taken with the sale's row already locked (`FOR UPDATE` above), so
-            // a concurrent collection cannot be counted after the read.
+            // **What arrived is a budget, and earlier notes spend from it** (`R1-003` /
+            // `R3-003`). The first version compared each note against the settled total and
+            // never subtracted the explicit notes already issued, so several notes each
+            // passed alone while together paying out more than ever arrived. Measured: a
+            // 200.00 on-account sale settled for 100.00 admitted two 100.00 cash notes, and
+            // the till ended lower than it had ever been higher.
+            //
+            // Both sums are taken with the sale's row already locked (`FOR UPDATE` above),
+            // so a concurrent collection or refund cannot be counted after the read.
             let settled: Decimal = sqlx::query_scalar(
                 "SELECT COALESCE(SUM(s.amount), 0)
                    FROM settlements s
@@ -660,7 +667,27 @@ async fn create_credit_note(
                 settled
             };
 
-            if arrived < note_total {
+            // What earlier explicit notes already took out of a real rail. A note with a
+            // method writes a `credit_note` entry; one that inherited the sale's NULL
+            // writes none, so this sum counts exactly the refunds that moved money — which
+            // is the budget being spent.
+            let already_refunded: Decimal = sqlx::query_scalar(
+                "SELECT COALESCE(SUM(me.amount), 0)
+                   FROM money_entries me
+                   JOIN credit_notes cn ON cn.id = me.document_id
+                  WHERE me.document_kind = 'credit_note' AND cn.sale_id = $1",
+            )
+            .bind(sale_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| {
+                tracing::error!(?e, "sale refunded sum failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+            // Entries are signed: a refund is negative, so its magnitude is what left.
+            let spent = -already_refunded;
+
+            if arrived - spent < note_total {
                 return Err(StatusCode::CONFLICT);
             }
 
@@ -782,6 +809,37 @@ async fn create_credit_note(
             // The debt drops. `document_id` is the note, so the same note can never lower
             // the debt twice (`0021`'s UNIQUE index) — the guarantee a mutable
             // `obligations.amount` would have needed a writer flag to get.
+            //
+            // **The combined ceiling is checked here, before the insert** (`R1-004`,
+            // `R4-001`). `0022` re-cut `obligation_adjustments_ceiling` to include
+            // settlements, so a note larger than the debt's remaining room raises at COMMIT
+            // — and a `RAISE` at COMMIT reaches the caller as a 500. The settlement handler
+            // pre-checks the same ceiling and answers 409; this path did not, which left a
+            // reachable ordinary operation with no actionable status. Measured before the
+            // check: returning the goods on an already-settled on-account sale answered 500.
+            let room: Option<(Decimal, Decimal, Decimal)> = sqlx::query_as(
+                "SELECT o.amount,
+                        COALESCE((SELECT SUM(a.amount) FROM obligations_adjustments a
+                                   WHERE a.obligation_id = o.id), 0),
+                        COALESCE((SELECT SUM(s.amount) FROM settlements s
+                                   WHERE s.obligation_id = o.id), 0)
+                   FROM obligations o
+                  WHERE o.source_document_kind = 'sale' AND o.source_document_id = $1",
+            )
+            .bind(sale_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| {
+                tracing::error!(?e, "obligation room read failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+
+            if let Some((owed, lowered, settled)) = room
+                && lowered + settled + note_total > owed
+            {
+                return Err(StatusCode::CONFLICT);
+            }
+
             let adjusted = sqlx::query!(
                 "INSERT INTO obligations_adjustments
                     (obligation_id, amount, document_kind, document_id, created_by)
