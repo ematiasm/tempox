@@ -559,6 +559,21 @@ lineages in v3 — and `*.kate-swp` joined the ignore list beside the older patt
 already lived in `odd/` or `docs/`, or belongs here. These three items had no other home,
 and they are recorded so deleting the file does not delete the knowledge.
 
+### How this commit came to exist
+
+`738bdbc` retires the file this section was rescued from. Two things about it are worth
+recording rather than leaving to the log message:
+
+- **It also carries an owner edit to `AGENTS.md`** — three lines asking agents to look in
+  the code and the conversation first, and to keep changes in scope — that was sitting
+  uncommitted in the worktree and was swept in by `git add -A`. The commit message says
+  "documentation only" and does not name that file. **Read `git diff --stat` before
+  `git add -A`, not after committing:** this is the second time in one session that `-A`
+  collected something unreviewed, the first being a Kate swap file in S5.
+- **It is deliberately unpushed.** It sits one commit above `main` and will ride in with
+  the next slice rather than reopening a branch whose PR (#85) has already merged. Nothing
+  is lost by waiting: the file it deletes was never tracked.
+
 ### Lessons from the review loop, and they cost real time
 
 - **Correct with a new commit, never `--amend`,** once a review has opened authority.
