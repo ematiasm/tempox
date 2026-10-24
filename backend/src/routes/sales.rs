@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::AppState;
+use crate::db::conflict_or_500;
 use crate::models::account::{CASH_ACCOUNT_ID, CASH_PAYMENT_METHOD_ID, CREDIT_ACCOUNT_ID};
 use crate::models::{
     credit_note::CreditNote, credit_note_item::CreditNoteItem, sale::Sale, sale_item::SaleItem,
@@ -27,6 +28,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/sales", post(create_sale).get(list_sales))
         .route("/sales/{id}/credit-notes", post(create_credit_note))
+        .route("/sales/{id}/annulments", post(create_annulment))
         .route("/sales/summary", get(sales_summary))
 }
 
@@ -841,4 +843,179 @@ mod tests {
             "00000000-0000-0000-0000-000000000001"
         );
     }
+}
+
+// ── Annulment ───────────────────────────────────────────────────────────────
+//
+// `odd/tasks/v4-settlement.md` S10, S11. A sale reported wrongly — the amount, the
+// method, the customer, or the document itself — is corrected by **a new document**, and
+// never by editing or deleting the sale. Before `0020` the only exit was a full credit
+// note, which means "the customer returned the goods": the stock moved as if merchandise
+// came back, and it never did.
+//
+// **Stock is always returned** (`S10`, the owner's decision): the goods never left, so the
+// annulment puts them back. The stock movement is `initial`'s mirror with a reason naming
+// the annulment, and it is the one place in the system where a returning movement is not a
+// refund.
+
+#[derive(Debug, Deserialize)]
+pub struct NewAnnulment {
+    /// Why the sale is wrong. A closed set, like `stock_movements.reason`.
+    pub reason: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Annulment {
+    pub id: Uuid,
+    pub sale_id: Uuid,
+    pub reason: String,
+    pub created_at: DateTime<Utc>,
+}
+
+async fn create_annulment(
+    State(state): State<AppState>,
+    Path(sale_id): Path<Uuid>,
+    Json(body): Json<NewAnnulment>,
+) -> Result<(StatusCode, Json<Annulment>), StatusCode> {
+    if !matches!(
+        body.reason.as_str(),
+        "wrong_amount" | "wrong_method" | "wrong_customer" | "wrong_document"
+    ) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let mut tx = state.db.begin().await.map_err(|e| {
+        tracing::error!(?e, "tx begin failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    // The sale's row lock, for the same reason the refund path takes it: the reversal
+    // budget is judged against the committed state.
+    let locked: Option<Uuid> =
+        sqlx::query_scalar!("SELECT id FROM sales WHERE id = $1 FOR UPDATE", sale_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| {
+                tracing::error!(?e, "sale lock failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+    if locked.is_none() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    // What the sale moved, so the annulment reverses exactly that.
+    let sale: Option<(Uuid, Decimal, DateTime<Utc>)> =
+        sqlx::query_as("SELECT payment_method_id, total, created_at FROM sales WHERE id = $1")
+            .bind(sale_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| {
+                tracing::error!(?e, "sale read failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+    let (method, _total, created) = sale.ok_or(StatusCode::NOT_FOUND)?;
+
+    // **Read what is left BEFORE inserting the document.** The annulment's trigger consumes
+    // the budget on insert (`0020`), so a read placed after it sees `reversed_quantity =
+    // quantity` everywhere and computes zero — which is exactly the defect measured while
+    // fixing `R3-001`: the annulment became a no-op, the till stayed at 200 and the stock
+    // at 8. Order here is not style; it is the difference between reversing the remainder
+    // and reversing nothing.
+    let remaining: Vec<(Uuid, String, String, i32, Decimal, String)> = sqlx::query_as(
+        "SELECT product_id, product_name, unit, quantity - reversed_quantity,
+                unit_price, unit
+           FROM sale_items
+          WHERE sale_id = $1 AND quantity > reversed_quantity",
+    )
+    .bind(sale_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| {
+        tracing::error!(?e, "remaining sale lines read failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    if remaining.is_empty() {
+        // Nothing left to annul: the whole sale was already reversed by credit notes. The
+        // schema refuses this too (`R3-002`); asking first is what makes it a status the
+        // caller can act on instead of a 500 from a trigger.
+        return Err(StatusCode::CONFLICT);
+    }
+
+    // The document. Its trigger consumes the reversal budget for every line with budget
+    // left, which is what stops an annulment and a credit note reversing the same unit.
+    let annulment = sqlx::query_as::<_, (Uuid, Uuid, String, DateTime<Utc>)>(
+        "INSERT INTO annulments (sale_id, reason, created_by)
+         VALUES ($1, $2, 'counter')
+         RETURNING id, sale_id, reason, created_at",
+    )
+    .bind(sale_id)
+    .bind(&body.reason)
+    .fetch_one(&mut *tx)
+    .await
+    // A second annulment of the same sale is a 409, not a 500: the unique index is the
+    // rule and the caller can act on it.
+    .map_err(conflict_or_500)?;
+
+    // The money to give back is the sum of those lines at their snapshotted price, which
+    // is what the sale charged — not the sale total, which still includes what a credit
+    // note already returned.
+    let amount: Decimal = -remaining
+        .iter()
+        .map(|(_, _, _, qty, price, _)| *price * Decimal::from(*qty))
+        .fold(Decimal::ZERO, |acc, line| acc + line);
+    sqlx::query(
+        "INSERT INTO money_entries
+            (account_id, payment_method_id, document_kind, document_id, amount, occurred_at, created_by)
+         SELECT pm.account_id, $1, 'annulment', $2, $3, $4, 'counter'
+           FROM payment_methods pm WHERE pm.id = $1",
+    )
+    .bind(method)
+    .bind(annulment.0)
+    .bind(amount)
+    .bind(created)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| {
+        tracing::error!(?e, "annulment money entry failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    // Stock back in for **the units still on the line**, not the whole line: the two
+    // columns differ once a credit note has taken part of it (`R3-001`).
+    for (product_id, product_name, _unit, quantity, unit_price, unit) in &remaining {
+        let line_total: Decimal = *unit_price * Decimal::from(*quantity);
+        sqlx::query(
+            "INSERT INTO stock_movements (product_id, quantity, reason, sale_id, annulment_id)
+             VALUES ($1, $2, 'sale_annulled', $3, $4)",
+        )
+        .bind(product_id)
+        .bind(quantity)
+        .bind(sale_id)
+        .bind(annulment.0)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                ?e,
+                "annulment stock movement failed for {product_name} / {unit} / {line_total}"
+            );
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    }
+
+    tx.commit().await.map_err(|e| {
+        tracing::error!(?e, "tx commit failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(Annulment {
+            id: annulment.0,
+            sale_id: annulment.1,
+            reason: annulment.2,
+            created_at: annulment.3,
+        }),
+    ))
 }

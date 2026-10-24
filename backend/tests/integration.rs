@@ -7564,3 +7564,164 @@ async fn v4_the_schema_refuses_an_override_reversal_even_without_the_handler(poo
          objected."
     );
 }
+
+// ── v4 S5: a sale reported wrongly can be annulled, not "returned" ──────────
+//
+// `odd/tasks/v4-settlement.md` S10, S11. Measured before this slice: `sales` has no
+// `status` and no `reversed_at` (v3 dropped them), the only routes are create, list and
+// `POST /sales/{id}/credit-notes`, and there is **no way to correct a sale that was
+// loaded wrong**.
+//
+// The only exit today is a full credit note, which means "the customer returned the
+// goods" — so the stock moves as if merchandise came back, and it never did. That is
+// worse than the original mistake, and it was already happening.
+
+#[sqlx::test]
+async fn v4_an_annulment_reverses_a_sale_without_pretending_goods_came_back(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+    let cash = "00000000-0000-0000-0000-000000000003";
+
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "annul-probe", "list_price": "50.00", "initial_stock": 10 }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("product id").to_string();
+
+    let sale = client
+        .post(
+            "/api/sales",
+            serde_json::json!({ "items": [{ "product_id": product_id, "quantity": 2 }] }),
+        )
+        .await;
+    assert_eq!(sale.status(), axum::http::StatusCode::CREATED);
+    let sale_id = sale.body["id"].as_str().expect("sale id").to_string();
+    assert_eq!(balance_of(&client, cash).await, "100.00");
+
+    let annulled = client
+        .post(
+            &format!("/api/sales/{sale_id}/annulments"),
+            serde_json::json!({ "reason": "wrong_amount" }),
+        )
+        .await;
+    assert_eq!(
+        annulled.status(),
+        axum::http::StatusCode::CREATED,
+        "a sale reported wrongly must be correctable; body was: {}",
+        annulled.text
+    );
+
+    // The money comes back out, and the sale itself is untouched.
+    assert_eq!(
+        balance_of(&client, cash).await,
+        "0.00",
+        "the annulment reverses what the sale moved"
+    );
+
+    // **The stock comes back, and that is the decision (`S10`): always.**
+    let recovered = client.get("/api/products").await;
+    let row = recovered
+        .body
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|p| p["id"].as_str() == Some(&product_id))
+        .expect("the product");
+    assert_eq!(
+        row["stock"], 10,
+        "an annulled sale returns the stock: the goods never left"
+    );
+
+    // The document is its own thing, with its own reason — not a credit note.
+    let kind: String = sqlx::query_scalar(
+        "SELECT document_kind FROM money_entries WHERE document_kind = 'annulment'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("the annulment writes its own book entry");
+    assert_eq!(kind, "annulment");
+
+    let notes: i64 = sqlx::query_scalar("SELECT count(*) FROM credit_notes WHERE sale_id = $1")
+        .bind(uuid::Uuid::parse_str(&sale_id).expect("uuid"))
+        .fetch_one(&pool)
+        .await
+        .expect("count notes");
+    assert_eq!(
+        notes, 0,
+        "an annulment is not a refund: no credit note is invented for it"
+    );
+
+    // A sale is annulled once. A second annulment is not a second correction.
+    let again = client
+        .post(
+            &format!("/api/sales/{sale_id}/annulments"),
+            serde_json::json!({ "reason": "wrong_customer" }),
+        )
+        .await;
+    assert!(
+        again.status().is_client_error(),
+        "a sale cannot be annulled twice; got {}",
+        again.status()
+    );
+}
+
+#[sqlx::test]
+async fn v4_an_annulment_and_a_credit_note_cannot_reverse_the_same_unit(pool: sqlx::PgPool) {
+    // `S9`'s whole reason for existing: two documents consume one budget. Before `0019`
+    // the budget was a `SUM` over `credit_note_items`, so an annulment that also reversed
+    // stock would not have counted there — and the same line could be reversed twice.
+    let client = common::client(pool.clone());
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "budget-share", "list_price": "10.00", "initial_stock": 5 }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("product id").to_string();
+    let sale = client
+        .post(
+            "/api/sales",
+            serde_json::json!({ "items": [{ "product_id": product_id, "quantity": 3 }] }),
+        )
+        .await;
+    let sale_id = sale.body["id"].as_str().expect("sale id").to_string();
+    let item_id = sale.body["items"][0]["id"]
+        .as_str()
+        .expect("item")
+        .to_string();
+
+    // Refund one unit of three.
+    let note = client
+        .post(
+            &format!("/api/sales/{sale_id}/credit-notes"),
+            serde_json::json!({ "items": [{ "sale_item_id": item_id, "quantity": 1 }] }),
+        )
+        .await;
+    assert_eq!(note.status(), axum::http::StatusCode::CREATED);
+
+    // Annulling now would reverse the other two, and the budget guard has to see that the
+    // credit note already took one. This asserts the two documents share one counter.
+    let annulled = client
+        .post(
+            &format!("/api/sales/{sale_id}/annulments"),
+            serde_json::json!({ "reason": "wrong_document" }),
+        )
+        .await;
+    assert_eq!(
+        annulled.status(),
+        axum::http::StatusCode::CREATED,
+        "annulling what a credit note did not already reverse is allowed; body was: {}",
+        annulled.text
+    );
+
+    let total: i32 = sqlx::query_scalar("SELECT reversed_quantity FROM sale_items WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(&item_id).expect("uuid"))
+        .fetch_one(&pool)
+        .await
+        .expect("read the budget");
+    assert_eq!(
+        total, 3,
+        "one unit by the credit note, two by the annulment: 3 of 3, never more"
+    );
+}

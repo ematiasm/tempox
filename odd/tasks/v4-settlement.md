@@ -154,10 +154,10 @@ S15 **All eight slices are separate review candidates.** The five marked **item 
 | ID | Spec | Slice | Route | Risk | Commit |
 | --- | --- | --- | --- | --- | --- |
 | T1 | S1, S2, S3 | S1 — the book | `money_entries` as a table, `money_movements` as a view over it, `accounts.kind`, backfill from the four existing document tables, write path in sale / credit-note / purchase / supplier-return | item 1 | `8de5280` |
-| T2 | S13 | S2 — who | `created_by` on the entries and on the documents that will be created | — | — |
+| T2 | S13 | S2 — who | **deferred to v5**; see `L24` | — | — |
 | T3 | S12 | S3 — money that is not a sale | opening balance, transfer, count adjustment (`0018`) | item 1 | `1a539d9` |
 | T4 | S9 | S4 — the reversal budget | move the budget from `SUM(credit_note_items)` to `sale_items.reversed_quantity` (`0019`) | item 1 | `4ffb95e` |
-| T5 | S10, S11 | S5 — annulment | the annulment document, stock always returned, budget consumed | — | — |
+| T5 | S10, S11 | S5 — annulment | the annulment document, stock always returned, budget consumed (`0020`) | — | `4accf82` |
 | T6 | S5, S6, S7, S8, S14 | S6a — what is owed to us | `obligations`, `payments(direction=in)`, `settlements`, sale on account, credit balance, the `L107` guard | item 1 | — |
 | T7 | S5, S6, S7, S14 | S6b — what we owe | `payables`, `payments(direction=out)`, the `supplier_returns` override and its guard | item 1 | — |
 | T8 | S4 | S7 — retire `credit` | drop the account and the method, and with them the four triggers `0016` added to protect them | item 1 | — |
@@ -450,3 +450,88 @@ V7c **What the validator concluded.** `original_criteria.passed = true` and
 carried: the backfill runs before the guards and does not set the writer flag (so a *future*
 re-backfill would be refused — the safe order is the one this migration already uses), and
 the flag is a session setting, not authorization.
+
+L24 (owner, verbatim): "no es mejor esperar a v5 para arreglar eso cuando ya existan
+usuarios?" — **S2 is deferred to v5**, and the reason is stronger than "there are no users
+yet": `money_entries` is append-only, so a `created_by` written now can never be corrected.
+
+Measured while answering: `UPDATE money_entries SET created_by = ...` is refused by
+`money_entries_append_only`. So S2 as designed would stamp `'counter'` on every entry
+produced from this point, permanently, and when v5 arrives there would be no way to tell
+which rows were a self-declared guess and which a verified user. **An audit field that
+cannot be corrected and starts with a fabricated value is not audit, it is permanent
+noise.**
+
+This is the opposite of what S1's backfill does, and the distinction is the whole point:
+`'backfill'` is *true* — those entries did come from a backfill — while `'counter'` on a
+new sale is *unknown* and saying it is worse than leaving it unsaid.
+
+What v5 should do instead: leave the old rows with what they honestly know, and stamp the
+user id on the entries written from then on. "Who loaded this" then has an answer from that
+date forward, and the absence of an answer before it is true information rather than a
+hole.
+
+**Consequence recorded so nobody is surprised later:** S1, S3 and S4 already write
+`'counter'` in every entry they produce (`ledger.rs`, `sales.rs`, `purchases.rs`). With S2
+deferred, that literal stays in `main` until v5. It is a literal and not a column with
+meaning, and no production database has rows yet, so v5 can change it without migrating
+data — stated here rather than discovered then.
+
+V8 **S5/T5, `4accf82`.** `make test-backend` 102 (was 100), `make test-unit` 50 + 232,
+`make test-e2e` 23, four CI commands clean. The once-only rule proven to bite. A
+differential of `6a0abe9` against the branch: the route goes `404` → `201`, everything
+else identical.
+
+V8b **The defect this slice found is the best argument for running the thing instead of
+reading it.** Adding `'sale_annulled'` to `stock_movements_reason_known` — the obvious,
+constraint-shaped change — answered **500**, and the server log named why:
+*"says reason sale_annulled but its shape says sale"*. `0011` had already replaced six
+CHECK constraints with **one trigger that derives the reason from the row's shape**,
+deliberately, so adding a reason means adding a shape. Nothing in the constraint list says
+that; only the trigger does.
+
+The fix is a column, not a value: `stock_movements.annulment_id`. Two facts that were
+indistinguishable — "the customer brought it back" and "the sale was never real" — are now
+distinguishable, and the annulment branch goes **first** in the `CASE` because an annulment
+row also satisfies the older condition for 'sale'. **Order is the correctness argument.**
+
+V8c **The two documents share one budget, which is what `0019` was for.** The test asserts
+the arithmetic rather than the mechanism: one unit by a credit note plus two by an
+annulment equals three of three. If the annulment had its own counter, that assertion would
+read 4 and the same unit would have been reversed twice.
+
+V9 **S5 reviewed, corrected and sealed.** Lineage `review-9e0c575936d6e78f`, authority
+burned. The review raised **two BLOCKER findings, both introduced by `4accf82`, both
+reproduced against a live server before being fixed** (`52d0679`).
+
+| id | what it did | measured |
+| --- | --- | --- |
+| `R3-001` | reversed `sales.total` and every line's full quantity, ignoring what a credit note had already returned | sale of 3 × 100, one unit refunded, annulled → till **−100**, stock **11 of 10** |
+| `R3-002` | the trigger ran its `UPDATE`, matched nothing, and returned a document anyway | a fully refunded sale still got an annulment row |
+
+The first is the worse one in kind: it gave back 300 for 200 owed and returned goods that
+never left, and the till went negative — money the shop never had.
+
+V9b **A third defect, found while fixing the first, and it is the most instructive of the
+three.** Reading the remaining lines *after* inserting the annulment returns nothing,
+because the annulment's own trigger consumes the budget on insert. The annulment became a
+no-op: the till stayed at 200 and the stock at 8, and the route answered `201` while doing
+nothing. Measured, then the read was moved before the insert.
+**Order is the correctness argument, not style** — the same sentence `S5` needed for the
+`CASE` branches in `0020`, and the second time in one slice that statement was true.
+
+V9c **Why both layers exist.** The route answers `409` from its empty pre-read; the trigger
+raises from its `ROW_COUNT`. Only the route's is reachable through HTTP, and only the
+trigger's through `psql`. That duplication is deliberate and recorded as a follow-up: they
+must move together if the rule ever changes.
+
+V9d **The validator's verdict.** `original_criteria.passed = true` and
+`correction_regression.passed = true`, with two follow-ups carried rather than silenced: the
+annulment now depends on the sale path's rounding arithmetic (it recomputes
+`unit_price × remaining`, while `sales.total` is stored), and the two-layer refusal above.
+
+V9e **A tooling note that cost a step.** `git add -A` swept a Kate swap file
+(`.AGENTS.md.kate-swp`) into the slice commit. `.gitignore` had `*.swp`, which does not match
+that suffix. It was removed in a **new commit** (`cffee22`) rather than with `--amend` —
+rewriting a commit that is already a review candidate is exactly what stranded three
+lineages in v3 — and `*.kate-swp` joined the ignore list beside the older pattern.
