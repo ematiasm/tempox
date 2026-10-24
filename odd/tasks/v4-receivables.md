@@ -1,8 +1,10 @@
 # v4-receivables — what we are owed, and the money that settles it
 
 Slice **S6a / T6** of `odd/tasks/v4-settlement.md`, split into its own document because it
-is the slice where an obligation stops being a fake account. **State: T6.1-T6.4 implemented
-and green (114 backend tests), committed as two slices on `feat/v4-annulment`, not reviewed.** S1, S3, S4 and S5 are
+is the slice where an obligation stops being a fake account. **State: T6.1-T6.4 implemented, green (119 backend tests), in four commits on
+`feat/v4-annulment`. The correction is reviewed and approved
+(`review-1becd57b99cb3a1f`); the slice as a whole is not, because it exceeds the reviewer
+context budget.** S1, S3, S4 and S5 are
 merged to `main` (`e081077`); S2 is deferred to v5; S6b and S7 are still ahead.
 
 The state that must hold when this slice closes, and it is one sentence:
@@ -368,3 +370,57 @@ Two explicit notes against 100.00 collected answer 201 then 409, and the till la
 instead of −800.00.
 
 V5d `make test` green after the correction: 50 unit + 232 frontend + **119** backend + 23 e2e.
+
+## Second review: the correction, approved
+
+L16 **Review `review-1becd57b99cb3a1f`, tier high, lenses `risk` and `reliability`, 4 files,
+711 lines.** Scope: `b0cfe16..b0735f4` — the correction of the five CRITICAL findings above,
+not the whole slice. Result: **approved**, authority burned
+(`gentle-ai.review-acknowledged/v1`). Four findings, all `informational`, none opening a
+correction.
+
+L17 **Why the scope is the correction and not the slice, measured twice.** The whole tree
+(`e7c8856f…`, 4221 lines, four lenses) is refused at START with
+`lens_context_budget_exceeded` — *"the candidate's complete reviewer evidence exceeds the
+native context budget, so no review authority was created"*. Retrying that candidate cannot
+succeed and nothing had to be abandoned. `review status --next-transition --base-ref b0cfe16`
+then produced a 711-line candidate with two lenses, which fits. **The provider's own stop
+message named this route**, and it is the second time in this feature that reading the stop
+instead of guessing saved the authority.
+
+L18 **`R1-001` and `R3-001` are the same residual, found by both lenses, and it is real.**
+The correction closed *settling with the outbound refund itself* and left the sequential
+variant open:
+
+```
+collect 100.00  ->  available = 100.00
+refund  100.00  ->  passes the new ceiling with equality; the till is now 0, the balance -100.00
+settle the debt with the ORIGINAL inbound payment
+                ->  direction ok, party ok, per-payment remainder ok, obligation room ok
+                ->  debt 0, and the 100.00 has already left
+```
+
+Every new guard passes and the money is resolved twice. **It is a narrowed residual and not a
+new regression** — the base could do this too, and it could also do the same-payment variant
+that this correction closed. Recorded for the next slice: the settlement's remaining-room
+question should be asked against `lock_party_balance`, not against the payment alone.
+
+L19 **`R1-003` — a narrow race in the inherited-path pre-check.** The pre-check reads the
+obligation and its sums without a lock the settlement writer respects, so a settlement
+committing between that read and the note's COMMIT still reaches the deferred ceiling and
+answers 500 in that window. The database enforces the ceiling, so no over-lowering survives;
+only the status code is affected. A lock-ordering fix, not a data fix.
+
+L20 **`R1-002` — the unauthenticated posture, confirmed by an independent lens.** Every write
+route this slice touches accepts anonymous requests, and the new ceilings bound what an
+anonymous caller can move. That is a strict improvement over the base, which had the same
+surface uncapped. Closing it is an authentication design and is not this slice's.
+
+L21 **A tooling rule adopted mid-review, because it cost two rejections.** The provider's
+bindings are opaque and must never be retyped: a hand-copied `subject-hash` was rejected once
+(`collect-group-rejected`) and a second hand-copy would have been captured wrong silently. The
+rule now is **serialize the provider payload to a file, rebuild the binding from it, and assert
+that every argument token and the subject hash match the provider's own bytes before
+submitting**. Both captures after that rule passed first try, including the retry after a
+`pi-host-relay-transport-failure`, which was only retried because fresh STATUS reoffered the
+**identical** revision and subject hashes.
