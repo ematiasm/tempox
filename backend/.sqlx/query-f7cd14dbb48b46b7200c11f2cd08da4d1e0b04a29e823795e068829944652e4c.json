@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO obligations\n                    (source_document_kind, source_document_id, party_kind, party_id,\n                     amount, occurred_at, created_by)\n                 VALUES ('sale', $1, 'customer', $2, $3, $4, 'counter')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Numeric",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f7cd14dbb48b46b7200c11f2cd08da4d1e0b04a29e823795e068829944652e4c"
+}

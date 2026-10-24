@@ -26,6 +26,6 @@ pub fn router() -> Router<AppState> {
             .merge(purchases::routes())
             .merge(day::routes())
             .merge(accounts::routes())
-            .merge(ledger::routes()),
+            .merge(ledger::routes())
     )
 }

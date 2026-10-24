@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT s.id, s.customer_id, round(s.total, 2) AS \"total!\",\n                s.payment_method_id, pm.name AS \"payment_method_name!\",\n                s.created_at, c.name AS customer_name\n         FROM sales s\n         JOIN customers c ON c.id = s.customer_id\n         JOIN payment_methods pm ON pm.id = s.payment_method_id\n         WHERE ($1::timestamptz IS NULL OR s.created_at >= $1)\n           AND ($2::timestamptz IS NULL OR s.created_at < $2)\n         ORDER BY s.created_at DESC\n         LIMIT $3 OFFSET $4",
+  "query": "SELECT s.id, s.customer_id, round(s.total, 2) AS \"total!\",\n                s.payment_method_id,\n                CASE WHEN s.payment_method_id IS NULL THEN NULL ELSE pm.name END\n                    AS \"payment_method_name\",\n                s.created_at\n         FROM sales s\n         LEFT JOIN payment_methods pm ON pm.id = s.payment_method_id\n         WHERE s.id = $1",
   "describe": {
     "columns": [
       {
@@ -44,14 +44,9 @@
       },
       {
         "ordinal": 4,
-        "name": "payment_method_name!",
+        "name": "payment_method_name",
         "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "payment_methods",
-            "name": "name"
-          }
-        }
+        "origin": "Expression"
       },
       {
         "ordinal": 5,
@@ -63,36 +58,21 @@
             "name": "created_at"
           }
         }
-      },
-      {
-        "ordinal": 6,
-        "name": "customer_name",
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "customers",
-            "name": "name"
-          }
-        }
       }
     ],
     "parameters": {
       "Left": [
-        "Timestamptz",
-        "Timestamptz",
-        "Int8",
-        "Int8"
+        "Uuid"
       ]
     },
     "nullable": [
       false,
       false,
       null,
-      false,
-      false,
-      false,
+      true,
+      null,
       false
     ]
   },
-  "hash": "7ca8232814a66fd2fcae44db0d4a9e36d360b838e901af7da6915ab164ea2924"
+  "hash": "ab06a5bce91e541d1168357a9f71ba8c5f3631382414f9c5908716b6f12591a5"
 }
