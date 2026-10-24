@@ -9168,10 +9168,18 @@ async fn v4_s6a_migrations_refuse_a_legacy_credit_sale_instead_of_half_migrating
 
     // Rewind to the pre-slice state: drop what `0021` created and forget it was applied, so
     // the second pass is a real upgrade rather than a no-op.
+    // **`0022`'s tables go first, and this test learned it the hard way.** In a worktree
+    // whose chain stops at `0021` these do not exist and `IF EXISTS` covers it; on a branch
+    // that also carries `0022`, `settlements` references `obligations` and a bare `DROP TABLE
+    // obligations` fails with "other objects depend on it". The rewind must undo the chain in
+    // reverse order or it is not a rewind.
     for sql in [
         "DROP TRIGGER IF EXISTS money_entries_never_name_the_debt ON money_entries",
         "DROP TRIGGER IF EXISTS credit_notes_claim_their_effect ON credit_notes",
         "DROP TRIGGER IF EXISTS sales_payment_method_claimed ON sales",
+        "DROP TRIGGER IF EXISTS payments_claim_their_entry ON payments",
+        "DROP TABLE IF EXISTS settlements",
+        "DROP TABLE IF EXISTS payments",
         "DROP TABLE IF EXISTS obligations_adjustments",
         "DROP TABLE IF EXISTS obligations",
         "ALTER TABLE credit_notes ALTER COLUMN payment_method_id SET NOT NULL",
