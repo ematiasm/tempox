@@ -157,7 +157,7 @@ S15 **All eight slices are separate review candidates.** The five marked **item 
 | T2 | S13 | S2 — who | **deferred to v5**; see `L24` | — | — |
 | T3 | S12 | S3 — money that is not a sale | opening balance, transfer, count adjustment (`0018`) | item 1 | `1a539d9` |
 | T4 | S9 | S4 — the reversal budget | move the budget from `SUM(credit_note_items)` to `sale_items.reversed_quantity` (`0019`) | item 1 | `4ffb95e` |
-| T5 | S10, S11 | S5 — annulment | the annulment document, stock always returned, budget consumed | — | — |
+| T5 | S10, S11 | S5 — annulment | the annulment document, stock always returned, budget consumed (`0020`) | — | `4accf82` |
 | T6 | S5, S6, S7, S8, S14 | S6a — what is owed to us | `obligations`, `payments(direction=in)`, `settlements`, sale on account, credit balance, the `L107` guard | item 1 | — |
 | T7 | S5, S6, S7, S14 | S6b — what we owe | `payables`, `payments(direction=out)`, the `supplier_returns` override and its guard | item 1 | — |
 | T8 | S4 | S7 — retire `credit` | drop the account and the method, and with them the four triggers `0016` added to protect them | item 1 | — |
@@ -476,3 +476,26 @@ hole.
 deferred, that literal stays in `main` until v5. It is a literal and not a column with
 meaning, and no production database has rows yet, so v5 can change it without migrating
 data — stated here rather than discovered then.
+
+V8 **S5/T5, `4accf82`.** `make test-backend` 102 (was 100), `make test-unit` 50 + 232,
+`make test-e2e` 23, four CI commands clean. The once-only rule proven to bite. A
+differential of `6a0abe9` against the branch: the route goes `404` → `201`, everything
+else identical.
+
+V8b **The defect this slice found is the best argument for running the thing instead of
+reading it.** Adding `'sale_annulled'` to `stock_movements_reason_known` — the obvious,
+constraint-shaped change — answered **500**, and the server log named why:
+*"says reason sale_annulled but its shape says sale"*. `0011` had already replaced six
+CHECK constraints with **one trigger that derives the reason from the row's shape**,
+deliberately, so adding a reason means adding a shape. Nothing in the constraint list says
+that; only the trigger does.
+
+The fix is a column, not a value: `stock_movements.annulment_id`. Two facts that were
+indistinguishable — "the customer brought it back" and "the sale was never real" — are now
+distinguishable, and the annulment branch goes **first** in the `CASE` because an annulment
+row also satisfies the older condition for 'sale'. **Order is the correctness argument.**
+
+V8c **The two documents share one budget, which is what `0019` was for.** The test asserts
+the arithmetic rather than the mechanism: one unit by a credit note plus two by an
+annulment equals three of three. If the annulment had its own counter, that assertion would
+read 4 and the same unit would have been reversed twice.
