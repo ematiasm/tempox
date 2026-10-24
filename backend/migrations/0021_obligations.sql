@@ -433,16 +433,12 @@ FOR EACH ROW EXECUTE FUNCTION money_entry_never_names_the_debt_account();
 -- passed: **they all start from nothing.** That is `v4-settlement.md` V1b's own warning —
 -- "doing it on an empty database would have proven nothing" — and this slice ignored it.
 --
--- **Removing the backfill is the honest fix, not a shortcut.** A backfill exists to carry
--- live data across a schema change. There is no live data. Keeping a broken one and
--- disabling the check that exposes it would leave two generations of credit history in any
--- database someone did keep, silently. What replaces it is a refusal: if a database *does*
--- hold legacy credit sales, this migration stops and says so, and the remedy is a `DROP`,
--- which is exactly what the owner chose.
---
--- Re-measured after removing it: `0021` applies on an empty database in 17ms, and on a
--- database with a legacy credit sale it refuses with a message naming the count and the
--- remedy. Both are the intended outcomes.
+-- **Removing the backfill is the honest fix, not a shortcut.** A backfill carries live data
+-- across a schema change; there is none. Keeping a broken one and disabling the check that
+-- exposes it would leave two generations of credit history in any database someone did keep.
+-- What replaces it is a refusal naming the count and the remedy — a `DROP`, the owner's
+-- choice. Re-measured: an empty database applies in 17ms, and one holding a legacy credit
+-- sale refuses once, by design.
 
 -- ── Prove the guards exist, and that no legacy data is in the way ─────────
 --

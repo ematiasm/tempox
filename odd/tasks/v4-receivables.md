@@ -1,10 +1,11 @@
 # v4-receivables — what we are owed, and the money that settles it
 
 Slice **S6a / T6** of `odd/tasks/v4-settlement.md`, split into its own document because it
-is the slice where an obligation stops being a fake account. **State: T6.1-T6.4 implemented, green (119 backend tests), in four commits on
-`feat/v4-annulment`. The correction is reviewed and approved
-(`review-1becd57b99cb3a1f`); the slice as a whole is not, because it exceeds the reviewer
-context budget.** S1, S3, S4 and S5 are
+is the slice where an obligation stops being a fake account. **State: T6.1-T6.4 implemented,
+green (119 backend tests), in six commits on `feat/v4-annulment`. `0021` was reviewed and
+approved (`review-14d05c7f7f92e0bf`) after its BLOCKER was fixed; the correction `b0735f4` was
+approved earlier (`review-1becd57b99cb3a1f`); the slice as a whole is not, because it exceeds
+the reviewer context budget and had to be split to be reviewed at all.** S1, S3, S4 and S5 are
 merged to `main` (`e081077`); S2 is deferred to v5; S6b and S7 are still ahead.
 
 The state that must hold when this slice closes, and it is one sentence:
