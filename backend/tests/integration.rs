@@ -6819,3 +6819,254 @@ async fn v3_t6_the_till_is_the_default_account_not_every_sale(pool: sqlx::PgPool
         "exactly one account is the till, so the footer has one number to show"
     );
 }
+
+// ── v4 S1: the money book is a table, not a view ────────────────────────────
+//
+// `odd/tasks/v4-settlement.md` S1-S3. Until `0017` the only way to know where money
+// moved was `money_movements`, a `VIEW`: a calculation over four document tables with
+// an `INNER JOIN` to `payment_methods`, so a misaligned row vanished from every balance
+// without an error and nothing recorded what should have been there.
+//
+// What is asserted here is the property that makes auditing possible: the effect of a
+// document is a **row that exists**, and it cannot be rewritten.
+
+#[sqlx::test]
+async fn v4_the_book_is_a_table_and_refuses_every_rewrite(pool: sqlx::PgPool) {
+    // S1/S2. Measured before `0017`: `money_entries` did not exist at all, so the book
+    // was a calculation and there was nothing to make append-only.
+    let kind: String = sqlx::query_scalar(
+        "SELECT table_type FROM information_schema.tables WHERE table_name = 'money_entries'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("money_entries must exist as a real table");
+    assert_eq!(
+        kind, "BASE TABLE",
+        "the book is a table: a view is a calculation, and a lost UNION branch leaves no \
+         row behind to notice"
+    );
+
+    // Give it one entry to work with.
+    let client = common::client(pool.clone());
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "book-probe", "list_price": "10.00" }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("product id").to_string();
+    let sale = client
+        .post(
+            "/api/sales",
+            serde_json::json!({ "items": [{ "product_id": product_id, "quantity": 1 }] }),
+        )
+        .await;
+    assert_eq!(sale.status(), axum::http::StatusCode::CREATED);
+    let sale_id = sale.body["id"].as_str().expect("sale id").to_string();
+
+    let entry: (uuid::Uuid, uuid::Uuid, rust_decimal::Decimal, String) = sqlx::query_as(
+        "SELECT id, account_id, amount, document_kind FROM money_entries WHERE document_id = $1",
+    )
+    .bind(uuid::Uuid::parse_str(&sale_id).expect("uuid"))
+    .fetch_one(&pool)
+    .await
+    .expect("a sale must write exactly one money entry");
+
+    assert_eq!(
+        entry.3, "sale",
+        "the entry names the document kind it came from"
+    );
+    assert_eq!(
+        entry.2,
+        rust_decimal::Decimal::from(10),
+        "positive is money entering the account"
+    );
+
+    // S2: an entry is the effect of a document, never a document of its own.
+    let orphan = sqlx::query(
+        "INSERT INTO money_entries (account_id, payment_method_id, document_kind, document_id, amount, occurred_at, created_by)
+         VALUES ('00000000-0000-0000-0000-000000000003', '00000000-0000-0000-0000-000000000004',
+                 'sale', NULL, 5, now(), 'test')",
+    )
+    .execute(&pool)
+    .await;
+    assert!(
+        orphan.is_err(),
+        "an entry with no document_id is a bug, not a document; the column is NOT NULL"
+    );
+
+    // The three rewrite paths `0004` had to close for stock, closed here from the start.
+    let update = sqlx::query("UPDATE money_entries SET amount = 999 WHERE id = $1")
+        .bind(entry.0)
+        .execute(&pool)
+        .await;
+    assert!(
+        update.is_err(),
+        "the book is append-only: corrections are compensating rows"
+    );
+
+    let delete = sqlx::query("DELETE FROM money_entries WHERE id = $1")
+        .bind(entry.0)
+        .execute(&pool)
+        .await;
+    assert!(
+        delete.is_err(),
+        "an entry may not be deleted: that erases a balance's explanation"
+    );
+
+    let truncate = sqlx::query("TRUNCATE money_entries").execute(&pool).await;
+    assert!(
+        truncate.is_err(),
+        "TRUNCATE does not fire FOR EACH ROW, so it needs its own statement-level guard"
+    );
+
+    // And the row is still there, untouched by any of the refusals.
+    let still: rust_decimal::Decimal =
+        sqlx::query_scalar("SELECT amount FROM money_entries WHERE id = $1")
+            .bind(entry.0)
+            .fetch_one(&pool)
+            .await
+            .expect("the entry survived three refused rewrites");
+    assert_eq!(still, rust_decimal::Decimal::from(10));
+}
+
+#[sqlx::test]
+async fn v4_every_document_writes_its_own_entries_and_the_view_agrees(pool: sqlx::PgPool) {
+    // S1's other half: the book is the source and `money_movements` is now a view over
+    // it, so the four existing write paths must each write their entries — and the view
+    // must still total the same as the table. A view that disagrees with its own table is
+    // the defect this slice exists to make visible.
+    let client = common::client(pool.clone());
+    let cash = "00000000-0000-0000-0000-000000000003";
+
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "ledger-probe", "list_price": "100.00", "initial_stock": 20 }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("product id").to_string();
+
+    // 1. A sale: money in.
+    let sale = client
+        .post(
+            "/api/sales",
+            serde_json::json!({ "items": [{ "product_id": product_id, "quantity": 2 }] }),
+        )
+        .await;
+    assert_eq!(sale.status(), axum::http::StatusCode::CREATED);
+    let sale_id = sale.body["id"].as_str().expect("sale id").to_string();
+    let sale_item = sale.body["items"][0]["id"]
+        .as_str()
+        .expect("item")
+        .to_string();
+
+    // 2. A purchase: money out.
+    let purchase = client
+        .post(
+            "/api/purchases",
+            serde_json::json!({
+                "items": [{ "product_id": product_id, "quantity": 5, "unit_price": "20.00" }]
+            }),
+        )
+        .await;
+    assert_eq!(
+        purchase.status(),
+        axum::http::StatusCode::CREATED,
+        "a purchase must be recorded; body was: {}",
+        purchase.text
+    );
+    // The purchase response nests the document under `purchase` and its lines beside it,
+    // unlike a sale which returns the document flat. Measured, not assumed.
+    let purchase_id = purchase.body["purchase"]["id"]
+        .as_str()
+        .expect("purchase id")
+        .to_string();
+    let purchase_item = purchase.body["items"][0]["id"]
+        .as_str()
+        .expect("purchase item id")
+        .to_string();
+
+    // 3. A credit note: money back to the customer.
+    let note = client
+        .post(
+            &format!("/api/sales/{sale_id}/credit-notes"),
+            serde_json::json!({ "items": [{ "sale_item_id": sale_item, "quantity": 1 }] }),
+        )
+        .await;
+    assert_eq!(note.status(), axum::http::StatusCode::CREATED);
+    let note_id = note.body["id"].as_str().expect("note id").to_string();
+
+    // 4. A supplier return: money back from the supplier.
+    let returned = client
+        .post(
+            &format!("/api/purchases/{purchase_id}/supplier-returns"),
+            serde_json::json!({ "items": [{ "purchase_item_id": purchase_item, "quantity": 1 }] }),
+        )
+        .await;
+    assert_eq!(
+        returned.status(),
+        axum::http::StatusCode::CREATED,
+        "a supplier return must be recorded; body was: {}",
+        returned.text
+    );
+    // Measured, not assumed: the supplier return nests the document under `return`,
+    // unlike the purchase's `purchase`. Guessing this twice cost two red runs.
+    let return_id = returned.body["return"]["id"]
+        .as_str()
+        .expect("supplier return id")
+        .to_string();
+
+    // Each document names its own kind, once. `assert_eq!` on the counts is what makes a
+    // missing insert a failure instead of a silently smaller balance.
+    for (kind, id) in [
+        ("sale", &sale_id),
+        ("purchase", &purchase_id),
+        ("credit_note", &note_id),
+        ("supplier_return", &return_id),
+    ] {
+        let count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM money_entries WHERE document_kind = $1")
+                .bind(kind)
+                .fetch_one(&pool)
+                .await
+                .expect("count entries");
+        assert_eq!(count, 1, "{kind} must write exactly one money entry");
+
+        let by_id: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM money_entries WHERE document_id = $1")
+                .bind(uuid::Uuid::parse_str(id).expect("uuid"))
+                .fetch_one(&pool)
+                .await
+                .expect("count by document id");
+        assert_eq!(
+            by_id, 1,
+            "{kind} {id} must be the documented cause of that entry"
+        );
+    }
+
+    // The view and the table agree, per account. A view that drifted from its own source
+    // would make every balance wrong while every document looked right.
+    let from_view: Vec<(uuid::Uuid, rust_decimal::Decimal)> =
+        sqlx::query_as("SELECT account_id, COALESCE(SUM(amount), 0) FROM money_movements GROUP BY account_id ORDER BY account_id")
+            .fetch_all(&pool)
+            .await
+            .expect("read the view");
+    let from_table: Vec<(uuid::Uuid, rust_decimal::Decimal)> =
+        sqlx::query_as("SELECT account_id, COALESCE(SUM(amount), 0) FROM money_entries GROUP BY account_id ORDER BY account_id")
+            .fetch_all(&pool)
+            .await
+            .expect("read the table");
+    assert_eq!(
+        from_view, from_table,
+        "money_movements is a view over money_entries, so the two can never disagree"
+    );
+
+    // 2 x 100 sold (+200), 5 x 20 bought (-100), 1 x 100 refunded (-100),
+    // 1 x 20 returned (+20) = 20. The refund covers one unit, not the whole sale.
+    assert_eq!(
+        balance_of(&client, cash).await,
+        "20.00",
+        "the view totals the four documents with the sign each one has"
+    );
+}

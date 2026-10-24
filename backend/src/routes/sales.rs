@@ -322,6 +322,27 @@ async fn create_sale(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
+    // The book entry (`0017`): one row per effect of money, written in the same
+    // transaction as the document that causes it. `account_id` comes from the method,
+    // and the trigger re-checks that the two agree — an account the method does not
+    // resolve to is not expressible, rather than merely discouraged.
+    sqlx::query!(
+        "INSERT INTO money_entries
+            (account_id, payment_method_id, document_kind, document_id, amount, occurred_at, created_by)
+         SELECT pm.account_id, $1, 'sale', $2, $3, $4, 'counter'
+           FROM payment_methods pm WHERE pm.id = $1",
+        payment_method_id,
+        sale_id,
+        total,
+        sale.created_at
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| {
+        tracing::error!(?e, "sale money entry failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
     tx.commit().await.map_err(|e| {
         tracing::error!(?e, "tx commit failed");
         StatusCode::INTERNAL_SERVER_ERROR
@@ -557,6 +578,26 @@ async fn create_credit_note(
     .await
     .map_err(|e| {
         tracing::error!(?e, "credit note readback failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    // The book entry for the refund (`0017`): money leaves the account the note's method
+    // resolves to. `-total` because positive is money entering.
+    let note_amount: Decimal = -note_total;
+    sqlx::query!(
+        "INSERT INTO money_entries
+            (account_id, payment_method_id, document_kind, document_id, amount, occurred_at, created_by)
+         SELECT pm.account_id, $1, 'credit_note', $2, $3, $4, 'counter'
+           FROM payment_methods pm WHERE pm.id = $1",
+        note_method,
+        note_id,
+        note_amount,
+        note.created_at
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| {
+        tracing::error!(?e, "credit note money entry failed");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
