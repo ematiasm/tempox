@@ -7070,3 +7070,283 @@ async fn v4_every_document_writes_its_own_entries_and_the_view_agrees(pool: sqlx
         "the view totals the four documents with the sign each one has"
     );
 }
+
+// ── v4 S3: money that did not come from a sale ──────────────────────────────
+//
+// `odd/tasks/v4-settlement.md` S12. Three ordinary events had no document:
+// the opening balance (so the book's starting point was the first sale rather than
+// the first morning), a transfer between the shop's own accounts (today expressible
+// only as a fake sale), and a count adjustment (a real difference found by counting).
+//
+// Each is a document with its own id, and each writes its entries through the book.
+
+#[sqlx::test]
+async fn v4_an_opening_balance_starts_the_book_and_cannot_be_repeated(pool: sqlx::PgPool) {
+    // The till's opening figure. Before `0018` there was no way to record it: the book's
+    // first row was the first sale, and the 3,000 the development database shows had no
+    // opening document behind it.
+    let client = common::client(pool.clone());
+    let cash = "00000000-0000-0000-0000-000000000003";
+
+    let opened = client
+        .post(
+            "/api/opening-balances",
+            serde_json::json!({ "account_id": cash, "amount": "500.00" }),
+        )
+        .await;
+    assert_eq!(
+        opened.status(),
+        axum::http::StatusCode::CREATED,
+        "an opening balance must be recordable; body was: {}",
+        opened.text
+    );
+
+    // It moves the balance, because it is money that was already there.
+    assert_eq!(
+        balance_of(&client, cash).await,
+        "500.00",
+        "the opening balance is the first row of the book"
+    );
+
+    // And the kind is named, so "where did this money come from" has an answer.
+    let kind: String = sqlx::query_scalar(
+        "SELECT document_kind FROM money_entries WHERE document_kind = 'opening_balance'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("the opening balance writes a book entry");
+    assert_eq!(kind, "opening_balance");
+
+    // **A second opening for the same account is refused.** It is not a second
+    // beginning, it is a correction wearing a beginning's clothes.
+    let again = client
+        .post(
+            "/api/opening-balances",
+            serde_json::json!({ "account_id": cash, "amount": "100.00" }),
+        )
+        .await;
+    assert_eq!(
+        again.status(),
+        axum::http::StatusCode::CONFLICT,
+        "an account has one beginning, not two; body was: {}",
+        again.text
+    );
+
+    // A different account is a different beginning — **but only once it has a method**.
+    //
+    // This is the same shape as `0012`'s "the default account always has an active
+    // method", and it is not an obstacle invented here: the book derives `account_id`
+    // from the method (`0017`), so an account with no method cannot be written to at all.
+    // The refusal is a 404 because what is missing is the method, not the account.
+    let bank = client
+        .post("/api/accounts", serde_json::json!({ "name": "banco" }))
+        .await;
+    assert_eq!(bank.status(), axum::http::StatusCode::CREATED);
+    let bank_id = bank.body["id"].as_str().expect("bank id").to_string();
+
+    let no_method_yet = client
+        .post(
+            "/api/opening-balances",
+            serde_json::json!({ "account_id": bank_id, "amount": "900.00" }),
+        )
+        .await;
+    assert_eq!(
+        no_method_yet.status(),
+        axum::http::StatusCode::NOT_FOUND,
+        "an account with no payment method cannot carry money: the book derives the \
+         account from a method. body was: {}",
+        no_method_yet.text
+    );
+
+    // Give it a method, and now it can start.
+    let bank_method = client
+        .post(
+            "/api/payment-methods",
+            serde_json::json!({ "name": "transferencia-banco", "account_id": bank_id }),
+        )
+        .await;
+    assert_eq!(bank_method.status(), axum::http::StatusCode::CREATED);
+
+    let bank_open = client
+        .post(
+            "/api/opening-balances",
+            serde_json::json!({ "account_id": bank_id, "amount": "900.00" }),
+        )
+        .await;
+    assert_eq!(
+        bank_open.status(),
+        axum::http::StatusCode::CREATED,
+        "every account may have its own beginning; body was: {}",
+        bank_open.text
+    );
+}
+
+#[sqlx::test]
+async fn v4_a_transfer_moves_money_between_two_accounts_and_nowhere_else(pool: sqlx::PgPool) {
+    // A transfer leaves one account and arrives at another, in one document, with two
+    // entries. Today the only way to express it is a fake sale, which pollutes the
+    // sales ledger with a document that never sold anything.
+    let client = common::client(pool.clone());
+    let cash = "00000000-0000-0000-0000-000000000003";
+
+    let bank = client
+        .post("/api/accounts", serde_json::json!({ "name": "banco" }))
+        .await;
+    let bank_id = bank.body["id"].as_str().expect("bank id").to_string();
+    let bank_method = client
+        .post(
+            "/api/payment-methods",
+            serde_json::json!({ "name": "transferencia", "account_id": bank_id }),
+        )
+        .await;
+    let bank_method_id = bank_method.body["id"].as_str().expect("method").to_string();
+
+    client
+        .post(
+            "/api/opening-balances",
+            serde_json::json!({ "account_id": cash, "amount": "1000.00" }),
+        )
+        .await;
+    assert_eq!(balance_of(&client, cash).await, "1000.00");
+
+    let moved = client
+        .post(
+            "/api/transfers",
+            serde_json::json!({
+                "from_account_id": cash,
+                "to_account_id": bank_id,
+                "from_payment_method_id": "00000000-0000-0000-0000-000000000004",
+                "to_payment_method_id": bank_method_id,
+                "amount": "300.00"
+            }),
+        )
+        .await;
+    assert_eq!(
+        moved.status(),
+        axum::http::StatusCode::CREATED,
+        "a transfer between the shop's own accounts must be recordable; body was: {}",
+        moved.text
+    );
+
+    // The point: the total across the shop is unchanged, and each account moved.
+    assert_eq!(
+        balance_of(&client, cash).await,
+        "700.00",
+        "the source account lost exactly what left it"
+    );
+    assert_eq!(
+        balance_of(&client, &bank_id).await,
+        "300.00",
+        "the destination gained exactly what arrived"
+    );
+
+    let entries: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM money_entries WHERE document_kind = 'transfer'")
+            .fetch_one(&pool)
+            .await
+            .expect("count transfer entries");
+    assert_eq!(entries, 2, "a transfer is two effects, not one");
+
+    let net: rust_decimal::Decimal = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(amount), 0) FROM money_entries WHERE document_kind = 'transfer'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("sum transfer entries");
+    assert_eq!(
+        net,
+        rust_decimal::Decimal::ZERO,
+        "a transfer moves money; it does not create or destroy it"
+    );
+
+    // To the account it is already in is not a transfer.
+    let same = client
+        .post(
+            "/api/transfers",
+            serde_json::json!({
+                "from_account_id": cash,
+                "to_account_id": cash,
+                "from_payment_method_id": "00000000-0000-0000-0000-000000000004",
+                "to_payment_method_id": "00000000-0000-0000-0000-000000000004",
+                "amount": "10.00"
+            }),
+        )
+        .await;
+    assert!(
+        same.status().is_client_error(),
+        "a transfer to the same account is a typo, not a document; got {}",
+        same.status()
+    );
+}
+
+#[sqlx::test]
+async fn v4_a_count_adjustment_records_a_real_difference_without_rewriting_history(
+    pool: sqlx::PgPool,
+) {
+    // "I counted 2,850 and the book says 3,000." The answer is a document, never a
+    // rewritten balance — and this is the test that pins it, because a system that can
+    // silently adjust a balance cannot be audited afterwards.
+    let client = common::client(pool.clone());
+    let cash = "00000000-0000-0000-0000-000000000003";
+
+    client
+        .post(
+            "/api/opening-balances",
+            serde_json::json!({ "account_id": cash, "amount": "3000.00" }),
+        )
+        .await;
+    assert_eq!(balance_of(&client, cash).await, "3000.00");
+
+    let adjusted = client
+        .post(
+            "/api/count-adjustments",
+            serde_json::json!({
+                "account_id": cash,
+                "payment_method_id": "00000000-0000-0000-0000-000000000004",
+                "difference": "-150.00"
+            }),
+        )
+        .await;
+    assert_eq!(
+        adjusted.status(),
+        axum::http::StatusCode::CREATED,
+        "a count adjustment must be recordable; body was: {}",
+        adjusted.text
+    );
+
+    assert_eq!(
+        balance_of(&client, cash).await,
+        "2850.00",
+        "the counting found less money than the book claimed, and the book now says so"
+    );
+
+    // The opening balance is untouched: the correction is a new row, not an edit.
+    let opening: rust_decimal::Decimal = sqlx::query_scalar(
+        "SELECT amount FROM money_entries WHERE document_kind = 'opening_balance'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("the opening balance still exists, unchanged");
+    assert_eq!(
+        opening,
+        rust_decimal::Decimal::from(3000),
+        "an adjustment adds a row; it never rewrites the history it corrected"
+    );
+
+    // An adjustment of zero is not a document.
+    let pointless = client
+        .post(
+            "/api/count-adjustments",
+            serde_json::json!({
+                "account_id": cash,
+                "payment_method_id": "00000000-0000-0000-0000-000000000004",
+                "difference": "0"
+            }),
+        )
+        .await;
+    assert!(
+        pointless.status().is_client_error(),
+        "counting nothing different is not a document; got {}",
+        pointless.status()
+    );
+}

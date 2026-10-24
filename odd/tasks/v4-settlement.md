@@ -155,7 +155,7 @@ S15 **All eight slices are separate review candidates.** The five marked **item 
 | --- | --- | --- | --- | --- | --- |
 | T1 | S1, S2, S3 | S1 — the book | `money_entries` as a table, `money_movements` as a view over it, `accounts.kind`, backfill from the four existing document tables, write path in sale / credit-note / purchase / supplier-return | item 1 | `8de5280` |
 | T2 | S13 | S2 — who | `created_by` on the entries and on the documents that will be created | — | — |
-| T3 | S12 | S3 — money that is not a sale | opening balance, transfer, count adjustment | item 1 | — |
+| T3 | S12 | S3 — money that is not a sale | opening balance, transfer, count adjustment (`0018`) | item 1 | `1a539d9` |
 | T4 | S9 | S4 — the reversal budget | move the budget from `SUM(credit_note_items)` to `sale_items.reversed_quantity` | item 1 | — |
 | T5 | S10, S11 | S5 — annulment | the annulment document, stock always returned, budget consumed | — | — |
 | T6 | S5, S6, S7, S8, S14 | S6a — what is owed to us | `obligations`, `payments(direction=in)`, `settlements`, sale on account, credit balance, the `L107` guard | item 1 | — |
@@ -339,3 +339,50 @@ schema. The working order is: `make test-db`, then `cargo sqlx migrate run`, the
 `cargo sqlx prepare -- --all-targets`, then the suite. Two full runs were lost to this.
 Also: `target/debug/incremental` produces a rustc ICE on this toolchain after a
 significant edit; `rm -rf target/debug/incremental` clears it.
+
+V4 **S3/T3, `1a539d9`.** `make test-unit` 50 + 232, `make test-backend` 98 (was 95; +3),
+`make test-e2e` 23, and the four CI commands clean in their order. Two guards proven to
+bite: turning the `UNIQUE` index into a plain one lets a second opening balance through,
+and neutralising `transfers_between_two_accounts` makes a same-account transfer answer
+`201`. A differential run of `5ce9920` against the commit, both binaries on fresh
+databases: the three routes go `404` → `201`/`400`/`201`, and `/api/accounts` and
+`/api/sales` answer identically both sides.
+
+V4b **A design question this slice answered by force of the schema, not by preference.**
+A document that names an account directly (an opening balance, a transfer) still had to
+carry `payment_method_id`, because `0017` derives `account_id` from it by trigger and that
+derivation is what made the old `INNER JOIN` impossible to drop a row through. The
+consequence is real and it is recorded rather than worked around: **an account with no
+payment method cannot be opened**, because there is nowhere to derive its account from.
+The route answers `404` — what is missing is the method, not the account — which is the
+same shape as `0012`'s "the default account always has an active method".
+
+V4c **The development database's 3,000 still has no opening document.** S3 makes one
+possible, but the figure that is already there arrived from sales, and inventing an
+opening for it would be fiction. Anyone who knows what the till held the first morning can
+record it; nobody should guess.
+
+V5 **S3 reviewed and sealed.** Lineage `review-caf2649251ed698b`, authority burned,
+`gentle-ai.review-acknowledged/v1`. Approved with **no correction**; three advisory
+findings, all `informational` and all in `ledger.rs`:
+
+| id | location | what it is |
+| --- | --- | --- |
+| `R3-001` | `ledger.rs:75-121` | the opening-balance flow |
+| `R3-002` | `ledger.rs:176-203` | the transfer flow |
+| `R3-003` | `ledger.rs:283-295` | the count-adjustment flow |
+
+They are non-blocking by the provider's own statement and are recorded here so a later
+session does not read them as unexamined. The common shape across all three is worth
+naming: **each route resolves the account through the account's first method and never
+returns the method it used**, so a client cannot tell which rail the money took. That is
+a real limitation of the three new endpoints, not a defect in the ledger, and it belongs
+to the slice that gives the UI these documents.
+
+V5b **A transport failure that was recovered, recorded because the rule matters.** The
+first reviewer run aborted (`pi-host-relay-transport-failure`, `reviewer-aborted`, after
+5.5s). The instruction was to call fresh STATUS and submit only an **exact reoffered**
+one-slot binding, never to replay the capture from transcript inference. STATUS reoffered
+the identical binding — same `subject-hash`, same revision — and the retry succeeded. The
+distinction is the whole point: a *reoffered* binding is authority to try again; a
+remembered one is not.
