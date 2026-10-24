@@ -3,6 +3,10 @@
 Instructions for any agent working in this repository. Read this before writing
 code, running tests or rebuilding anything.
 
+> First, look for the answer in the code and in our conversation.
+> If you still need more information, ask me.
+> Keep the changes within the scope of what I asked for.
+
 ## The test flow is documented, and the document is the authority
 
 [`docs/en/testing.md`](docs/en/testing.md) defines how tests run here: the three

@@ -37,15 +37,70 @@ pub struct NewSale {
     /// Omitted means the seeded walk-in customer.
     #[serde(default)]
     pub customer_id: Option<Uuid>,
-    /// Where the money went. Omitted means the seeded `cash` method, which is what
-    /// every sale meant before this existed — so an older client keeps its exact
-    /// behaviour rather than breaking.
+    /// Where the money went, or **`"on_account"` for a sale that moved none**
+    /// (`odd/tasks/v4-receivables.md` S1, S2).
     ///
-    /// An unknown id is a 404, and a method whose account is the debt account is
-    /// refused when the sale names `walk-in` (S9): anonymous debt is not debt.
-    #[serde(default)]
-    pub payment_method_id: Option<Uuid>,
+    /// Three inputs and three meanings, and they are deliberately distinct:
+    ///
+    /// | input | meaning |
+    /// |---|---|
+    /// | omitted | the seeded `cash` method, which is what every sale meant before v3 — an older client keeps its exact behaviour |
+    /// | a uuid | money moved, through that method |
+    /// | `"on_account"` | **money did not move**; the sale owes, and `obligations` records it |
+    ///
+    /// **Why a sentinel and not `null`.** `Option<Uuid>` cannot tell `"payment_method_id":
+    /// null` from an absent key, so null would have to mean either "the till" — silently
+    /// turning a debt into a cash sale — or "on account", silently turning every older
+    /// client's omitted field into a debt. A sentinel is the only spelling where all three
+    /// inputs stay distinguishable through serde, and `"on_account"` is refused as a method
+    /// name by the uuid parse it now fails.
+    ///
+    /// **Why not `credit`.** The method resolves to an account, and a sale that moved money
+    /// into an account is not a debt. Naming it is refused with a status the caller can act
+    /// on, instead of the 500 `0021`'s constraint trigger would answer with.
+    ///
+    /// An unknown id is a 404, and a sale on account must name a real customer (S9):
+    /// anonymous debt is not debt.
+    #[serde(default, deserialize_with = "deserialize_destination")]
+    pub payment_method_id: Option<Destination>,
     pub items: Vec<NewSaleItem>,
+}
+
+/// Where a sale's money went, or the explicit claim that it did not move.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Destination {
+    /// Money moved, through this method.
+    Method(Uuid),
+    /// Money did not move. The sale owes.
+    OnAccount,
+}
+
+/// Deserializes `payment_method_id` as a method id, or as the literal `"on_account"`.
+///
+/// A uuid that does not parse is a `BAD_REQUEST` rather than a 500, which is the same
+/// contract `amount` has: a malformed request is the caller's, not the server's.
+fn deserialize_destination<'de, D>(deserializer: D) -> Result<Option<Destination>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<String>::deserialize(deserializer)?;
+    let Some(raw) = raw else {
+        // **An explicit null is refused, and this is the whole reason the sentinel
+        // exists.** It cannot mean "the till" without turning a debt into a cash sale, and
+        // it cannot mean "on account" without turning every older client's omitted field
+        // into a debt. Saying which one you mean is the price of having two meanings.
+        return Err(serde::de::Error::custom(
+            "payment_method_id may not be null: send a method id, \"on_account\", or omit the key",
+        ));
+    };
+    if raw == "on_account" {
+        return Ok(Some(Destination::OnAccount));
+    }
+    Uuid::parse_str(&raw)
+        .map(|id| Some(Destination::Method(id)))
+        .map_err(|_| {
+            serde::de::Error::custom("payment_method_id must be a method id or \"on_account\"")
+        })
 }
 
 #[derive(Debug, Deserialize)]
@@ -173,8 +228,12 @@ async fn create_sale(
     // This reads the method's account rather than trusting the client to send one:
     // the client names the method, the method knows its account. That is the whole
     // point of the direction chosen in v3.
-    let (payment_method_id, method_account_id) = match body.payment_method_id {
-        Some(id) => {
+    //
+    // `None` is the sale on account: money did not move, so there is no method to
+    // resolve and no account to name. It is not "the till" — omitted means the till and
+    // is resolved below, which is what keeps every older client's behaviour intact.
+    let destination = match body.payment_method_id {
+        Some(Destination::Method(id)) => {
             let row = sqlx::query!("SELECT account_id FROM payment_methods WHERE id = $1", id)
                 .fetch_optional(&mut *tx)
                 .await
@@ -183,19 +242,32 @@ async fn create_sale(
                     StatusCode::INTERNAL_SERVER_ERROR
                 })?;
             let row = row.ok_or(StatusCode::NOT_FOUND)?;
-            (id, row.account_id)
+            Some((id, row.account_id))
         }
-        None => (CASH_PAYMENT_METHOD_ID, CASH_ACCOUNT_ID),
+        Some(Destination::OnAccount) => None,
+        None => Some((CASH_PAYMENT_METHOD_ID, CASH_ACCOUNT_ID)),
     };
 
-    // S9: a sale paid on credit must name a real customer. The check is written
-    // **positively first** in the tests — a credit sale to a named customer is
+    // **A sale claims one of two things, and the debt account is neither.** Naming
+    // `credit` would say "money moved into an account that holds nothing", which is the
+    // defect this slice removes (`v3-accounts.md` L4-L5). The constraint trigger in
+    // `0021` refuses it; this is the status code, not the rule. A boolean refusal is the
+    // honest answer for an incoherent claim, and it is the one this path already
+    // answered before the column became nullable.
+    if let Some((_, account_id)) = destination
+        && account_id == CREDIT_ACCOUNT_ID
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // S9: a sale on account must name a real customer. The check is written
+    // **positively first** in the tests — a sale on account to a named customer is
     // accepted — because a refusal on its own could pass for the wrong reason.
     //
     // `is_active` is deliberately NOT consulted: it is a picker concern, and gating
     // writes on it would make this refusal fire because the seeded `credit` method is
     // inactive rather than because the customer is anonymous.
-    if method_account_id == CREDIT_ACCOUNT_ID && customer_id == WALK_IN_CUSTOMER_ID {
+    if destination.is_none() && customer_id == WALK_IN_CUSTOMER_ID {
         return Err(StatusCode::BAD_REQUEST);
     }
 
@@ -232,12 +304,14 @@ async fn create_sale(
         );
     }
 
-    // The sale header.
+    // The sale header. `payment_method_id` is NULL for a sale on account, and that NULL
+    // is the sale's own statement that it moved no money — `0021`'s constraint trigger
+    // holds it against the obligation written below, at COMMIT.
     let sale_id = sqlx::query_scalar!(
         "INSERT INTO sales (customer_id, total, payment_method_id) VALUES ($1, $2, $3) RETURNING id",
         customer_id,
         total,
-        payment_method_id
+        destination.map(|(method, _)| method)
     )
     .fetch_one(&mut *tx)
     .await
@@ -300,6 +374,11 @@ async fn create_sale(
 
     // Read the persisted sale so the response carries the real defaults
     // (created_at) instead of echoing the request.
+    //
+    // **`LEFT JOIN`, and it is not a stylistic choice.** A sale on account has no method,
+    // and an `INNER JOIN` would drop it from this readback entirely — turning a correct
+    // insert into a 500. `payment_method_name` is therefore nullable in the response, which
+    // is the honest shape: a sale that moved no money has no rail to name.
     let sale = sqlx::query_as!(
         Sale,
         // round(...,2): the column declares scale 6 and returns its value at that
@@ -310,10 +389,12 @@ async fn create_sale(
         // column and the name lives on `payment_methods`. Joining by id is what
         // lets a rename correct history instead of freezing a typo.
         "SELECT s.id, s.customer_id, round(s.total, 2) AS \"total!\",
-                s.payment_method_id, pm.name AS \"payment_method_name!\",
+                s.payment_method_id,
+                CASE WHEN s.payment_method_id IS NULL THEN NULL ELSE pm.name END
+                    AS \"payment_method_name\",
                 s.created_at
          FROM sales s
-         JOIN payment_methods pm ON pm.id = s.payment_method_id
+         LEFT JOIN payment_methods pm ON pm.id = s.payment_method_id
          WHERE s.id = $1",
         sale_id
     )
@@ -324,26 +405,59 @@ async fn create_sale(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    // The book entry (`0017`): one row per effect of money, written in the same
-    // transaction as the document that causes it. `account_id` comes from the method,
-    // and the trigger re-checks that the two agree — an account the method does not
-    // resolve to is not expressible, rather than merely discouraged.
-    sqlx::query!(
-        "INSERT INTO money_entries
-            (account_id, payment_method_id, document_kind, document_id, amount, occurred_at, created_by)
-         SELECT pm.account_id, $1, 'sale', $2, $3, $4, 'counter'
-           FROM payment_methods pm WHERE pm.id = $1",
-        payment_method_id,
-        sale_id,
-        total,
-        sale.created_at
-    )
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| {
-        tracing::error!(?e, "sale money entry failed");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    // **The sale claims one of two things, and only one path runs.** A sale that moved
+    // money writes its book entry (`0017`) and owes nothing; a sale on account writes an
+    // obligation and no entry at all (`S1`). Writing neither, or both, is what `0021`'s
+    // constraint trigger refuses at COMMIT — this is the write path agreeing with it.
+    match destination {
+        Some((method, _)) => {
+            // One row per effect of money, written in the same transaction as the
+            // document that causes it. `account_id` comes from the method, and `0017`'s
+            // trigger re-checks that the two agree — an account the method does not
+            // resolve to is not expressible, rather than merely discouraged.
+            sqlx::query!(
+                "INSERT INTO money_entries
+                    (account_id, payment_method_id, document_kind, document_id, amount, occurred_at, created_by)
+                 SELECT pm.account_id, $1, 'sale', $2, $3, $4, 'counter'
+                   FROM payment_methods pm WHERE pm.id = $1",
+                method,
+                sale_id,
+                total,
+                sale.created_at
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                tracing::error!(?e, "sale money entry failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        }
+        None => {
+            // The debt. `party_id` is the sale's own customer, and `0021`'s trigger
+            // re-derives it from the sale rather than trusting this bind — a debt
+            // attributed to someone who never bought anything is not expressible.
+            sqlx::query!(
+                "INSERT INTO obligations
+                    (source_document_kind, source_document_id, party_kind, party_id,
+                     amount, occurred_at, created_by)
+                 VALUES ('sale', $1, 'customer', $2, $3, $4, 'counter')",
+                sale_id,
+                customer_id,
+                total,
+                sale.created_at
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                // A sale that already owes cannot owe twice, and this path cannot reach
+                // that state through HTTP — the sale is inserted in this same
+                // transaction. A 500 here is the honest answer to a case the route
+                // cannot produce, rather than a status pretending it is reachable.
+                tracing::error!(?e, "sale obligation failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        }
+    }
 
     tx.commit().await.map_err(|e| {
         tracing::error!(?e, "tx commit failed");
@@ -462,11 +576,17 @@ async fn create_credit_note(
 
     // Inherit the corrected sale's method, unless the note names one.
     //
-    // Inheritance is the default because it is what makes a refund of an unpaid
-    // credit sale move no money: the note credits the same account the sale debited,
-    // so the debt drops instead of a till paying out. The override exists for the
-    // sale that was already collected.
-    let sale_method: Uuid =
+    // **Inheritance is the default, and since `0021` it means two different things.**
+    // On a sale that moved money, the note returns money through the same rail. On a sale
+    // that only owed, the sale's method is NULL, so the note inherits NULL — writes no
+    // ledger entry, and lowers the debt through an `obligations_adjustments` row. That is
+    // the honest version of what the old code faked by routing the note through `credit`,
+    // and it is why `v3-accounts.md` L107's refund of a sale nobody paid no longer empties
+    // the till.
+    //
+    // The override exists for the sale that was already collected — and since `S7` it is
+    // conditional on that having actually happened.
+    let sale_method: Option<Uuid> =
         sqlx::query_scalar!("SELECT payment_method_id FROM sales WHERE id = $1", sale_id)
             .fetch_one(&mut *tx)
             .await
@@ -475,7 +595,7 @@ async fn create_credit_note(
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
 
-    let note_method: Uuid = match body.payment_method_id {
+    let note_method: Option<Uuid> = match body.payment_method_id {
         Some(id) => {
             let account_id: Option<Uuid> =
                 sqlx::query_scalar!("SELECT account_id FROM payment_methods WHERE id = $1", id)
@@ -489,15 +609,150 @@ async fn create_credit_note(
                 tracing::error!("METHOD-LOOKUP-404");
                 StatusCode::NOT_FOUND
             })?;
-            // A note may not target the debt account. Moving debt between customers
-            // is a different document, and a refund is not where that belongs. The
-            // inherited value can legitimately be that account, which is why this
-            // check applies only to an explicit one — that asymmetry is the whole
-            // difference between "the debt drops" and "the debt moved".
+            // A note may not target the debt account, which is now redundant with
+            // `0021`'s refusal on every ledger row — and is kept anyway. The schema is the
+            // rule; this is the 400 that tells the caller, and a removed pre-check would
+            // turn a caller's mistake into a 500 the first time the trigger fired.
             if account_id == CREDIT_ACCOUNT_ID {
                 return Err(StatusCode::BAD_REQUEST);
             }
-            id
+
+            // **`v3-accounts.md` L107, closed here.** An explicit method means money goes
+            // back through a rail — so that rail must have received that money first. The
+            // measured defect was a refund of a sale nobody paid taking 100 out of the
+            // till and leaving the debt standing: the shop paid a customer who had not
+            // paid it. `SUM(settlements)` is the answer the question always needed, and it
+            // only exists from this slice on.
+            //
+            // **Only the explicit path is checked, and that asymmetry is the design**
+            // (`v4-settlement.md` S14). The inherited path lowers the obligation and moves
+            // nothing, so it has no precondition to check.
+            //
+            // **What arrived is a budget, and earlier notes spend from it** (`R1-003` /
+            // `R3-003`). The first version compared each note against the settled total and
+            // never subtracted the explicit notes already issued, so several notes each
+            // passed alone while together paying out more than ever arrived. Measured: a
+            // 200.00 on-account sale settled for 100.00 admitted two 100.00 cash notes, and
+            // the till ended lower than it had ever been higher.
+            //
+            // Both sums are taken with the sale's row already locked (`FOR UPDATE` above),
+            // so a concurrent collection or refund cannot be counted after the read.
+            let settled: Decimal = sqlx::query_scalar(
+                "SELECT COALESCE(SUM(s.amount), 0)
+                   FROM settlements s
+                   JOIN obligations o ON o.id = s.obligation_id
+                  WHERE o.source_document_kind = 'sale' AND o.source_document_id = $1",
+            )
+            .bind(sale_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| {
+                tracing::error!(?e, "sale settled sum failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+
+            // A note on a sale that was paid outright has no obligation at all, and its
+            // `SUM(settlements)` is zero — but its money *did* arrive, at the sale. So the
+            // question is not "was it settled" but "did this sale ever take in at least
+            // this much": a paid sale took in its total, and an owed one took in its
+            // settlements.
+            let arrived = if sale_method.is_some() {
+                sqlx::query_scalar::<_, Decimal>("SELECT total FROM sales WHERE id = $1")
+                    .bind(sale_id)
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(|e| {
+                        tracing::error!(?e, "sale total read failed");
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    })?
+            } else {
+                settled
+            };
+
+            // What earlier explicit notes already took out of a real rail. A note with a
+            // method writes a `credit_note` entry; one that inherited the sale's NULL
+            // writes none, so this sum counts exactly the refunds that moved money — which
+            // is the budget being spent.
+            let already_refunded: Decimal = sqlx::query_scalar(
+                "SELECT COALESCE(SUM(me.amount), 0)
+                   FROM money_entries me
+                   JOIN credit_notes cn ON cn.id = me.document_id
+                  WHERE me.document_kind = 'credit_note' AND cn.sale_id = $1",
+            )
+            .bind(sale_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| {
+                tracing::error!(?e, "sale refunded sum failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+            // Entries are signed: a refund is negative, so its magnitude is what left.
+            let spent = -already_refunded;
+
+            if arrived - spent < note_total {
+                return Err(StatusCode::CONFLICT);
+            }
+
+            // **And it must have arrived on the rail the note names** (`R1-refund-guard-rail-blind`).
+            // The check above is a budget over the sale, and a budget is rail-blind: the money
+            // came in somewhere, so *some* rail received it. But a refund leaves through the
+            // account the note names, and money that arrived in the till did not arrive in the
+            // bank. Measured before this guard: a sale collected in cash, refunded by transfer,
+            // answered 201 and drove the bank to -100.00 — the harm this whole guard exists to
+            // close, through a side door.
+            //
+            // **A rail's arrival is a sum over this sale's own documents**, not over the party:
+            // what this sale put into that account.
+            //   - paid outright: the sale's single entry, on the sale's own method
+            //   - on account:     the settlements whose payment used that method
+            //
+            // and what earlier explicit notes already took back out through that same account.
+            let arrived_on_rail: Decimal = sqlx::query_scalar(
+                "SELECT COALESCE((
+                    SELECT SUM(me.amount) FROM money_entries me
+                     WHERE me.document_kind = 'sale' AND me.document_id = $1
+                       AND me.payment_method_id = $2
+                 ), 0)
+                 + COALESCE((
+                    SELECT SUM(s.amount) FROM settlements s
+                      JOIN obligations o ON o.id = s.obligation_id
+                      JOIN payments p ON p.id = s.payment_id
+                     WHERE o.source_document_kind = 'sale' AND o.source_document_id = $1
+                       AND p.direction = 'in'
+                       AND p.payment_method_id = $2
+                 ), 0)",
+            )
+            .bind(sale_id)
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| {
+                tracing::error!(?e, "sale rail arrival failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+
+            // What earlier notes already paid out through this same rail, as a magnitude.
+            let left_on_rail: Decimal = sqlx::query_scalar(
+                "SELECT COALESCE(SUM(me.amount), 0)
+                   FROM money_entries me
+                   JOIN credit_notes cn ON cn.id = me.document_id
+                  WHERE me.document_kind = 'credit_note' AND cn.sale_id = $1
+                    AND me.payment_method_id = $2",
+            )
+            .bind(sale_id)
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| {
+                tracing::error!(?e, "sale rail refunds failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+
+            if arrived_on_rail + left_on_rail < note_total {
+                return Err(StatusCode::CONFLICT);
+            }
+
+            Some(id)
         }
         None => sale_method,
     };
@@ -585,25 +840,116 @@ async fn create_credit_note(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    // The book entry for the refund (`0017`): money leaves the account the note's method
-    // resolves to. `-total` because positive is money entering.
-    let note_amount: Decimal = -note_total;
-    sqlx::query!(
-        "INSERT INTO money_entries
-            (account_id, payment_method_id, document_kind, document_id, amount, occurred_at, created_by)
-         SELECT pm.account_id, $1, 'credit_note', $2, $3, $4, 'counter'
-           FROM payment_methods pm WHERE pm.id = $1",
-        note_method,
-        note_id,
-        note_amount,
-        note.created_at
-    )
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| {
-        tracing::error!(?e, "credit note money entry failed");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    // **The note claims one of two things, exactly as the sale did.** A note with a method
+    // returns money: it writes the book entry (`0017`) and lowers no debt. A note with no
+    // method lowers the debt: it writes an `obligations_adjustments` row and no entry.
+    // `0021`'s constraint trigger refuses a note that does both or neither, at COMMIT.
+    match note_method {
+        Some(method) => {
+            // Money leaves the account the note's method resolves to. `-total` because
+            // positive is money entering.
+            let note_amount: Decimal = -note_total;
+            sqlx::query!(
+                "INSERT INTO money_entries
+                    (account_id, payment_method_id, document_kind, document_id, amount, occurred_at, created_by)
+                 SELECT pm.account_id, $1, 'credit_note', $2, $3, $4, 'counter'
+                   FROM payment_methods pm WHERE pm.id = $1",
+                method,
+                note_id,
+                note_amount,
+                note.created_at
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                tracing::error!(?e, "credit note money entry failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        }
+        None => {
+            // The debt drops. `document_id` is the note, so the same note can never lower
+            // the debt twice (`0021`'s UNIQUE index) — the guarantee a mutable
+            // `obligations.amount` would have needed a writer flag to get.
+            //
+            // **The combined ceiling is checked here, before the insert** (`R1-004`,
+            // `R4-001`). `0022` re-cut `obligation_adjustments_ceiling` to include
+            // settlements, so a note larger than the debt's remaining room raises at COMMIT
+            // — and a `RAISE` at COMMIT reaches the caller as a 500. The settlement handler
+            // pre-checks the same ceiling and answers 409; this path did not, which left a
+            // reachable ordinary operation with no actionable status. Measured before the
+            // check: returning the goods on an already-settled on-account sale answered 500.
+            // **`FOR UPDATE`, and it is the lock the settlement writer also takes** (`R1-003`).
+            // Without it a settlement could commit between this read and the note's COMMIT:
+            // the pre-check would pass, `0022`'s deferred ceiling would then raise, and the
+            // caller would get the 500 this pre-check exists to remove. The database still
+            // refuses correctly — no over-lowering survives — but the status code lied.
+            //
+            // Ordering matters and matches `create_settlement`: obligation first. Two writers
+            // taking the same rows in the same order cannot deadlock.
+            let room: Option<(Decimal, Decimal, Decimal)> = sqlx::query_as(
+                "SELECT o.amount,
+                        COALESCE((SELECT SUM(a.amount) FROM obligations_adjustments a
+                                   WHERE a.obligation_id = o.id), 0),
+                        COALESCE((SELECT SUM(s.amount) FROM settlements s
+                                   WHERE s.obligation_id = o.id), 0)
+                   FROM obligations o
+                  WHERE o.source_document_kind = 'sale' AND o.source_document_id = $1
+                  FOR UPDATE",
+            )
+            .bind(sale_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| {
+                tracing::error!(?e, "obligation room read failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+
+            if let Some((owed, lowered, settled)) = room
+                && lowered + settled + note_total > owed
+            {
+                return Err(StatusCode::CONFLICT);
+            }
+
+            let adjusted = sqlx::query!(
+                "INSERT INTO obligations_adjustments
+                    (obligation_id, amount, document_kind, document_id, created_by)
+                 SELECT o.id, $2, 'credit_note', $3, 'counter'
+                   FROM obligations o
+                  WHERE o.source_document_kind = 'sale' AND o.source_document_id = $1",
+                sale_id,
+                note_total,
+                note_id
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                // **A ceiling violation is the caller's, not the server's** (review
+                // `R4-ceiling-trigger-returns-500`). The pre-check above answers 409 for the
+                // case it can see; this catches what it cannot — a concurrent settlement
+                // that committed between the read and the insert. The database refuses
+                // correctly either way; only the status code differed, and 500 blamed the
+                // server for a race a caller can retry.
+                if let sqlx::Error::Database(db) = &e
+                    && db.code().as_deref() == Some("P0001")
+                {
+                    return StatusCode::CONFLICT;
+                }
+                tracing::error!(?e, "credit note obligation adjustment failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+
+            // A note with no method on a sale with no obligation would move no money and
+            // lower no debt: a refund of nothing. `0021` refuses it at COMMIT; this names
+            // it, because "the sale did not owe" is the caller's fact to learn.
+            if adjusted.rows_affected() == 0 {
+                tracing::error!(
+                    sale_id = %sale_id,
+                    "credit note with no method on a sale that owes nothing"
+                );
+                return Err(StatusCode::CONFLICT);
+            }
+        }
+    }
 
     tx.commit().await.map_err(|e| {
         tracing::error!(?e, "tx commit failed");
@@ -677,12 +1023,21 @@ async fn list_sales(
     // unscoped behaviour v1 shipped.
     let rows = sqlx::query!(
         // `payment_method` is the method's name, joined on the FK that 0012 added.
+        //
+        // **`LEFT JOIN`, and this is the difference between a sale on account appearing
+        // in the ledger or vanishing from it.** A sale that moved no money has no method,
+        // so an `INNER JOIN` would silently drop every such sale from the day's list while
+        // the money book stayed consistent — the worst shape of defect: a missing document
+        // nobody is told about. `payment_method_name` is `Option` in the model for the
+        // same reason.
         "SELECT s.id, s.customer_id, round(s.total, 2) AS \"total!\",
-                s.payment_method_id, pm.name AS \"payment_method_name!\",
+                s.payment_method_id,
+                CASE WHEN s.payment_method_id IS NULL THEN NULL ELSE pm.name END
+                    AS \"payment_method_name\",
                 s.created_at, c.name AS customer_name
          FROM sales s
          JOIN customers c ON c.id = s.customer_id
-         JOIN payment_methods pm ON pm.id = s.payment_method_id
+         LEFT JOIN payment_methods pm ON pm.id = s.payment_method_id
          WHERE ($1::timestamptz IS NULL OR s.created_at >= $1)
            AND ($2::timestamptz IS NULL OR s.created_at < $2)
          ORDER BY s.created_at DESC

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO obligations_adjustments\n                    (obligation_id, amount, document_kind, document_id, created_by)\n                 SELECT o.id, $2, 'credit_note', $3, 'counter'\n                   FROM obligations o\n                  WHERE o.source_document_kind = 'sale' AND o.source_document_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Numeric",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7ea7970cb6430aa6382599beeea0d5f8547333bf8af0db12fec53770e7de7764"
+}
