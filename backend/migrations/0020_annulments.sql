@@ -92,29 +92,26 @@ FOR EACH STATEMENT EXECUTE FUNCTION reject_annulment_mutation();
 -- `sale_items` accepts a budget increase only when the transaction announces itself.
 CREATE OR REPLACE FUNCTION annulment_consumes_reversal_budget() RETURNS trigger AS $$
 DECLARE
-    remaining integer;
-    sold      integer;
+    touched integer;
 BEGIN
     PERFORM set_config('tpox.budget_writer', 'on', true);
 
-    -- Reverse every line that still has budget, and refuse the annulment only when there
-    -- is nothing left anywhere: a sale partly refunded may still be annulled for the rest
-    -- (`R3-001` of `v4-settlement.md` measured this case as the one a "no notes allowed"
-    -- rule would wrongly block).
-    FOR remaining, sold IN
-        SELECT si.quantity - si.reversed_quantity, si.quantity
-          FROM sale_items si
-         WHERE si.sale_id = NEW.sale_id
-           AND si.quantity > si.reversed_quantity
-           FOR UPDATE
-    LOOP
-        NULL; -- the UPDATE below does the work; this loop is the lock, in order.
-    END LOOP;
-
+    -- Reverse every line that still has budget.
     UPDATE sale_items
        SET reversed_quantity = quantity
      WHERE sale_id = NEW.sale_id
        AND quantity > reversed_quantity;
+
+    -- **`R3-002`, BLOCKER, and it was reachable.** The first version ran that UPDATE and
+    -- never asked whether it touched anything, so a sale whose lines were already fully
+    -- reversed still got an annulment row — and the route then wrote another full money
+    -- and stock reversal on top of a credit note that had already returned everything.
+    -- Measured: sale of 3, refund of 1, annulment → till −100 and stock 11 of 10.
+    GET DIAGNOSTICS touched = ROW_COUNT;
+    IF touched = 0 THEN
+        RAISE EXCEPTION
+            'sale % has nothing left to annul: every line is already reversed', NEW.sale_id;
+    END IF;
 
     PERFORM set_config('tpox.budget_writer', 'off', true);
     RETURN NEW;

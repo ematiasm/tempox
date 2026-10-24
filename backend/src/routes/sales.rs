@@ -913,7 +913,34 @@ async fn create_annulment(
                 tracing::error!(?e, "sale read failed");
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
-    let (method, total, created) = sale.ok_or(StatusCode::NOT_FOUND)?;
+    let (method, _total, created) = sale.ok_or(StatusCode::NOT_FOUND)?;
+
+    // **Read what is left BEFORE inserting the document.** The annulment's trigger consumes
+    // the budget on insert (`0020`), so a read placed after it sees `reversed_quantity =
+    // quantity` everywhere and computes zero — which is exactly the defect measured while
+    // fixing `R3-001`: the annulment became a no-op, the till stayed at 200 and the stock
+    // at 8. Order here is not style; it is the difference between reversing the remainder
+    // and reversing nothing.
+    let remaining: Vec<(Uuid, String, String, i32, Decimal, String)> = sqlx::query_as(
+        "SELECT product_id, product_name, unit, quantity - reversed_quantity,
+                unit_price, unit
+           FROM sale_items
+          WHERE sale_id = $1 AND quantity > reversed_quantity",
+    )
+    .bind(sale_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| {
+        tracing::error!(?e, "remaining sale lines read failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    if remaining.is_empty() {
+        // Nothing left to annul: the whole sale was already reversed by credit notes. The
+        // schema refuses this too (`R3-002`); asking first is what makes it a status the
+        // caller can act on instead of a 500 from a trigger.
+        return Err(StatusCode::CONFLICT);
+    }
 
     // The document. Its trigger consumes the reversal budget for every line with budget
     // left, which is what stops an annulment and a credit note reversing the same unit.
@@ -930,8 +957,13 @@ async fn create_annulment(
     // rule and the caller can act on it.
     .map_err(conflict_or_500)?;
 
-    // Money back out, in one entry: the mirror of the sale's own entry.
-    let amount: Decimal = -total;
+    // The money to give back is the sum of those lines at their snapshotted price, which
+    // is what the sale charged — not the sale total, which still includes what a credit
+    // note already returned.
+    let amount: Decimal = -remaining
+        .iter()
+        .map(|(_, _, _, qty, price, _)| *price * Decimal::from(*qty))
+        .fold(Decimal::ZERO, |acc, line| acc + line);
     sqlx::query(
         "INSERT INTO money_entries
             (account_id, payment_method_id, document_kind, document_id, amount, occurred_at, created_by)
@@ -949,21 +981,28 @@ async fn create_annulment(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    // Stock back in: the goods never left. One POSITIVE movement per line, mirroring the
-    // sale's negatives, and never touching the sale's own movements.
-    sqlx::query(
-        "INSERT INTO stock_movements (product_id, quantity, reason, sale_id, annulment_id)
-         SELECT si.product_id, si.quantity, 'sale_annulled', si.sale_id, $2
-           FROM sale_items si WHERE si.sale_id = $1",
-    )
-    .bind(sale_id)
-    .bind(annulment.0)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| {
-        tracing::error!(?e, "annulment stock movement failed");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    // Stock back in for **the units still on the line**, not the whole line: the two
+    // columns differ once a credit note has taken part of it (`R3-001`).
+    for (product_id, product_name, _unit, quantity, unit_price, unit) in &remaining {
+        let line_total: Decimal = *unit_price * Decimal::from(*quantity);
+        sqlx::query(
+            "INSERT INTO stock_movements (product_id, quantity, reason, sale_id, annulment_id)
+             VALUES ($1, $2, 'sale_annulled', $3, $4)",
+        )
+        .bind(product_id)
+        .bind(quantity)
+        .bind(sale_id)
+        .bind(annulment.0)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                ?e,
+                "annulment stock movement failed for {product_name} / {unit} / {line_total}"
+            );
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    }
 
     tx.commit().await.map_err(|e| {
         tracing::error!(?e, "tx commit failed");
