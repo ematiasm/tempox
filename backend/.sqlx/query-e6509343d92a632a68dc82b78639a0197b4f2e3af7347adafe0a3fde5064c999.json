@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT si.product_id, si.product_name, si.quantity, si.unit_price, si.unit,\n                    COALESCE(SUM(cni.quantity), 0)::int AS \"refunded!\"\n             FROM sale_items si\n             LEFT JOIN credit_note_items cni ON cni.sale_item_id = si.id\n             WHERE si.id = $1 AND si.sale_id = $2\n             GROUP BY si.product_id, si.product_name, si.quantity, si.unit_price, si.unit",
+  "query": "SELECT si.product_id, si.product_name, si.quantity, si.unit_price, si.unit,\n                    si.reversed_quantity\n             FROM sale_items si\n             WHERE si.id = $1 AND si.sale_id = $2",
   "describe": {
     "columns": [
       {
@@ -60,9 +60,14 @@
       },
       {
         "ordinal": 5,
-        "name": "refunded!",
+        "name": "reversed_quantity",
         "type_info": "Int4",
-        "origin": "Expression"
+        "origin": {
+          "Table": {
+            "table": "sale_items",
+            "name": "reversed_quantity"
+          }
+        }
       }
     ],
     "parameters": {
@@ -77,8 +82,8 @@
       false,
       false,
       false,
-      null
+      false
     ]
   },
-  "hash": "f4bf818f126896c03f8005f83a17f27c2c33894c5954cb8c2a582725fcddda1f"
+  "hash": "e6509343d92a632a68dc82b78639a0197b4f2e3af7347adafe0a3fde5064c999"
 }
