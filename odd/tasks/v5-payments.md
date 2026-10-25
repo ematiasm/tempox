@@ -508,3 +508,30 @@ rather than fixed in this slice:
 could not fit, 501 lines of correction in the first and 199 in the second.** The value is not
 in the count: the first lineage's four findings were all real, and the second lineage's two
 were defects *introduced by fixing the first*. That is the sentence worth carrying forward.
+
+V10 **The delivery check, which only the image can give.** `docs/en/testing.md` names exactly
+one proof that no other level provides — a stale image fails at boot with
+`migration N was previously applied but is missing in the resolved migrations`, which
+`cargo run` cannot reproduce because it compiles fresh and embeds the current migrations — and
+**CI never builds the backend image**, so a green CI says nothing about it.
+
+| what | result |
+| --- | --- |
+| `docker compose -f docker-compose.prod.yml build backend` | built: `3cb63af5…`, created 2026-10-25 (replacing the 2026-10-21 image) |
+| migrations **inside** the image | exactly the repository's: one `0001_schema.sql`, 237 569 bytes |
+| the container boots | `backend listening on http://0.0.0.0:3001` |
+| `GET /health` | `200` — `{"status":"ok"}` |
+| `GET /api/day` | `200`, and `zone` is the `SHOP_TIMEZONE` it was given |
+| `GET /api/customers` | `200` |
+
+Run against `tempox_test` (disposable) in **one** throwaway container on a free port, then
+removed. No new stack, no new volume, the development volume untouched — the rule
+`docs/en/testing.md` exists to enforce.
+
+**Three of my four attempts were wrong and the record says so**, because a check you muddle is
+not a check: `127.0.0.1` inside a container is the container, not the host; `--network
+container:` does not combine with `-p`; a `timeout` on a foreground process kills the server
+before it can be observed, and the `Command aborted` that produced was mine, not the server's;
+and the clean attempt probed **`/api/health`, which does not exist** — the route is `/health`
+at the root router, so a healthy server was reported dead by a wrong path. The last one is the
+one worth keeping: the measurement was wrong, not the thing measured.
