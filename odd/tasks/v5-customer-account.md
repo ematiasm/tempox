@@ -330,3 +330,10 @@ were both found by running the thing end to end, and neither could have been fou
 test in the suite. Four backend tests over the endpoint checked that fields were present and
 correct-looking; none checked that two fields meaning different things were different. That is the
 argument for one e2e that exercises the whole path, stated with evidence rather than principle.
+
+V6e **A number in a commit message was wrong, and it is recorded rather than quietly fixed.** The
+`45ee30b` message says "**31** e2e" while the suite is **29**. The counts that changed in this task
+are 26 → 28 (the two panel specs) → 29 (the `popstate` spec), and the message added one more than
+existed. Nothing else in it is affected, the numbers in this document are the measured ones, and it
+is noted here because an unverified figure in a commit message is the same defect as an unverified
+figure in a report — the reader has no way to tell which of the two is which.
