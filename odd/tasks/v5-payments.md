@@ -7,7 +7,25 @@ Slice 2 of "cobros y pagos", continuing `v5-customer-account.md`. Branch
 lenses `risk` + `resilience` + `reliability`, tier high, 3.332 lines, correction budget 200
 with 199 used. Authority burned (`gentle-ai.review-acknowledged/v1`). `make test` green
 (52 unit + 261 frontend + 154 integration + 31 e2e), `make lint` clean, `make sqlx-check` in
-sync. Six commits on `feat/v5-payment-allocation`; delivery is ordinary repository policy.
+sync.
+
+**Delivered as a chain of three PRs**, cut by surface rather than by commit (the review's
+findings crossed backend and client, so a commit-order split would have produced slices that
+do not build). Each slice was verified green on its own — backend, frontend and e2e — before
+being pushed, and **the tip of the chain is byte-for-byte the tree the review approved**
+(`git diff` against `ba4972b` empty):
+
+| PR | branch | base | changed lines |
+| --- | --- | --- | --- |
+| #94 | `pr1-collection-endpoint` | `main` | 2 121 |
+| #95 | `pr2-collection-form` | `pr1-collection-endpoint` | 1 227 |
+| #96 | `pr3-closing-e2e` | `pr2-collection-form` | 144 |
+
+`feat/v5-payment-allocation` keeps the work-unit history and is not pushed as a PR of its own;
+the chain supersedes it. The two slices over the 400-line guideline carry the reason and a
+`size:exception` recommendation in their bodies: the endpoint cannot be split from its tests
+without leaving a slice that does not compile, and the form cannot be split from the
+dictionaries it renders.
 
 Slice 1 taught the shop to **read** a party's account. Slice 2 lets it **write**: the
 button the owner described in `L2` of `v5-customer-account.md` arrives, together with the
