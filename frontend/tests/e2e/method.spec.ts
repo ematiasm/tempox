@@ -119,3 +119,76 @@ test('only the till exists, because debt is a document and not an account', asyn
   await expect(cashRow).toHaveCount(1);
   await expect(cashRow).toContainText('Caja del negocio');
 });
+
+/**
+ * A sale on account says so, in the ledger, instead of leaving the cell empty.
+ *
+ * `S2` of `v4-receivables.md`: a sale that moved no money has no method, and the
+ * server answers `null`. Before this spec existed, the ledger interpolated that
+ * `null` straight into a `<td>` — an empty column, which reads as a broken join or
+ * a missing row rather than as the claim the document is making. The screen must
+ * distinguish "on account" from "we could not resolve the rail".
+ *
+ * `walk-in` is refused for a sale on account (anonymous debt is not debt), so the
+ * spec needs a customer, created through the API: the customer screen does not exist
+ * yet, and inventing one here would be testing something else.
+ */
+test('a sale on account says so in the ledger, instead of an empty cell', async ({ page }) => {
+  const customerName = `e2e-onaccount-${Date.now().toString(36)}`;
+  const productName = `e2e-onaccount-prod-${Date.now().toString(36)}`;
+
+  const customer = await page.request.post('/api/customers', {
+    data: { name: customerName }
+  });
+  expect(customer.ok()).toBeTruthy();
+  const { id: customerId } = (await customer.json()) as { id: string };
+
+  const product = await page.request.post('/api/products', {
+    data: { name: productName, list_price: '10.00' }
+  });
+  expect(product.ok()).toBeTruthy();
+  const { id: productId } = (await product.json()) as { id: string };
+
+  const sale = await page.request.post('/api/sales', {
+    data: {
+      customer_id: customerId,
+      items: [{ product_id: productId, quantity: 1 }],
+      payment_method_id: 'on_account'
+    }
+  });
+  expect(sale.status()).toBe(201);
+  const { id: saleId } = (await sale.json()) as { id: string };
+
+  // The ledger row for that sale, found by identity — the same `aria-controls`
+  // selector the other specs use, never by position or total (#52).
+  await page.goto('/sales');
+  const row = page.locator(`table.docs tbody tr.doc[aria-controls="lines-${saleId}"]`);
+  await expect(row).toHaveCount(1);
+
+  const cell = row.locator('td.method');
+  await expect(cell).toHaveText('A cuenta');
+  // The empty cell is the defect, and it is what this asserts against.
+  await expect(cell).not.toBeEmpty();
+  // And it is marked as a state rather than a rail, so the two are distinguishable
+  // at a glance rather than only by reading the word.
+  await expect(cell).toHaveClass(/on-account/);
+
+  // **A real counter sale still names its rail**, so the screen did not simply lose
+  // the column. This used to be `expect(price).toBe('10,00')` — a tautology over a
+  // local constant that asserted nothing about the app, recorded by the review as
+  // `R3-002`. It is now a sale through the API on the seeded `cash` method, found in
+  // the ledger by identity, and it must render the method's name rather than the
+  // on-account label.
+  const { id: cashSaleId } = (await (
+    await page.request.post('/api/sales', {
+      data: { items: [{ product_id: productId, quantity: 1 }] }
+    })
+  ).json()) as { id: string };
+
+  await page.reload();
+  const cashRow = page.locator(`table.docs tbody tr.doc[aria-controls="lines-${cashSaleId}"]`);
+  await expect(cashRow).toHaveCount(1);
+  const cashCell = cashRow.locator('td.method');
+  await expect(cashCell).toHaveText('cash');
+  await expect(cashCell).not.toHaveClass(/on-account/);
+});

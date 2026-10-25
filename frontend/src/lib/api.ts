@@ -98,9 +98,15 @@ export type Sale = {
    * The name is resolved by the server on every read, so renaming a method
    * corrects the documents that named it instead of freezing a typo into rows the
    * database refuses to edit.
+   *
+   * **Both are null together, and the null is a claim** (`v4-receivables.md` S2):
+   * this sale moved no money, it is on account, and the debt lives in
+   * `obligations`. The type said `string` for two slices while the server already
+   * answered `null` — a lie TypeScript could not catch because nothing read it as
+   * anything but a template interpolation.
    */
-  payment_method_id: string;
-  payment_method_name: string;
+  payment_method_id: string | null;
+  payment_method_name: string | null;
   created_at: string;
 };
 
@@ -469,9 +475,13 @@ export type Purchase = {
   id: string;
   supplier_id: string;
   total: string;
-  /** The same flat shape a sale carries: id plus the joined name. */
-  payment_method_id: string;
-  payment_method_name: string;
+  /**
+   * The same flat shape a sale carries: id plus the joined name, and **both null
+   * together** for a purchase on account (`v4-payables.md` S2). The debt is a
+   * `payables` row, not a ledger entry.
+   */
+  payment_method_id: string | null;
+  payment_method_name: string | null;
   created_at: string;
 };
 

@@ -32,6 +32,7 @@
     returnedByLine
   } from '#lib/supplierReturns.js';
   import { lang } from '#lib/i18n/index.svelte.js';
+  import { isOnAccount, methodLabel } from '#lib/methodLabel.js';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import Stamp from './Stamp.svelte';
   import { overflowsX } from '#lib/overflowsX.js';
@@ -406,7 +407,12 @@
                 <!-- Where the money left from, the mirror of the sales ledger's
                    column: a purchase paid from the bank is not money that left the
                    till. -->
-                <td class="method">{row.purchase.payment_method_name}</td>
+                <td class="method" class:on-account={isOnAccount(row.purchase.payment_method_name)}
+                  >{methodLabel(row.purchase.payment_method_name, {
+                    onAccount: lang.t.method_on_account,
+                    unknown: lang.t.method_unknown
+                  })}</td
+                >
                 <td>
                   {#if returned}
                     <Stamp label={lang.t.purchases_returned_state} tone="annulled" />
@@ -806,6 +812,14 @@
     color: var(--ink-soft);
     font-size: var(--step--1);
     white-space: nowrap;
+  }
+
+  /* A document that moved no money is a different **state**, not a missing rail, so
+     it is set apart by weight rather than by colour: the accent is spent on one job
+     per screen and this is not it (DESIGN.md). Italic is the cheapest honest signal
+     that the cell is a claim rather than a name. */
+  .method.on-account {
+    font-style: italic;
   }
 
   .supplier {

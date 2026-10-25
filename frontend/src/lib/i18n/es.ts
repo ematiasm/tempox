@@ -41,6 +41,8 @@ const es: Dict = {
   accounts_till_hint: 'Las ventas que no eligen un medio van a esta cuenta',
   accounts_method_belongs: (account: string) => `Pertenece a ${account}`,
   sales_method_failed: 'No se pudieron leer los medios: la venta va a Caja',
+  method_on_account: 'A cuenta',
+  method_unknown: '—',
   sales_method_default: 'Caja (por defecto)',
   sales_method: 'Medio',
   purchases_method: 'Medio',
