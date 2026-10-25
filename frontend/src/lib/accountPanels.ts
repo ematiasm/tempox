@@ -23,7 +23,17 @@ export type AccountLike = {
   name: string;
   owed: string;
   inFavour: string;
-  unpaid: { id: string; total: string; outstanding: string }[];
+  /**
+   * The unpaid documents. **`id` is the obligation and `sourceDocumentId` is the sale or
+   * purchase** — different rows, and only the second is a document a cashier can look up,
+   * which is why the panel renders that one.
+   */
+  unpaid: {
+    id: string;
+    sourceDocumentId: string;
+    total: string;
+    outstanding: string;
+  }[];
 };
 
 export type AccountBoxes = {

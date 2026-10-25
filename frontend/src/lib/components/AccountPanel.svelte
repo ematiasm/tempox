@@ -103,7 +103,11 @@
           <ul class="docs">
             {#each account.unpaid as doc (doc.id)}
               <li class="doc">
-                <span class="figures-id">#{doc.id.slice(0, 8)}</span>
+                <!-- **The source document's id, not the obligation's.** They are
+                     different rows (the T3 e2e found the server had them equal), and
+                     the one a cashier can look up is the sale or purchase they
+                     recorded — an obligation is an internal row with no screen. -->
+                <span class="figures-id">#{doc.sourceDocumentId.slice(0, 8)}</span>
                 <span class="doc-figures">
                   <span class="outstanding">{formatMoney(doc.outstanding)}</span>
                   <span class="of">/ {formatMoney(doc.total)}</span>

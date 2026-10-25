@@ -32,18 +32,15 @@ Axum aligns with the tokio + tower ecosystem and has become the de-facto standar
 - **Both directions of money are per locale.** `formatMoney` writes `$ 1.234,56` in es-AR and `$1,234.56` in en, without ever parsing the amount into a float. `parseAmount` reads what the active language types and always returns the wire form; a value it cannot read unambiguously (`1,234.56` under es-AR) is refused rather than guessed, because the value it feeds becomes an immutable sale line. Anything that pre-fills an amount field goes through `amountInput`, so what the form shows can always be parsed back.
 - Fine for starter-scale apps; swap in `svelte-i18n` if you outgrow it.
 
-## API surface (v1 — sales, v1.5 — reversal and locale, v2 — purchases, v2.5 — supplier returns, v3 — accounts and payment methods, v4 — money that is owed)
+## API surface (v1 — sales, v1.5 — reversal and locale, v2 — purchases, v2.5 — supplier returns, v3 — accounts and payment methods, v4 — money that is owed, v5 — a party's account)
 
-**Known gap, recorded rather than papered over:** the v4 routes are not in the table below.
-`POST /api/opening-balances`, `POST /api/transfers`, `POST /api/count-adjustments` (S3),
-`POST /api/payments`, `POST /api/settlements` (S6a) and `POST /api/payable-settlements` (S6b)
-are served and tested, and their contracts live in `odd/tasks/v4-settlement.md`,
-`odd/tasks/v4-receivables.md` and `odd/tasks/v4-payables.md`. The table was written for the
-read surfaces the screens call, and v4 is API-only by the owner's decision — so adding it
-here is a documentation task for the slice that gives these documents a screen, not a slice
-that gives them a route.
-
-All routes are under `/api`. Money is sent and stored as a **decimal amount** (`"15.00"` = $15.00) — a string on the wire, `NUMERIC(14,6)` with a whole-cents guard in the database, `rust_decimal::Decimal` in Rust. Quantities are integers in the product's **base unit** (`unit` | `g` | `ml`).
+**The table below documents the routes a screen calls.** The v4 write routes — `POST
+/api/opening-balances`, `/transfers`, `/count-adjustments`, `/payments`, `/settlements`,
+`/payable-settlements` — are served and tested but have **no screen yet**, by the owner's
+API-only decision for that slice; their contracts live in `odd/tasks/v4-settlement.md`,
+`v4-receivables.md` and `v4-payables.md`. They are named here so the omission is a documented
+boundary rather than a reader's surprise, and they join the table when the slice that gives
+them a screen lands.
 
 | Route | Purpose |
 |---|---|
@@ -66,6 +63,8 @@ All routes are under `/api`. Money is sent and stored as a **decimal amount** (`
 | `POST /api/payment-methods` | `{name, account_id}` — `404` unknown account, `409` duplicate name (unique globally, so a picker never offers two entries the cashier cannot tell apart), `400` blank |
 | `PATCH /api/payment-methods/{id}` | `{name?, is_active?, account_id?}` — renaming is a correction (every document stores the id, so a rename moves no balance); `account_id` is refused with `409` once any document names the method, because moving it would rewrite yesterday's balance today |
 | `GET /api/day?at=<instant>` | `{from,to,prev,next,zone}` — the shop day containing `at` (ISO 8601 UTC instants; `from` inclusive, `to` exclusive) plus the IANA `zone` it was computed in, taken from `SHOP_TIMEZONE` (default `America/Argentina/Buenos_Aires`). Absent `at` means now; a malformed `at` is `400`. The zone is server configuration, never a query parameter, and it is returned because the client renders each document's time in it — a browser only knows its own |
+| `GET /api/customers/{id}/account` | A client's account in **one response**, under one `REPEATABLE READ` snapshot so its three boxes describe the same instant: `{id, name, owed, in_favour, unpaid_sales:[{id, source_document_id, total, outstanding, occurred_at}]}`. **The two figures are never netted** — a client can owe 1000 and hold 500 at once, and one number would destroy both. `id` on an unpaid document is the **obligation**, `source_document_id` is the **sale**; they are different rows and only the second is a document a cashier can look up. `404` for an unknown id — never zeros, because "owes nothing" and "is not there" are different statements |
+| `GET /api/suppliers/{id}/account` | The mirror: `{id, name, owed_to_them, in_our_favour, unpaid_purchases:[...]}`. The fields are named differently on purpose — one shared name would let a screen label "what we owe" as "what they owe" |
 
 Request decoding is axum's `Json` extractor, so its rejections keep their standard codes: `415` without a JSON `content-type`, `400` on malformed JSON, and `422` when the shape parses but a field is wrong (an unparseable UUID, a missing field, `"quantity": "two"`). The handler's own validation answers `400`.
 
@@ -82,8 +81,7 @@ Request decoding is axum's `Json` extractor, so its rejections keep their standa
   per-account balance unreconstructable. A method's `account_id` is immutable once any document
   names it, because moving it would rewrite yesterday's balance today; renaming is allowed and
   **corrects** history, since documents store the id and the name is read by join.
-- **A debt is a document, not an account, and there is no account for it**: the `credit` account and method are **not in the schema at all** since v4's `S7` — removed from the initial seed rather than deleted by a migration, because nothing has shipped. A ledger row naming a method whose account is not `cash` or `digital` is refused by trigger, and `accounts.kind` is that closed set. What a customer owes lives
-  in `obligations` (with `obligations_adjustments` when a credit note lowers it and `settlements`
+- **A debt is a document, not an account, and there is no account for it**: the `credit` account and method are **not in the schema at all** since v4's `S7` — removed from the initial seed rather than deleted by a migration, because nothing has shipped. A ledger row naming a method whose account is not `cash` or `digital` is refused by trigger, and `accounts.kind` is that closed set. What a customer owes lives in `obligations` (with `obligations_adjustments` when a credit note lowers it and `settlements`
   when money arrives) and what the shop owes a supplier lives in `payables` (with
   `payables_adjustments` and `payable_settlements`). Both are append-only, both write no ledger
   entry of their own, and the two ceilings on each side are sums over rows — a debt may be paid
@@ -91,6 +89,7 @@ Request decoding is axum's `Json` extractor, so its rejections keep their standa
   document and once by money. The supplier side was given its own tables rather than extending
   `obligations`, so no migration has to `ALTER` a closed set or `CREATE OR REPLACE` a ceiling
   that already guards money (`odd/tasks/v4-settlement.md` L25, `odd/tasks/v4-payables.md`).
+- **A party's account is read as one document, under one snapshot.** `GET /api/customers/{id}/account` and its supplier mirror return identity, both balance figures and the unpaid documents together, in a single `REPEATABLE READ READ ONLY` transaction. Read separately, a collection landing between the balance and the list would let the panel show "owes 0.00" above a sale with 40 outstanding — the contradiction a one-response endpoint exists to prevent. **The two figures are never netted**: what is owed and what is held in the party's favour are two subtractions over two different sets of rows, and a client can be on both sides at once. An unpaid document carries the **obligation's** `id` and the **sale's** `source_document_id`; they are different rows and only the second is the one a cashier can look up.
 - **Balances are derived from one view**: `money_movements` is a `VIEW`, one row per **effect** on an account, with the sign declared once (positive is money entering). A sale adds, a credit note subtracts, a purchase subtracts, a supplier return adds. It stores nothing, cannot drift from the documents, and needs no backfill; a view rather than a `SUM` per call site because four consumers exist and credit will make seven or eight, and a hand-written `UNION` that forgets a branch returns a plausible wrong number instead of an error — the defect `0011` killed for stock. An account balance is `SUM` over this view, **never a column**.
 - **The default account is configuration with two consumers**: the `/sales` footer and the sale picker's default. The partial unique index guarantees at most one true; a `DEFERRABLE INITIALLY DEFERRED` constraint trigger guarantees exactly one **at commit**, so moving the till is two statements in one transaction rather than the ordering puzzle a `BEFORE` trigger would impose. A new account is never born the default: it has no methods, so it is created, given a method, and promoted.
 - **Money is exact**: a decimal currency amount with two decimals, guarded by *value* (`v = round(v, 2)`) in a column that declares scale 6, so an over-precise value is refused instead of silently rounded. `line_total = quantity × unit_price` and `sales.total = Σ line_total` are computed by unit-tested pure functions before any write. Amounts are never negative; a price of `0` is allowed, which is how a bonus line (regalo) is recorded.
