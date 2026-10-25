@@ -1,7 +1,6 @@
 # v5-customer-account — a client's account, and a supplier's, read from one panel
 
-Slice 1 of three for "cobros y pagos". **State: T1 reviewed natively and approved (lineage `review-437f7e5652c641fd`), green at 144
-backend tests; T2-T4 ahead.** The product
+Slice 1 of three for "cobros y pagos". **State: T1 and T2 reviewed natively and approved; T3-T4 ahead.** The product
 shape was settled by the owner in conversation, and this file is the specification a later
 session reads.
 
@@ -232,3 +231,54 @@ V2c **A guard can only be proven by a fixture where it changes the answer.** The
 `0.00` and netting changed nothing. Moving the same neutering to the **overpayment** fixture made it
 fail with `owed: "-50.00"`. "The test passed after neutering" means the fixture is wrong — recorded
 as V1b, and it is the same lesson `v4-settlement.md` V6c and `v4-payables.md` V4d carry.
+
+V3 **T2, the two pages and the rail.** `make test-frontend` **242** (was 238; +4),
+`make test-e2e` **26** (was 24; +2), backend 144, `make lint` clean.
+
+RED first: the nav unit test failed on a missing module, and the e2e failed on a missing
+destination in the rail.
+
+**The e2e was proven to bite** by removing the two rail entries: it fails on
+`toBeVisible()` for the `Clientes` link, and the 25 other specs stay green — so it measures
+the rail rather than the page existing.
+
+**One component, two pages.** `PartyList.svelte` is shared by `/clientes` and `/proveedores`.
+The failure mode it avoids has a number in this repository: `Ledger.svelte` (1696) and
+`PurchaseLedger.svelte` (1052) are the same table written twice. The two pages differ in the
+endpoint they call and the words they render, and in nothing else.
+
+V3b **A test of mine invented a label, and the app corrected it.** The first e2e asked for the
+rail by `name: 'Navegación'`; the rail's `aria-label` is `'Principal'` (`nav_main`). The
+assertion failed for the right reason — it was measuring a name that does not exist — and the
+fix was to read the dictionary, not to loosen the selector. Recorded because a selector that
+"works after I changed it to something vaguer" is how an e2e stops asserting anything.
+
+V3c **Nothing in T2 counts rows.** Both seeds (walk-in, one-off-supplier) are always present and
+the database is shared, so a length assertion would say nothing about the fixture — the shape
+the T1 review recorded as `R3-002` and this slice refused to add a second time. The e2e finds a
+customer by the name it created, and asserts a supplier does **not** appear on the customers
+page, which a "the row is there" assertion could never catch.
+
+V4 **T2 reviewed natively — approved**, lineage `review-1817973d81dd8fda`, lenses `readability` +
+`reliability`, 526 lines. Authority burned. Seven findings, all `informational`; four were real and
+are fixed in `b82a40a`.
+
+R2-001 partiesNav.ts:20-28 · R2-002 clientes/+page.svelte:19-43 (fixed) · R2-003 PartyList.svelte:41
+R3-001 parties.spec.ts:38-41 (fixed) · R3-002 parties.spec.ts:51-53 · R3-003 parties-nav.test.ts:25-27
+R3-004 clientes/+page.svelte:26 (fixed)
+
+V4b **The substantive finding was `R2-002`/`R3-004`, and it is about a comment, not code.** The page
+wrote `?c=<id>` and **nothing read it**; the comment claimed the click was "wired" when all it did
+was rewrite the query string. **A comment that overstates is worse than none**, because it is the
+reason nobody looks. The page now consumes the parameter and states the pending condition in words.
+
+**And my first fix repeated the same lie**: it rendered `Leyendo…` — "reading" — over a page reading
+nothing. Replaced with "el panel de la cuenta llega en la próxima etapa". The lesson is not about
+this page: it is that the temptation to fill a gap with a plausible word is exactly what produces
+the state the review found.
+
+V4c **`R3-001`, and a rewrite of mine the review's own standard caught.** The e2e pressed
+`page.goBack()` to prove `replaceState` — which proves nothing, because after a `replaceState` there
+is no entry to go back to. The fix reads `history.length` before and after the click. **My first
+rewrite compared that length against itself**, which measures nothing; the corrected version reads it
+across the click, and switching `replaceState` to `pushState` now fails the spec.
