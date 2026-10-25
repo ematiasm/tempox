@@ -41,6 +41,10 @@ export interface Dict {
   accounts_till_hint: string;
   accounts_method_belongs: (account: string) => string;
   sales_method_failed: string;
+  /** A document that moved no money says so instead of rendering an empty cell. */
+  method_on_account: string;
+  /** A method row whose name is empty is a defect, not an on-account document. */
+  method_unknown: string;
   sales_method_default: string;
   sales_method: string;
   purchases_method: string;

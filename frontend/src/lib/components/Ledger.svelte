@@ -29,6 +29,7 @@
     refundedByLine as saleRefundedByLine
   } from '#lib/salesRefund.js';
   import { lang } from '#lib/i18n/index.svelte.js';
+  import { methodLabel } from '#lib/methodLabel.js';
   import { createStaleNotice } from '#lib/screenTrust.js';
   import { runningBalances } from '#lib/runningBalance.js';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
@@ -726,7 +727,12 @@
                    the same size indistinguishable while one reached the till and the
                    other never did. The name is the server's join, not a snapshot, so
                    a rename corrects old rows instead of freezing a typo. -->
-                <td class="method">{row.payment_method_name}</td>
+                <td class="method" class:on-account={row.payment_method_name === null}
+                  >{methodLabel(row.payment_method_name, {
+                    onAccount: lang.t.method_on_account,
+                    unknown: lang.t.method_unknown
+                  })}</td
+                >
                 <td>
                   {#if isFullyRefunded(row)}
                     <!-- A sale that came back whole is not an annulment: nothing was
@@ -1287,6 +1293,14 @@
     color: var(--ink-soft);
     font-size: var(--step--1);
     white-space: nowrap;
+  }
+
+  /* A document that moved no money is a different **state**, not a missing rail, so
+     it is set apart by weight rather than by colour: the accent is spent on one job
+     per screen and this is not it (DESIGN.md). Italic is the cheapest honest signal
+     that the cell is a claim rather than a name. */
+  .method.on-account {
+    font-style: italic;
   }
 
   .customer {
