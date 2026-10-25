@@ -366,3 +366,16 @@ write routes as a **documented boundary** rather than an omission — they are s
 have no screen yet, which is the owner's API-only decision for that slice. The invariants section
 gained the two rules this slice establishes: one snapshot per account, and two figures never
 netted.
+
+V7e **T4 reviewed natively — approved**, lineage `review-cd1cb58b3c68ce09`, lenses `readability` +
+`reliability`, 147 lines. Authority burned. Three findings, all `informational`, and **two of them
+were the same real defect**: I inserted the new invariant bullet *inside* the existing one, so the
+sentence "What a customer owes lives in `obligations`…" was split in half by a bullet of a different
+subject. `R2-001` and `R3-001` both name `architecture.md:85`.
+
+**A markdown bullet is a paragraph, not a line**, and a script that inserts after a line number
+does not know that. The repair moved the whole bullet after the one it had interrupted, and the
+result is checked by reading it — the same class of mistake as the two lies the T2 review found:
+the text was plausible and structurally wrong.
+
+`R2-002` (a suggestion on the boundary note's wording) is left as it is.
