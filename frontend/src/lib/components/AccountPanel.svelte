@@ -12,13 +12,17 @@
   import { lang } from '#lib/i18n/index.svelte.js';
   import { accountBoxes, type AccountLike } from '#lib/accountPanels.js';
   import { formatMoney } from '#lib/money.js';
+  import CollectionForm from './CollectionForm.svelte';
+  import type { Collection } from '#lib/api.js';
 
   let {
     side,
     account,
     notFound,
     error,
-    onclose
+    onclose,
+    oncollected,
+    collected
   }: {
     /** Which box labels to use. The figures mean opposite things on the two sides. */
     side: 'customer' | 'supplier';
@@ -26,7 +30,29 @@
     notFound: boolean;
     error: string | null;
     onclose: () => void;
+    /**
+     * A collection was recorded. The page owns the account state, so it replaces it with
+     * the one the response carries — **one snapshot, no second request** (`S6`).
+     */
+    oncollected: (collection: Collection) => void;
+    /**
+     * The last collection's result, or `null`. **Rendered, not discarded** (`R3-002` of
+     * review `review-b6bebae2ab91c89f`): `applied` with its per-row `source` is the only
+     * statement of what the rule decided, and a panel that shows only the new balance leaves
+     * the cashier unable to see which documents closed or why.
+     */
+    collected: Collection | null;
   } = $props();
+
+  /**
+   * Whether the form is open. Component state, deliberately: `S2` of slice 1 says only the
+   * id lives in the URL, and an open form is not a link anyone sends.
+   */
+  let collecting = $state(false);
+
+  const collectLabel = $derived(
+    side === 'customer' ? lang.t.collect_action_customer : lang.t.collect_action_supplier
+  );
 
   const boxes = $derived(account === null ? null : accountBoxes(account));
   const owedLabel = $derived(
@@ -62,6 +88,33 @@
   {:else if boxes === null}
     <p class="state">{lang.t.party_panel_loading}</p>
   {:else}
+    {#if collected !== null}
+      <section class="receipt" aria-labelledby="receipt-h">
+        <h3 id="receipt-h">{lang.t.collect_recorded}</h3>
+        <ul class="applied">
+          {#each collected.applied as row (row.debt_id)}
+            <li class="applied-row">
+              <!-- **The document's id, not the debt's**: a cashier looks up a sale or a
+                   purchase, and an obligation is an internal row with no screen. The same
+                   distinction slice 1 found three times, on the surface where it lands on a
+                   person reading a receipt. -->
+              <span class="doc-id">#{row.source_document_id.slice(0, 8)}</span>
+              <span class="applied-amount">{formatMoney(row.amount)}</span>
+              <!-- **The `source` is the rule made visible**: the cashier can tell their own
+                   decision from the rule's consequence, which is the question they have. -->
+              <span class="source" class:manual={row.source === 'manual'}>
+                {row.source === 'manual'
+                  ? lang.t.collect_applied_manual(formatMoney(row.amount))
+                  : lang.t.collect_applied_oldest(formatMoney(row.amount))}
+              </span>
+            </li>
+          {/each}
+        </ul>
+        {#if Number(collected.unapplied) !== 0}
+          <p class="leftover">{lang.t.collect_unapplied(formatMoney(collected.unapplied))}</p>
+        {/if}
+      </section>
+    {/if}
     <div class="boxes">
       <!-- Box 1: identity, first, because it answers "did I click the right row?"
            before any number is read. -->
@@ -88,6 +141,26 @@
             </div>
           {/if}
         </dl>
+
+        <!-- **The action lives in the balance box**, where the owner put it (L2 of
+             `v5-customer-account.md`: "el segundo el saldo y ahi el boton para hacer el pago"). -->
+        {#if account !== null && !collecting}
+          <button type="button" class="collect-open" onclick={() => (collecting = true)}>
+            {collectLabel}
+          </button>
+        {/if}
+        {#if account !== null && collecting}
+          <CollectionForm
+            {side}
+            accountId={account.id}
+            unpaid={account.unpaid}
+            onrecorded={(collection) => {
+              collecting = false;
+              oncollected(collection);
+            }}
+            oncancel={() => (collecting = false)}
+          />
+        {/if}
       </section>
 
       <!-- Box 3: the documents behind the number above it. A settled document is
@@ -218,6 +291,73 @@
   }
   .figure:first-child .amount {
     color: var(--accent);
+  }
+  /* A ghost control, not the primary: the panel's loudest element is the balance figure
+     above it, and `DESIGN.md` keeps the accent there (`S10`). */
+  .collect-open {
+    margin-top: 12px;
+    background: none;
+    border: 1px dashed var(--rule-strong);
+    border-radius: 2px;
+    padding: 8px 12px;
+    font-size: var(--step-0);
+    font-weight: 600;
+    color: var(--ink);
+    cursor: pointer;
+  }
+  .collect-open:hover {
+    border-color: var(--ink);
+  }
+  .collect-open:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .receipt {
+    padding: 14px 22px;
+    border-bottom: 1px solid var(--rule);
+    background: var(--surface);
+  }
+  .receipt h3 {
+    font-family: var(--font-figure);
+    font-size: var(--step--1);
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    margin-bottom: 8px;
+  }
+  .applied {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .applied-row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    font-size: var(--step--1);
+  }
+  .applied-amount {
+    font-family: var(--font-figure);
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    color: var(--ink);
+  }
+  .source {
+    color: var(--ink-soft);
+  }
+  /* The cashier's own decision is the quiet ordinary case; the rule's is stated the same way
+     and never colour-alone (`DESIGN.md`'s "Document State Is Readable"). */
+  .source.manual {
+    color: var(--ink);
+  }
+  .leftover {
+    margin-top: 8px;
+    font-size: var(--step--1);
+    color: var(--ink-soft);
   }
   .count {
     font-family: var(--font-figure);

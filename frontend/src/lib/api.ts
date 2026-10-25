@@ -815,3 +815,56 @@ export async function getCustomerAccount(id: string): Promise<CustomerAccount | 
 export async function getSupplierAccount(id: string): Promise<SupplierAccount | null> {
   return requestOrNull<SupplierAccount>(new URL(`/api/suppliers/${id}/account`, base()));
 }
+
+// ── A collection: money that arrived, and the debts it answers ──────────────
+
+/** One debt the rule or the cashier answered, and what it still owes afterwards. */
+export type AppliedRow = {
+  /** The obligation (client) or payable (supplier) — the internal row, not a screen's id. */
+  debt_id: string;
+  /** **The sale or purchase** the debt came from: the id a cashier can look up. */
+  source_document_id: string;
+  amount: string;
+  /** `manual` when the cashier typed it, `oldest` when the rule added it. */
+  source: 'manual' | 'oldest';
+  debt_outstanding: string;
+};
+
+export type Collection = {
+  payment_id: string;
+  total: string;
+  direction: string;
+  applied: AppliedRow[];
+  /** What no debt needed: the party's credit balance. */
+  unapplied: string;
+  /** **The account after the write, read in the same snapshot** — the panel replaces its
+   * state with this instead of asking again (`v5-payments.md` S6). */
+  account: CustomerAccount | SupplierAccount;
+};
+
+export type NewCollection = {
+  payment_method_id: string;
+  total: string;
+  /** Only what the cashier decided. Empty sends the whole total to the rule. */
+  manual: { debt_id: string; amount: string }[];
+};
+
+/**
+ * Records money arriving from a client, and applies it.
+ *
+ * **One request, one snapshot.** The server writes the payment, its ledger entry and every
+ * settlement in one transaction and answers with the resulting account, so a panel never has
+ * to reconcile two instants. A refusal writes nothing — which is why a `409` here is safe to
+ * show and then let the operator adjust, rather than a state to repair.
+ */
+export async function collectFromCustomer(id: string, body: NewCollection): Promise<Collection> {
+  return request<Collection>(
+    new URL(`/api/customers/${id}/collections`, base()),
+    json('POST', body)
+  );
+}
+
+/** The mirror: money leaving, against what the shop owes that supplier. */
+export async function paySupplier(id: string, body: NewCollection): Promise<Collection> {
+  return request<Collection>(new URL(`/api/suppliers/${id}/payments`, base()), json('POST', body));
+}
