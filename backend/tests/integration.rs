@@ -10861,10 +10861,13 @@ async fn v5_a_clients_account_carries_identity_both_figures_and_the_unpaid_sales
     let sales = account["unpaid_sales"]
         .as_array()
         .expect("unpaid_sales array");
-    assert_eq!(
-        sales.len(),
-        2,
-        "both sales still owe something; body: {account}"
+    // **Found by identity, never by count** (`R3-002` of review `review-437f7e5652c641fd`).
+    // A length assertion also passes when a *different* sale is present — the `legacy-fixture`
+    // customer in this same file is proof that other rows exist in a shared database — so it
+    // says nothing about these two. The two lookups below are the claim.
+    assert!(
+        !sales.is_empty(),
+        "the account must list the sales that owe; body: {account}"
     );
     let big = sales
         .iter()

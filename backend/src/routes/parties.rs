@@ -6,6 +6,12 @@
 //! paint one panel is three chances to show a half-loaded panel whose boxes contradict each
 //! other — a balance from one instant and a document list from another.
 //!
+//! **Both handlers open that transaction themselves, and the pair is deliberate.** The two
+//! bodies differ only in the struct they build, and a shared helper would have to return an
+//! enum of two shapes — more machinery than the five lines it removes. What matters is that the
+//! *policy* lives in one place; the two `begin_with` calls are the same string and the test that
+//! asserts it counts exactly two (`R1-001` of review `review-437f7e5652c641fd`).
+//!
 //! **The whole payload is read under one snapshot** — `REPEATABLE READ READ ONLY`, one
 //! transaction for the four queries. Without it the boxes can describe different instants: a
 //! collection landing between the balance and the unpaid list would render "owes 0.00" above a
