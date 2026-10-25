@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO payables\n                    (source_document_kind, source_document_id, party_kind, party_id,\n                     amount, occurred_at, created_by)\n                 VALUES ('purchase', $1, 'supplier', $2, $3, $4, 'counter')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Numeric",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2974f927bf443d98d3d9f06b98733bda6b45d25dd2eac13b2259771b98e77827"
+}

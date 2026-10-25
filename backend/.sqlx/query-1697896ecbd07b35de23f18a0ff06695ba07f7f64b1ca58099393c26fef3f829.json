@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, purchase_id, round(total, 2) AS \"total!\", created_at\n             FROM supplier_returns WHERE purchase_id = $1 ORDER BY created_at, id",
+  "query": "SELECT id, purchase_id, payment_method_id,\n                    round(total, 2) AS \"total!\", created_at\n             FROM supplier_returns WHERE purchase_id = $1 ORDER BY created_at, id",
   "describe": {
     "columns": [
       {
@@ -27,12 +27,23 @@
       },
       {
         "ordinal": 2,
+        "name": "payment_method_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "supplier_returns",
+            "name": "payment_method_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
         "name": "total!",
         "type_info": "Numeric",
         "origin": "Expression"
       },
       {
-        "ordinal": 3,
+        "ordinal": 4,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -51,9 +62,10 @@
     "nullable": [
       false,
       false,
+      true,
       null,
       false
     ]
   },
-  "hash": "5439cc7430bcf27e427559845b2266591a48d2cea1087cb2fc739f84f2bc0623"
+  "hash": "1697896ecbd07b35de23f18a0ff06695ba07f7f64b1ca58099393c26fef3f829"
 }

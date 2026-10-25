@@ -18,13 +18,23 @@ use crate::models::supplier_return::SupplierReturnWithItems;
 pub struct Purchase {
     pub id: Uuid,
     pub supplier_id: Uuid,
-    /// The method the money left through, and its name **joined** — never stored, so
-    /// a rename corrects history instead of freezing a typo. Flat on the wire, the
-    /// same shape a sale uses.
+    /// The payment method this purchase was paid with, or `None` for a purchase on account.
+    ///
+    /// **`None` is a claim, not a missing value** (`odd/tasks/v4-payables.md` S2): this
+    /// purchase moved no money, and `payables` holds what it owes. The constraint trigger in
+    /// `0023` keeps the two from disagreeing, so a client reading `null` here knows the debt
+    /// exists without asking a second endpoint.
+    ///
+    /// The id is the identity; the name beside it is **resolved by join**, never stored, so a
+    /// rename corrects history instead of freezing a typo. Flat on the wire, the same shape a
+    /// sale uses.
     #[serde(rename = "payment_method_id")]
-    pub payment_method_id: Uuid,
+    pub payment_method_id: Option<Uuid>,
+    /// `None` exactly when `payment_method_id` is: a purchase on account has no rail to name.
+    /// The read paths use `LEFT JOIN` for this reason — an `INNER JOIN` would drop it from
+    /// every list, silently.
     #[serde(rename = "payment_method_name")]
-    pub payment_method_name: String,
+    pub payment_method_name: Option<String>,
     #[serde(serialize_with = "crate::money::serialize_amount")]
     pub total: Decimal,
     pub created_at: DateTime<Utc>,

@@ -17,6 +17,19 @@ use uuid::Uuid;
 pub struct SupplierReturn {
     pub id: Uuid,
     pub purchase_id: Uuid,
+    /// The method the money came back through, or `None` for a return that only lowered a
+    /// payable (`odd/tasks/v4-payables.md` S8, migration `0023`).
+    ///
+    /// **`None` is a claim, not a missing value**, exactly as it is on a sale and a purchase
+    /// since `0021`: this return moved no money, because the purchase it corrects never did.
+    /// `0023`'s constraint trigger is what keeps the two from disagreeing, so a client reading
+    /// `null` here knows the debt dropped without asking a second endpoint.
+    ///
+    /// The name is not resolved alongside it, and the asymmetry with `Sale` and `Purchase` is
+    /// deliberate: those are listed in screens that render a rail per row, and a return is
+    /// nested inside the purchase that already carries one. Adding a join here would be a second
+    /// copy of the same fact on the wire.
+    pub payment_method_id: Option<Uuid>,
     #[serde(serialize_with = "crate::money::serialize_amount")]
     pub total: Decimal,
     pub created_at: DateTime<Utc>,

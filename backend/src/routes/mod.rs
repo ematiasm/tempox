@@ -9,6 +9,7 @@ pub mod health;
 pub mod hello;
 pub mod ledger;
 pub mod notes;
+pub mod payables;
 pub mod payments;
 pub mod products;
 pub mod purchases;
@@ -28,6 +29,7 @@ pub fn router() -> Router<AppState> {
             .merge(day::routes())
             .merge(accounts::routes())
             .merge(ledger::routes())
-            .merge(payments::routes()),
+            .merge(payments::routes())
+            .merge(payables::routes()),
     )
 }

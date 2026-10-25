@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use crate::AppState;
 use crate::models::account::{CASH_ACCOUNT_ID, CASH_PAYMENT_METHOD_ID, CREDIT_ACCOUNT_ID};
+use crate::models::destination::{self, Destination};
 use crate::models::purchase::{Purchase, PurchaseItem, PurchaseWithItems};
 use crate::models::supplier_return::{SupplierReturn, SupplierReturnItem, SupplierReturnWithItems};
 use crate::money;
@@ -133,14 +134,25 @@ pub struct NewPurchase {
     /// Omitted means the seeded one-off supplier.
     #[serde(default)]
     pub supplier_id: Option<Uuid>,
-    /// Where the money left from. Omitted means the seeded `cash` method, which is
-    /// what every purchase meant before this existed.
+    /// Where the money left from, or **`"on_account"` for a purchase that owes the
+    /// supplier and moved none** (`odd/tasks/v4-payables.md` S2, S3). The grammar is the
+    /// sale's, and it is one definition: `Destination::from_field`.
     ///
-    /// An unknown id is a 404. A method whose account is the **credit** account is
+    /// | input | meaning |
+    /// |---|---|
+    /// | omitted | the seeded `cash` method, which is what every purchase meant before v3 |
+    /// | a uuid | money left through that method |
+    /// | `"on_account"` | money did not leave; the purchase owes, and `payables` records it |
+    ///
+    /// An explicit `null` is a 400: it cannot mean "the till" without turning a debt into
+    /// a cash purchase, nor "on account" without turning every older client's omitted
+    /// field into a debt.
+    ///
+    /// An unknown method id is a 404. A method whose account is the **credit** account is
     /// refused (S9b): a purchase paid with the debt account would subtract from what
     /// customers owe, which no purchase can mean.
-    #[serde(default)]
-    pub payment_method_id: Option<Uuid>,
+    #[serde(default, deserialize_with = "destination::keep_present")]
+    pub payment_method_id: Option<serde_json::Value>,
     pub items: Vec<NewPurchaseItem>,
 }
 
@@ -195,8 +207,14 @@ async fn create_purchase(
     // Resolve the destination before any write, the mirror of a sale: an unknown
     // method is a 404 rather than a foreign-key 500, and the account is read here
     // because the credit rule below needs it.
-    let (payment_method_id, method_account_id) = match body.payment_method_id {
-        Some(id) => {
+    //
+    // `None` is the purchase on account: money did not leave, so there is no method to
+    // resolve and no account to name. It is not "the till" — omitted means the till and
+    // is resolved below, which keeps every older client's behaviour intact.
+    let destination = match Destination::from_field(body.payment_method_id)
+        .map_err(|_| StatusCode::BAD_REQUEST)?
+    {
+        Some(Destination::Method(id)) => {
             let row = sqlx::query!("SELECT account_id FROM payment_methods WHERE id = $1", id)
                 .fetch_optional(&mut *tx)
                 .await
@@ -205,19 +223,31 @@ async fn create_purchase(
                     StatusCode::INTERNAL_SERVER_ERROR
                 })?;
             let row = row.ok_or(StatusCode::NOT_FOUND)?;
-            (id, row.account_id)
+            Some((id, row.account_id))
         }
-        None => (CASH_PAYMENT_METHOD_ID, CASH_ACCOUNT_ID),
+        Some(Destination::OnAccount) => None,
+        None => Some((CASH_PAYMENT_METHOD_ID, CASH_ACCOUNT_ID)),
     };
 
     // S9b: a purchase may never name the credit method. Its effect would subtract
     // from the debt account — "what customers owe went down by 40,000" — which no
-    // purchase means, and there is no purchase-side counterpart to a credit sale
-    // until the payable document exists.
+    // purchase means. The debt a purchase creates is the payable, a different document
+    // written below; it never names the debt account (`0021`'s rule, mirrored).
     //
     // Written as an equality against the account rather than against the method id so
     // it keeps holding if the shop ever attaches a second method to that account.
-    if method_account_id == CREDIT_ACCOUNT_ID {
+    if let Some((_, account_id)) = destination
+        && account_id == CREDIT_ACCOUNT_ID
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // S3: a purchase on account must name a real supplier. The one-off supplier is
+    // anonymous and cannot be owed: anonymous debt is not debt, mirroring the refusal of
+    // `walk-in` for a sale on account.
+    //
+    // `is_active` is deliberately NOT consulted, for the reason `sales.rs` gives.
+    if destination.is_none() && supplier_id == ONE_OFF_SUPPLIER_ID {
         return Err(StatusCode::BAD_REQUEST);
     }
 
@@ -261,11 +291,14 @@ async fn create_purchase(
         );
     }
 
+    // `payment_method_id` is NULL for a purchase on account, and that NULL is the
+    // purchase's own statement that it moved no money — `0023`'s constraint trigger holds
+    // it against the payable written below, at COMMIT.
     let purchase_id = sqlx::query_scalar!(
         "INSERT INTO purchases (supplier_id, total, payment_method_id) VALUES ($1, $2, $3) RETURNING id",
         supplier_id,
         total,
-        payment_method_id
+        destination.map(|(method, _)| method)
     )
     .fetch_one(&mut *tx)
     .await
@@ -333,13 +366,19 @@ async fn create_purchase(
     // Read the persisted header so the response carries the real `created_at`
     // instead of echoing the request, and `round(...,2)` so the amount leaves as
     // `70.00` rather than `70.000000` (see 0006 for why the column declares 6).
+    //
+    // **`LEFT JOIN`, and it is not stylistic.** A purchase on account has no method, and an
+    // `INNER JOIN` would drop it from this readback — turning a correct insert into a 500.
+    // The name is named nullable explicitly: sqlx infers a joined column as non-null
+    // otherwise, and a `!` override would compile and lie.
     let purchase = sqlx::query_as!(
         Purchase,
         "SELECT p.id, p.supplier_id, p.payment_method_id,
-                pm.name AS \"payment_method_name!\",
+                CASE WHEN p.payment_method_id IS NULL THEN NULL ELSE pm.name END
+                    AS \"payment_method_name\",
                 round(p.total, 2) AS \"total!\", p.created_at
          FROM purchases p
-         JOIN payment_methods pm ON pm.id = p.payment_method_id
+         LEFT JOIN payment_methods pm ON pm.id = p.payment_method_id
          WHERE p.id = $1",
         purchase_id
     )
@@ -350,23 +389,54 @@ async fn create_purchase(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    // The book entry (`0017`): a purchase takes money OUT, so the amount is negative.
-    let purchase_amount: Decimal = -total;
-    sqlx::query!(
-        "INSERT INTO money_entries
-            (account_id, payment_method_id, document_kind, document_id, amount, occurred_at, created_by)
-         SELECT pm.account_id, $1, 'purchase', $2, $3, now(), 'counter'
-           FROM payment_methods pm WHERE pm.id = $1",
-        payment_method_id,
-        purchase_id,
-        purchase_amount
-    )
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| {
-        tracing::error!(?e, "purchase money entry failed");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    // **The purchase claims one of two things, and only one path runs** (`S1`). A purchase
+    // that moved money writes its book entry (`0017`) and owes nothing. A purchase on
+    // account writes a payable and no entry. Writing neither, or both, is what `0023`'s
+    // constraint trigger refuses at COMMIT — this is the write path agreeing with it.
+    match destination {
+        Some((method, _)) => {
+            // The book entry (`0017`): a purchase takes money OUT, so the amount is negative.
+            let purchase_amount: Decimal = -total;
+            sqlx::query!(
+                "INSERT INTO money_entries
+                    (account_id, payment_method_id, document_kind, document_id, amount, occurred_at, created_by)
+                 SELECT pm.account_id, $1, 'purchase', $2, $3, now(), 'counter'
+                   FROM payment_methods pm WHERE pm.id = $1",
+                method,
+                purchase_id,
+                purchase_amount
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                tracing::error!(?e, "purchase money entry failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        }
+        None => {
+            // The debt. `party_id` is the purchase's own supplier, and `0023`'s trigger
+            // re-derives it from the purchase rather than trusting this bind — a debt
+            // attributed to a supplier who never sold anything is not expressible.
+            // `created_by` is a literal until v5, as every other write path's is
+            // (`v4-settlement.md` L24).
+            sqlx::query!(
+                "INSERT INTO payables
+                    (source_document_kind, source_document_id, party_kind, party_id,
+                     amount, occurred_at, created_by)
+                 VALUES ('purchase', $1, 'supplier', $2, $3, $4, 'counter')",
+                purchase_id,
+                supplier_id,
+                total,
+                purchase.created_at
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                tracing::error!(?e, "purchase payable failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        }
+    }
 
     tx.commit().await.map_err(|e| {
         tracing::error!(?e, "tx commit failed");
@@ -401,12 +471,15 @@ async fn list_purchases(
     // is not a filter, `from` is inclusive and `to` is exclusive, so the two
     // ranges that meet at midnight partition the ledger — no purchase is counted
     // twice or lost between them.
+    // **`LEFT JOIN`, for the reason the create readback gives.** An `INNER JOIN` would drop
+    // a purchase on account from the ledger with no error — the trap `sales.rs` documents.
     let rows = sqlx::query!(
         "SELECT p.id, p.supplier_id, p.payment_method_id,
-                pm.name AS \"payment_method_name!\",
+                CASE WHEN p.payment_method_id IS NULL THEN NULL ELSE pm.name END
+                    AS \"payment_method_name\",
                 round(p.total, 2) AS \"total!\", p.created_at
          FROM purchases p
-         JOIN payment_methods pm ON pm.id = p.payment_method_id
+         LEFT JOIN payment_methods pm ON pm.id = p.payment_method_id
          WHERE ($1::timestamptz IS NULL OR p.created_at >= $1)
            AND ($2::timestamptz IS NULL OR p.created_at < $2)
          ORDER BY p.created_at DESC
@@ -447,7 +520,8 @@ async fn list_purchases(
         // optimization, later, exactly as the items read above says.
         let return_rows = sqlx::query_as!(
             SupplierReturn,
-            "SELECT id, purchase_id, round(total, 2) AS \"total!\", created_at
+            "SELECT id, purchase_id, payment_method_id,
+                    round(total, 2) AS \"total!\", created_at
              FROM supplier_returns WHERE purchase_id = $1 ORDER BY created_at, id",
             row.id
         )
@@ -508,6 +582,21 @@ async fn list_purchases(
 /// worth more than the purchase that caused it.
 #[derive(Debug, Deserialize)]
 pub struct NewSupplierReturn {
+    /// Which method the money comes back through. **Omitted means the corrected purchase's
+    /// method**, which is what makes a return of a purchase on account move no money: the
+    /// return inherits the purchase's NULL, writes no ledger entry and lowers the payable
+    /// (`odd/tasks/v4-payables.md` S8).
+    ///
+    /// An explicit method exists for the case inheritance gets wrong: a purchase collected out
+    /// of one rail and refunded through another. `v4-settlement.md` L19 records why the override
+    /// arrives together with its guard rather than on its own — `supplier_returns` had no
+    /// override, and therefore **no hole**, until this slice gave it both.
+    ///
+    /// A method may not resolve to the debt account (`400`), and it must be a rail that actually
+    /// paid for these goods: `409` otherwise. The client names **the method, never the account** —
+    /// the server resolves it, exactly as a purchase never sends an account either.
+    #[serde(default)]
+    pub payment_method_id: Option<Uuid>,
     pub items: Vec<NewSupplierReturnItem>,
 }
 
@@ -625,10 +714,9 @@ async fn create_supplier_return(
     }
     return_total.rescale(money::MONEY_SCALE);
 
-    // The return inherits the corrected purchase's method, the mirror of a credit
-    // note inheriting the sale's: the supplier gives money back through the same
-    // rail that paid them. No override exists in v3.
-    let inherited_method: Uuid = sqlx::query_scalar!(
+    // The corrected purchase's own method, and **`None` is the whole point since `0023`**: a
+    // purchase on account moved no money, so a return of it can move none either.
+    let purchase_method: Option<Uuid> = sqlx::query_scalar!(
         "SELECT payment_method_id FROM purchases WHERE id = $1",
         purchase_id
     )
@@ -639,11 +727,162 @@ async fn create_supplier_return(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
+    // **The return's method: inherited by default, or named by the caller** (`S9`,
+    // `v4-settlement.md` L19). Inheritance is right for a purchase that was paid — the supplier
+    // gives money back through the same rail that paid them — and it is *wrong* for one that only
+    // owed, because then there is no money to give back: the goods coming back lower the debt.
+    //
+    // The override exists for the case inheritance gets wrong in the other direction: a purchase
+    // that was paid from one rail and is being settled back through another. It costs a guard,
+    // and the guard is the point.
+    let return_method: Option<Uuid> = match body.payment_method_id {
+        // `Some(None)` is impossible through serde here — this is `Option<Uuid>`, not the
+        // `Destination` grammar, because a return has no `on_account` spelling: it either moves
+        // money (a method) or it does not (inherited, and only on an unpaid purchase).
+        Some(id) => {
+            let account_id: Option<Uuid> =
+                sqlx::query_scalar("SELECT account_id FROM payment_methods WHERE id = $1")
+                    .bind(id)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(|e| {
+                        tracing::error!(?e, "payment method lookup failed");
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    })?;
+            let account_id = account_id.ok_or(StatusCode::NOT_FOUND)?;
+            // The debt account is not a rail. The same refusal a sale and a purchase already
+            // make, for the same reason: it holds nothing, so money cannot come back through it.
+            if account_id == CREDIT_ACCOUNT_ID {
+                return Err(StatusCode::BAD_REQUEST);
+            }
+
+            // **An explicit method means money comes back through a rail, so that rail must have
+            // received that money first** (`v3-accounts.md` L107 mirrored; the credit-note side
+            // is `v4-receivables.md` S7). Measured before this guard existed: a purchase paid from
+            // the bank, returned through the till, drove the till negative for money it never held.
+            //
+            // **What a rail is owed here is a budget, and earlier explicit returns spend from it,
+            // exactly as on the credit-note side** (`R1-003`/`R3-003`). A return that only
+            // inherited moved money too, so both kinds count: the question is what this purchase
+            // ever put INTO this rail, less what its returns already took back out of it.
+            // **The sign is negated, and getting this wrong is the exact defect `0014` warns
+            // about.** A sale's entry is `+total` (money came in), so the credit-note side sums it
+            // as it stands. A **purchase's** entry is `-total` (money went out), so the amount this
+            // rail ever put into the purchase is its negation. Written as `-SUM(...)` rather than
+            // as `SUM(-...)` to keep the aggregate and the convention adjacent.
+            //
+            // Measured before this fix, and it is why the correct return answered 409: the sum was
+            // `-200`, so `arrived - left = -200 < 100` and the rail that HAD paid was refused.
+            let arrived_on_rail: Decimal = sqlx::query_scalar(
+                "SELECT -COALESCE((
+                    SELECT SUM(me.amount) FROM money_entries me
+                     WHERE me.document_kind = 'purchase' AND me.document_id = $1
+                       AND me.payment_method_id = $2
+                 ), 0)
+                 + COALESCE((
+                    SELECT SUM(ps.amount) FROM payable_settlements ps
+                      JOIN payments p ON p.id = ps.payment_id
+                     WHERE ps.payable_id = (
+                             SELECT id FROM payables
+                              WHERE source_document_kind = 'purchase'
+                                AND source_document_id = $1)
+                       AND p.direction = 'out'
+                       AND p.payment_method_id = $2
+                 ), 0)",
+            )
+            .bind(purchase_id)
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| {
+                tracing::error!(?e, "purchase rail arrival failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+
+            // What earlier returns already took back out through this same rail, as a magnitude.
+            let left_on_rail: Decimal = sqlx::query_scalar(
+                "SELECT COALESCE(SUM(me.amount), 0)
+                   FROM money_entries me
+                   JOIN supplier_returns sr ON sr.id = me.document_id
+                  WHERE me.document_kind = 'supplier_return' AND sr.purchase_id = $1
+                    AND me.payment_method_id = $2",
+            )
+            .bind(purchase_id)
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| {
+                tracing::error!(?e, "purchase rail refunds failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+
+            if arrived_on_rail - left_on_rail < return_total {
+                return Err(StatusCode::CONFLICT);
+            }
+
+            Some(id)
+        }
+        // **Omitted means inherit, and the inheritance is what carries the two meanings.** On a
+        // purchase that was paid, the return inherits the purchase's method and moves money back
+        // through the same rail — the behaviour every return had before this slice. On a purchase
+        // that only owed, the purchase's method is NULL, so the return inherits NULL: it writes no
+        // ledger entry and lowers the payable through a `payables_adjustments` row, which is the
+        // honest version of what the old code faked by handing money back for goods nobody paid
+        // for.
+        //
+        // **`S8`'s "a return may be NULL only when its purchase is NULL" is therefore a property
+        // of the result, not a refusal to make here.** Omitting the key can never produce a NULL
+        // return on a paid purchase, because inheriting a paid purchase's method is not NULL. The
+        // rule is reachable only by writing the row directly, and `0023`'s deferred trigger is
+        // where it is enforced — `v4_s6b_the_database_refuses_a_null_return_on_a_paid_purchase`
+        // measures it there, below the route, because the route cannot express it.
+        None => purchase_method,
+    };
+
+    // **The combined ceiling on the inherited path, checked before the insert** — the lesson
+    // `R1-004`/`R4-001` of `review-336e2618582310f9` records for the credit note, where the same
+    // omission answered 500 for an ordinary operation. `payables_adjustments_within_amount`
+    // raises at COMMIT; a `RAISE` at COMMIT is a 500, and the caller can act on a 409.
+    //
+    // **`FOR UPDATE`, in the same order every other writer takes these rows** — the payable, and
+    // nothing else here — so a settlement committing between this read and the note's COMMIT
+    // cannot turn the pre-check into a lie (`R1-003` of `review-bec...` on the customer side).
+    if return_method.is_none() {
+        let room: Option<(Decimal, Decimal, Decimal)> = sqlx::query_as(
+            "SELECT o.amount,
+                    COALESCE((SELECT SUM(a.amount) FROM payables_adjustments a
+                               WHERE a.payable_id = o.id), 0),
+                    COALESCE((SELECT SUM(s.amount) FROM payable_settlements s
+                               WHERE s.payable_id = o.id), 0)
+               FROM payables o
+              WHERE o.source_document_kind = 'purchase' AND o.source_document_id = $1
+              FOR UPDATE",
+        )
+        .bind(purchase_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| {
+            tracing::error!(?e, "payable room read failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+        match room {
+            Some((owed, lowered, settled)) if lowered + settled + return_total > owed => {
+                return Err(StatusCode::CONFLICT);
+            }
+            // A return that moves no money on a purchase that owes nothing is a refund of
+            // nothing: `0023` refuses it at COMMIT, and "the purchase did not owe" is the
+            // caller's fact to learn.
+            None => return Err(StatusCode::CONFLICT),
+            _ => {}
+        }
+    }
+
     let return_id = sqlx::query_scalar!(
         "INSERT INTO supplier_returns (purchase_id, total, payment_method_id) VALUES ($1, $2, $3) RETURNING id",
         purchase_id,
         return_total,
-        inherited_method
+        return_method
     )
     .fetch_one(&mut *tx)
     .await
@@ -716,7 +955,8 @@ async fn create_supplier_return(
     // `20.00` and not `20.000000` (see 0006).
     let supplier_return = sqlx::query_as!(
         SupplierReturn,
-        "SELECT id, purchase_id, round(total, 2) AS \"total!\", created_at
+        "SELECT id, purchase_id, payment_method_id,
+                round(total, 2) AS \"total!\", created_at
          FROM supplier_returns WHERE id = $1",
         return_id
     )
@@ -727,22 +967,66 @@ async fn create_supplier_return(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    // The book entry (`0017`): a supplier return brings money BACK, so it is positive.
-    sqlx::query!(
-        "INSERT INTO money_entries
-            (account_id, payment_method_id, document_kind, document_id, amount, occurred_at, created_by)
-         SELECT pm.account_id, $1, 'supplier_return', $2, $3, now(), 'counter'
-           FROM payment_methods pm WHERE pm.id = $1",
-        inherited_method,
-        return_id,
-        return_total
-    )
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| {
-        tracing::error!(?e, "supplier return money entry failed");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    // **The return claims one of two things, exactly as a credit note does since `0021`.** A
+    // return with a method brings money back: it writes the book entry (`0017`) and lowers no
+    // debt. A return with no method lowers the debt: it writes a `payables_adjustments` row and
+    // no entry. `0023`'s constraint trigger refuses a return that does both or neither, at COMMIT.
+    match return_method {
+        Some(method) => {
+            // The book entry (`0017`): a supplier return brings money BACK, so it is positive.
+            sqlx::query!(
+                "INSERT INTO money_entries
+                    (account_id, payment_method_id, document_kind, document_id, amount, occurred_at, created_by)
+                 SELECT pm.account_id, $1, 'supplier_return', $2, $3, now(), 'counter'
+                   FROM payment_methods pm WHERE pm.id = $1",
+                method,
+                return_id,
+                return_total
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                tracing::error!(?e, "supplier return money entry failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        }
+        None => {
+            // The debt drops. `document_id` is the return, so the same return can never lower the
+            // debt twice (`0023`'s UNIQUE index) — the guarantee a mutable `payables.amount` would
+            // have needed a writer flag to get.
+            let adjusted = sqlx::query(
+                "INSERT INTO payables_adjustments
+                    (payable_id, amount, document_kind, document_id, created_by)
+                 SELECT o.id, $2, 'supplier_return', $3, 'counter'
+                   FROM payables o
+                  WHERE o.source_document_kind = 'purchase' AND o.source_document_id = $1",
+            )
+            .bind(purchase_id)
+            .bind(return_total)
+            .bind(return_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                // A ceiling violation is the caller's, not the server's: the pre-check above
+                // answers 409 for the case it can see, and this catches a concurrent settlement
+                // that committed between the read and the insert.
+                if let sqlx::Error::Database(db) = &e
+                    && db.code().as_deref() == Some("P0001")
+                {
+                    return StatusCode::CONFLICT;
+                }
+                tracing::error!(?e, "supplier return payables adjustment failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+            if adjusted.rows_affected() == 0 {
+                tracing::error!(
+                    purchase_id = %purchase_id,
+                    "supplier return with no method on a purchase that owes nothing"
+                );
+                return Err(StatusCode::CONFLICT);
+            }
+        }
+    }
 
     tx.commit().await.map_err(|e| {
         tracing::error!(?e, "tx commit failed");

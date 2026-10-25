@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO money_entries\n                    (account_id, payment_method_id, document_kind, document_id, amount, occurred_at, created_by)\n                 SELECT pm.account_id, $1, 'supplier_return', $2, $3, now(), 'counter'\n                   FROM payment_methods pm WHERE pm.id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Numeric"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "88fca69e4975b0138b289f3d979c3054daf50b1ddbeed5d233b07d1bcd1f903d"
+}
