@@ -2,7 +2,7 @@
 
 Slice **S6b / T7** of `odd/tasks/v4-settlement.md`, and the mirror of
 `odd/tasks/v4-receivables.md` (S6a). **State: T7.1-T7.5 implemented and green (146 backend
-tests); the slice is not yet reviewed.** S1, S3, S4, S5 and S6a are merged to `main` (`2e6f7be`); S2 is
+tests), delivered as PR #87, and deliberately not reviewed natively — see L9.** S1, S3, S4, S5 and S6a are merged to `main` (`2e6f7be`); S2 is
 deferred to v5; S7 is still ahead. `0023` and the three routes are **not yet reviewed**.
 
 The state that must hold when this slice closes, and it is one sentence:
@@ -427,3 +427,38 @@ statement, and `credit` stays inactive. `SupplierReturn` gains `payment_method_i
 (because a client must be able to tell a return that moved money from one that lowered a debt) but
 **no resolved `payment_method_name`**, unlike `Sale` and `Purchase`: a return is nested inside the
 purchase that already carries the rail, so a second copy would be the same fact twice.
+
+L9 (owner, verbatim): "Pr sin review" — **the slice is delivered without a native review**, and
+the reason is measured rather than convenient. The candidate is `origin/main..HEAD`: 27 paths,
+3556 authored lines. Two lanes over it are refused at START with `lens_context_budget_exceeded`,
+`mutation_outcome: not_started`, `lineage_created: false` — **no authority was created, so nothing
+was abandoned and nothing has to be repaired.** The provider's own message says retrying that
+exact candidate cannot succeed and to split it into smaller commits.
+
+Splitting it after the fact requires rewriting history, and the safety policy blocks that. The
+owner chose delivery over the rewrite. **What that costs is stated so a later session does not
+read it as an oversight: this slice got no outside view.** In S6a the outside view found four
+defects that the slice's own tests could not see (`v4-receivables.md` L28), and three of the four
+defects found in this one were caught by *neutering guards*, not by review — so the discipline
+substituted for review here, and the human reviewer carries the rest.
+
+L10 **The method lesson, and it cost a whole session.** I proposed six commits by task, then
+produced one, then spent four attempts slicing it afterwards — and each attempt made the file
+larger: `purchases.rs` came back duplicated twice, one stash pop left conflict markers, and two
+files were truncated to zero bytes by a redirect to a path that did not exist. Nothing was lost
+(the work was recoverable from the commit and from `git fsck --lost-found`), but the split never
+happened.
+
+Three things were wrong, and they are worth more than this slice:
+
+1. **A migration that makes a column nullable cannot be its own commit.** `sqlx::query_as!`
+   infers nullability from the live schema, so `0023` alone does not compile until the models
+   change. T7.1 and T7.2 are one commit by construction, not by preference — my six-commit plan was
+   unbuildable from the first row.
+2. **A review candidate is a range of commits.** It cannot be carved out of one commit without
+   rewriting history, so "I will split it later" is not a plan; it is a wish. The division has to
+   be written in from the first commit, which means deciding it *before* the first line of code,
+   against the measured line counts of each file.
+3. **Measure the candidate before committing, not after.** The one measurement that would have
+   saved the session — `git diff --stat` of each intended commit against the provider's budget —
+   takes a second and I did it only after the fact, four times.
