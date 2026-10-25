@@ -7,7 +7,25 @@ Slice 2 of "cobros y pagos", continuing `v5-customer-account.md`. Branch
 lenses `risk` + `resilience` + `reliability`, tier high, 3.332 lines, correction budget 200
 with 199 used. Authority burned (`gentle-ai.review-acknowledged/v1`). `make test` green
 (52 unit + 261 frontend + 154 integration + 31 e2e), `make lint` clean, `make sqlx-check` in
-sync. Six commits on `feat/v5-payment-allocation`; delivery is ordinary repository policy.
+sync.
+
+**Delivered as a chain of three PRs**, cut by surface rather than by commit (the review's
+findings crossed backend and client, so a commit-order split would have produced slices that
+do not build). Each slice was verified green on its own — backend, frontend and e2e — before
+being pushed, and **the tip of the chain is byte-for-byte the tree the review approved**
+(`git diff` against `ba4972b` empty):
+
+| PR | branch | base | changed lines |
+| --- | --- | --- | --- |
+| #94 | `pr1-collection-endpoint` | `main` | 2 121 |
+| #95 | `pr2-collection-form` | `pr1-collection-endpoint` | 1 227 |
+| #96 | `pr3-closing-e2e` | `pr2-collection-form` | 144 |
+
+`feat/v5-payment-allocation` keeps the work-unit history and is not pushed as a PR of its own;
+the chain supersedes it. The two slices over the 400-line guideline carry the reason and a
+`size:exception` recommendation in their bodies: the endpoint cannot be split from its tests
+without leaving a slice that does not compile, and the form cannot be split from the
+dictionaries it renders.
 
 Slice 1 taught the shop to **read** a party's account. Slice 2 lets it **write**: the
 button the owner described in `L2` of `v5-customer-account.md` arrives, together with the
@@ -490,3 +508,30 @@ rather than fixed in this slice:
 could not fit, 501 lines of correction in the first and 199 in the second.** The value is not
 in the count: the first lineage's four findings were all real, and the second lineage's two
 were defects *introduced by fixing the first*. That is the sentence worth carrying forward.
+
+V10 **The delivery check, which only the image can give.** `docs/en/testing.md` names exactly
+one proof that no other level provides — a stale image fails at boot with
+`migration N was previously applied but is missing in the resolved migrations`, which
+`cargo run` cannot reproduce because it compiles fresh and embeds the current migrations — and
+**CI never builds the backend image**, so a green CI says nothing about it.
+
+| what | result |
+| --- | --- |
+| `docker compose -f docker-compose.prod.yml build backend` | built: `3cb63af5…`, created 2026-10-25 (replacing the 2026-10-21 image) |
+| migrations **inside** the image | exactly the repository's: one `0001_schema.sql`, 237 569 bytes |
+| the container boots | `backend listening on http://0.0.0.0:3001` |
+| `GET /health` | `200` — `{"status":"ok"}` |
+| `GET /api/day` | `200`, and `zone` is the `SHOP_TIMEZONE` it was given |
+| `GET /api/customers` | `200` |
+
+Run against `tempox_test` (disposable) in **one** throwaway container on a free port, then
+removed. No new stack, no new volume, the development volume untouched — the rule
+`docs/en/testing.md` exists to enforce.
+
+**Three of my four attempts were wrong and the record says so**, because a check you muddle is
+not a check: `127.0.0.1` inside a container is the container, not the host; `--network
+container:` does not combine with `-p`; a `timeout` on a foreground process kills the server
+before it can be observed, and the `Command aborted` that produced was mine, not the server's;
+and the clean attempt probed **`/api/health`, which does not exist** — the route is `/health`
+at the root router, so a healthy server was reported dead by a wrong path. The last one is the
+one worth keeping: the measurement was wrong, not the thing measured.
