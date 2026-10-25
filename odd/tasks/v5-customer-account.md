@@ -1,7 +1,7 @@
 # v5-customer-account — a client's account, and a supplier's, read from one panel
 
-Slice 1 of three for "cobros y pagos". **State: T1 reviewed natively and approved (lineage `review-437f7e5652c641fd`), green at 144
-backend tests; T2-T4 ahead.** The product
+Slice 1 of three for "cobros y pagos". **State: T1 reviewed natively and approved; T2 implemented (242 frontend + 26 e2e tests); T3-T4
+ahead.** The product
 shape was settled by the owner in conversation, and this file is the specification a later
 session reads.
 
@@ -232,3 +232,30 @@ V2c **A guard can only be proven by a fixture where it changes the answer.** The
 `0.00` and netting changed nothing. Moving the same neutering to the **overpayment** fixture made it
 fail with `owed: "-50.00"`. "The test passed after neutering" means the fixture is wrong — recorded
 as V1b, and it is the same lesson `v4-settlement.md` V6c and `v4-payables.md` V4d carry.
+
+V3 **T2, the two pages and the rail.** `make test-frontend` **242** (was 238; +4),
+`make test-e2e` **26** (was 24; +2), backend 144, `make lint` clean.
+
+RED first: the nav unit test failed on a missing module, and the e2e failed on a missing
+destination in the rail.
+
+**The e2e was proven to bite** by removing the two rail entries: it fails on
+`toBeVisible()` for the `Clientes` link, and the 25 other specs stay green — so it measures
+the rail rather than the page existing.
+
+**One component, two pages.** `PartyList.svelte` is shared by `/clientes` and `/proveedores`.
+The failure mode it avoids has a number in this repository: `Ledger.svelte` (1696) and
+`PurchaseLedger.svelte` (1052) are the same table written twice. The two pages differ in the
+endpoint they call and the words they render, and in nothing else.
+
+V3b **A test of mine invented a label, and the app corrected it.** The first e2e asked for the
+rail by `name: 'Navegación'`; the rail's `aria-label` is `'Principal'` (`nav_main`). The
+assertion failed for the right reason — it was measuring a name that does not exist — and the
+fix was to read the dictionary, not to loosen the selector. Recorded because a selector that
+"works after I changed it to something vaguer" is how an e2e stops asserting anything.
+
+V3c **Nothing in T2 counts rows.** Both seeds (walk-in, one-off-supplier) are always present and
+the database is shared, so a length assertion would say nothing about the fixture — the shape
+the T1 review recorded as `R3-002` and this slice refused to add a second time. The e2e finds a
+customer by the name it created, and asserts a supplier does **not** appear on the customers
+page, which a "the row is there" assertion could never catch.

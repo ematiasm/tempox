@@ -17,6 +17,17 @@ export interface Dict {
   nav_products: string;
   /** Assistive-technology label for the rail (`Main`). */
   nav_accounts: string;
+  nav_customers: string;
+  nav_suppliers: string;
+  customers_title: string;
+  customers_tagline: string;
+  customers_empty: string;
+  customers_error: string;
+  customers_loading: string;
+  suppliers_title: string;
+  suppliers_tagline: string;
+  suppliers_empty: string;
+  suppliers_error: string;
   accounts_title: string;
   accounts_tagline: string;
   accounts_till: string;

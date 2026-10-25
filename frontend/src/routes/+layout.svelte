@@ -30,7 +30,12 @@
     { href: '/sales', label: lang.t.nav_sales },
     { href: '/purchases', label: lang.t.nav_purchases },
     { href: '/products', label: lang.t.nav_products },
-    { href: '/accounts', label: lang.t.nav_accounts }
+    { href: '/accounts', label: lang.t.nav_accounts },
+    // The two parties enter the rail in v5. They come after the money screens
+    // because that is the order of the shop's day: sell, buy, stock, where the money
+    // lands, and then who owes what.
+    { href: '/clientes', label: lang.t.nav_customers },
+    { href: '/proveedores', label: lang.t.nav_suppliers }
   ] as const);
 </script>
 
