@@ -28,6 +28,7 @@ const en: Dict = {
   party_panel_not_found: 'There is no such customer or supplier',
   party_panel_error: 'The account could not be read',
   party_panel_loading: 'Reading the account…',
+  party_panel_not_found_short: 'No record',
   party_panel_unpaid_sales: 'unpaid sales',
   party_panel_unpaid_purchases: 'unpaid purchases',
   suppliers_title: 'Suppliers',

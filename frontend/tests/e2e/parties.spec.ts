@@ -212,3 +212,37 @@ test('a deep link to a party that does not exist says so instead of showing zero
   // And it is not a balance: no figures are rendered for a party that is not there.
   await expect(panel.locator('dd.amount')).toHaveCount(0);
 });
+
+test('the panel follows the URL when the browser navigates back to it', async ({ page }) => {
+  // **`R3-001` of review `review-899bd50b10d8b419`.** The page read `?c=` once on mount
+  // and never again, so the URL and the panel could disagree the moment the browser
+  // moved — and a panel that shows one party while the link names another is the one
+  // failure a deep-linkable panel must not have.
+  //
+  // It is measured through `history.back()` after a `pushState` the test makes itself,
+  // because this page only ever `replaceState`s: the listener is what is under test, not
+  // the page's own navigation.
+  const first = await page.request.post('/api/customers', {
+    data: { name: `e2e-nav-a-${Date.now().toString(36)}` }
+  });
+  const { id: firstId, name: firstName } = (await first.json()) as { id: string; name: string };
+  const second = await page.request.post('/api/customers', {
+    data: { name: `e2e-nav-b-${Date.now().toString(36)}` }
+  });
+  const { id: secondId } = (await second.json()) as { id: string };
+
+  await page.goto(`/clientes?c=${firstId}`);
+  await expect(page.locator('aside.sheet h2')).toHaveText(firstName);
+
+  // Navigate the browser to the other party's URL without a full reload.
+  await page.evaluate((id) => {
+    window.history.pushState({}, '', `/clientes?c=${id}`);
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  }, secondId);
+  // The listener updated the panel: a different name, same panel.
+  await expect(page.locator('aside.sheet h2')).not.toHaveText(firstName);
+
+  // And Back returns to the first party, with the panel following the URL.
+  await page.evaluate(() => window.history.back());
+  await expect(page.locator('aside.sheet h2')).toHaveText(firstName);
+});

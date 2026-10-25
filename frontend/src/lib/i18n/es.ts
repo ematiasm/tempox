@@ -37,6 +37,7 @@ const es: Dict = {
   party_panel_not_found: 'No existe ese cliente o proveedor',
   party_panel_error: 'No se pudo leer la cuenta',
   party_panel_loading: 'Leyendo la cuenta…',
+  party_panel_not_found_short: 'Sin datos',
   party_panel_unpaid_sales: 'ventas impagas',
   party_panel_unpaid_purchases: 'compras impagas',
   suppliers_title: 'Proveedores',

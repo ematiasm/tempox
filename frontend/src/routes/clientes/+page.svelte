@@ -60,10 +60,20 @@
     setSelected(id);
   }
 
-  // Read the id from the URL on arrival, and on every navigation the page survives.
+  // Read the id from the URL on arrival, **and on `popstate`** (`R3-001`).
+  //
+  // `replaceState` means this page never pushes an entry, but the *user* can still
+  // arrive at a different URL for it — a link pasted into the address bar, or Back
+  // leaving the page and Forward returning. Without the listener the panel and the URL
+  // disagree from that moment on: the URL says one party and the panel shows another,
+  // which is the one failure a deep-linkable panel must not have.
   $effect(() => {
-    const id = new URL(window.location.href).searchParams.get('c');
-    selected = id;
+    const sync = () => {
+      selected = new URL(window.location.href).searchParams.get('c');
+    };
+    sync();
+    window.addEventListener('popstate', sync);
+    return () => window.removeEventListener('popstate', sync);
   });
 
   // Fetch whenever the selection changes. `live` guards the race a second selection

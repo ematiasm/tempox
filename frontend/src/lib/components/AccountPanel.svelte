@@ -44,7 +44,11 @@
      sits beside the list, so it is a labelled `aside` with an explicit close. -->
 <aside class="sheet" aria-labelledby="account-panel-h">
   <header class="sheet-head">
-    <h2 id="account-panel-h">{boxes?.name ?? lang.t.party_panel_loading}</h2>
+    <!-- The heading must not promise content it does not have: a not-found panel whose
+         title says "reading the account…" is a spinner that never resolves (`R3-002`). -->
+    <h2 id="account-panel-h">
+      {boxes?.name ?? (notFound ? lang.t.party_panel_not_found_short : lang.t.party_panel_loading)}
+    </h2>
     <button class="close" type="button" onclick={onclose} aria-label={lang.t.party_panel_close}>
       {lang.t.party_panel_close}
     </button>

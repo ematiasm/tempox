@@ -37,6 +37,7 @@ export interface Dict {
   party_panel_not_found: string;
   party_panel_error: string;
   party_panel_loading: string;
+  party_panel_not_found_short: string;
   party_panel_unpaid_sales: string;
   party_panel_unpaid_purchases: string;
   suppliers_title: string;
