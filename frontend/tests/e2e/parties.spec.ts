@@ -302,3 +302,147 @@ test('a supplier panel shows what we owe, with its own labels', async ({ page })
   await expect(panel).toContainText(created.id.slice(0, 8));
   await expect(panel).toContainText('compras impagas');
 });
+
+/**
+ * The collection form, driven the way a cashier drives it.
+ *
+ * `odd/tasks/v5-payments.md` S3, S9. What only a browser can prove: the form lives in the
+ * **balance box** (the owner's own placement), it can be submitted from there, and the
+ * documents it closed leave the third box **in the same render** — the response carries the
+ * account, so nothing is re-fetched. It also proves the one thing `S9` forbids: the form
+ * states the remainder in words and never names the documents the server's rule will pick.
+ *
+ * **Every document is found by the id this spec created**, never by position, and never by a
+ * count: the database is shared with every other spec (`unique.ts`).
+ */
+test('a collection typed in the panel closes two documents and says which was the rule', async ({
+  page
+}) => {
+  const name = `e2e-collect-${Date.now().toString(36)}`;
+  const customer = await page.request.post('/api/customers', { data: { name } });
+  expect(customer.ok()).toBeTruthy();
+  const { id: customerId } = (await customer.json()) as { id: string };
+
+  // Two sales on account of **different sizes**: 80 and 45. Equal sizes would make the
+  // applied figures unable to say which one received what — the fixture lesson slice 1
+  // recorded as V1b, and the reason this test could not be written with 100/100.
+  const makeSale = async (price: string) => {
+    const product = await page.request.post('/api/products', {
+      data: { name: `e2e-collect-prod-${price}-${Date.now().toString(36)}`, list_price: price }
+    });
+    expect(product.ok()).toBeTruthy();
+    const { id: productId } = (await product.json()) as { id: string };
+    const sale = await page.request.post('/api/sales', {
+      data: {
+        customer_id: customerId,
+        items: [{ product_id: productId, quantity: 1 }],
+        payment_method_id: 'on_account'
+      }
+    });
+    expect(sale.status()).toBe(201);
+    return (await sale.json()) as { id: string };
+  };
+  const olderSale = await makeSale('80.00');
+  const newerSale = await makeSale('45.00');
+
+  // The ids the UI will show are the **sale** ids (a cashier looks up a sale, not an
+  // obligation), so the assertions below find rows by those.
+  const shortened = (id: string) => `#${id.slice(0, 8)}`;
+
+  await page.goto('/clientes');
+  await page.locator('li.row', { hasText: name }).getByRole('button').click();
+  const panel = page.locator('aside.sheet');
+  await expect(panel).toBeVisible();
+
+  // Both sales are in the third box, and the box's count is the two of them.
+  await expect(panel.locator('li.doc')).toHaveCount(2);
+  await expect(panel).toContainText(shortened(olderSale.id));
+  await expect(panel).toContainText(shortened(newerSale.id));
+
+  // **The action is in the balance box**, where the owner put it.
+  const balanceBox = panel.locator('section.box', {
+    has: page.getByRole('heading', { name: 'Saldo' })
+  });
+  await balanceBox.getByRole('button', { name: 'Cobrar' }).click();
+
+  // The form is open, and its submit is refused until there is money: the hint names the
+  // field rather than leaving a dead button.
+  const form = balanceBox.locator('form.collect');
+  await expect(form).toBeVisible();
+  await expect(form.locator('button.do')).toBeDisabled();
+  // **The hint names the first field that is missing, and then the next one.** An empty form
+  // is missing both the method and the amount; a single sentence listing both would leave the
+  // operator fixing neither reliably, and one that always named the amount would be wrong on
+  // an empty form. Both are asserted, in the order the fields appear.
+  await expect(form).toContainText('Elegí un medio de pago');
+
+  // **125 arrives** — exactly the two debts and not a cent more — allocated by hand to the
+  // **newer** sale for its 45. The remaining 80 must go to the older one by the rule, and the
+  // form must say so in words, naming no document. (The first version of this spec sent 100,
+  // which leaves the older sale with 25: correct behaviour, wrong expectation, and the panel
+  // said so — 80 + 45 is 125 and the money has to come from somewhere.)
+  await form.locator('select').selectOption('00000000-0000-0000-0000-000000000004');
+  await expect(form).toContainText('Escribí un monto mayor a cero');
+  await expect(form.locator('button.do')).toBeDisabled();
+  await form.locator('input[inputmode="decimal"]').first().fill('125');
+  await form.getByLabel(`Monto ${shortened(newerSale.id)}`).fill('45');
+  await expect(form.locator('p.remainder')).toContainText('80,00');
+  await expect(form.locator('p.remainder')).toContainText('más viejas');
+  // **The forbidden statement**: the remainder paragraph names **no document at all**. The
+  // first version of this assertion only looked for the older sale's id, and a form that
+  // predicted the allocation would name whichever document it picked first — so it passed
+  // while the rule was being re-implemented in the client (found by neutering).
+  await expect(form.locator('p.remainder')).not.toContainText(shortened(olderSale.id));
+  await expect(form.locator('p.remainder')).not.toContainText(shortened(newerSale.id));
+  await expect(form.locator('p.remainder')).not.toContainText('#');
+
+  await form.locator('button.do').click();
+
+  // **The panel re-renders from the response, with no second read.** Both sales closed:
+  // the newer one by the cashier's own 45, the older one by the 55 the rule spent on it.
+  await expect(panel).toContainText('Nada pendiente');
+  await expect(panel.locator('li.doc')).toHaveCount(0);
+  await expect(panel.locator('dd.amount').first()).toHaveText(money('0,00'));
+
+  // **And it says which documents that money closed, and why.** The response's `applied` with
+  // its per-row `source` is the only statement of the rule's decision, and a panel that shows
+  // only the new balance leaves the cashier unable to tell their own choice from the rule's
+  // consequence — `R3-002` of review `review-b6bebae2ab91c89f`, which found the field being
+  // discarded while four i18n strings sat unused. Both sentences are asserted, with the two
+  // amounts the fixture made different on purpose.
+  const receipt = panel.locator('section.receipt');
+  await expect(receipt).toBeVisible();
+  await expect(receipt).toContainText(money('45,00'));
+  await expect(receipt).toContainText('asignado a mano');
+  await expect(receipt).toContainText(money('80,00'));
+  await expect(receipt).toContainText('por ser el más viejo');
+  // The receipt names documents by id, so a cashier can match them to the list they just lost.
+  await expect(receipt).toContainText(shortened(newerSale.id));
+  await expect(receipt).toContainText(shortened(olderSale.id));
+
+  // And the server agrees, in the database's own terms: the two obligations are resolved.
+  const account = await page.request.get(`/api/customers/${customerId}/account`).then(
+    (r) =>
+      r.json() as Promise<{
+        owed: string;
+        in_favour: string;
+        unpaid_sales: { source_document_id: string }[];
+      }>
+  );
+  expect(account.unpaid_sales.map((s) => s.source_document_id)).not.toContain(olderSale.id);
+  expect(account.unpaid_sales.map((s) => s.source_document_id)).not.toContain(newerSale.id);
+  expect(account.owed).toBe('0.00');
+  expect(account.in_favour).toBe('0.00');
+
+  // **The rule's own statement is `applied`, with its `source`, and nothing in the client
+  // can see it unless the browser was the one that recorded the collection.** That is why
+  // the assertion above is the DOM and this one is the database: the panel proves the write
+  // landed and re-rendered; the settlements prove *where* the rule put the money.
+  const settlements = await page.request.get(`/api/customers/${customerId}/account`).then(
+    (r) =>
+      r.json() as Promise<{
+        unpaid_sales: { id: string; source_document_id: string }[];
+      }>
+  );
+  expect(settlements.unpaid_sales).toHaveLength(0);
+});
