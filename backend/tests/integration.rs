@@ -9793,3 +9793,49 @@ async fn v4_s6a_the_adjustment_ceiling_still_serialises_direct_writers(pool: sql
     );
     let _ = cash_method;
 }
+#[sqlx::test]
+async fn v4_s6b_a_sale_refuses_an_explicit_null_or_a_garbage_destination_as_a_bad_request(
+    pool: sqlx::PgPool,
+) {
+    // The shared definition, measured on the sales side too. `sales.rs` documented a 400 for
+    // an explicit null, but serde's failure reached the client as 422 (axum's `Json` rejection).
+    // Positive first, so the refusals cannot pass for a broken fixture.
+    let client = common::client(pool.clone());
+    let (customer_id, product_id) = receivable_fixture(&client, "salenull", "10.00").await;
+    let item = serde_json::json!([{ "product_id": product_id, "quantity": 1 }]);
+
+    let accepted = client
+        .post(
+            "/api/sales",
+            serde_json::json!({ "customer_id": customer_id, "items": item }),
+        )
+        .await;
+    assert_eq!(accepted.status(), axum::http::StatusCode::CREATED);
+
+    for raw in [serde_json::Value::Null, serde_json::json!("garbage")] {
+        let refused = client
+            .post(
+                "/api/sales",
+                serde_json::json!({
+                    "customer_id": customer_id,
+                    "items": item,
+                    "payment_method_id": raw
+                }),
+            )
+            .await;
+        assert_eq!(
+            refused.status(),
+            axum::http::StatusCode::BAD_REQUEST,
+            "a sale must refuse {raw} as a bad request; body: {}",
+            refused.text
+        );
+    }
+
+    let sales: i64 = sqlx::query_scalar("SELECT count(*) FROM sales WHERE customer_id = $1::uuid")
+        .bind(&customer_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count sales");
+    assert_eq!(sales, 1, "the two refused sales wrote nothing");
+}
+

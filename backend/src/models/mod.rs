@@ -2,6 +2,7 @@ pub mod account;
 pub mod credit_note;
 pub mod credit_note_item;
 pub mod customer;
+pub mod destination;
 pub mod note;
 pub mod product;
 pub mod purchase;
