@@ -1,7 +1,6 @@
 # v5-customer-account — a client's account, and a supplier's, read from one panel
 
-Slice 1 of three for "cobros y pagos". **State: T1 reviewed natively and approved; T2 implemented (242 frontend + 26 e2e tests); T3-T4
-ahead.** The product
+Slice 1 of three for "cobros y pagos". **State: T1 and T2 reviewed natively and approved; T3-T4 ahead.** The product
 shape was settled by the owner in conversation, and this file is the specification a later
 session reads.
 
@@ -259,3 +258,27 @@ the database is shared, so a length assertion would say nothing about the fixtur
 the T1 review recorded as `R3-002` and this slice refused to add a second time. The e2e finds a
 customer by the name it created, and asserts a supplier does **not** appear on the customers
 page, which a "the row is there" assertion could never catch.
+
+V4 **T2 reviewed natively — approved**, lineage `review-1817973d81dd8fda`, lenses `readability` +
+`reliability`, 526 lines. Authority burned. Seven findings, all `informational`; four were real and
+are fixed in `b82a40a`.
+
+R2-001 partiesNav.ts:20-28 · R2-002 clientes/+page.svelte:19-43 (fixed) · R2-003 PartyList.svelte:41
+R3-001 parties.spec.ts:38-41 (fixed) · R3-002 parties.spec.ts:51-53 · R3-003 parties-nav.test.ts:25-27
+R3-004 clientes/+page.svelte:26 (fixed)
+
+V4b **The substantive finding was `R2-002`/`R3-004`, and it is about a comment, not code.** The page
+wrote `?c=<id>` and **nothing read it**; the comment claimed the click was "wired" when all it did
+was rewrite the query string. **A comment that overstates is worse than none**, because it is the
+reason nobody looks. The page now consumes the parameter and states the pending condition in words.
+
+**And my first fix repeated the same lie**: it rendered `Leyendo…` — "reading" — over a page reading
+nothing. Replaced with "el panel de la cuenta llega en la próxima etapa". The lesson is not about
+this page: it is that the temptation to fill a gap with a plausible word is exactly what produces
+the state the review found.
+
+V4c **`R3-001`, and a rewrite of mine the review's own standard caught.** The e2e pressed
+`page.goBack()` to prove `replaceState` — which proves nothing, because after a `replaceState` there
+is no entry to go back to. The fix reads `history.length` before and after the click. **My first
+rewrite compared that length against itself**, which measures nothing; the corrected version reads it
+across the click, and switching `replaceState` to `pushState` now fails the spec.
