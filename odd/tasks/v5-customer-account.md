@@ -1,6 +1,6 @@
 # v5-customer-account — a client's account, and a supplier's, read from one panel
 
-Slice 1 of three for "cobros y pagos". **State: T1 and T2 reviewed natively and approved; T3-T4 ahead.** The product
+Slice 1 of three for "cobros y pagos". **State: T1, T2 and T3 reviewed natively and approved; T4 (the closing e2e and docs) ahead.** The product
 shape was settled by the owner in conversation, and this file is the specification a later
 session reads.
 
@@ -282,3 +282,58 @@ V4c **`R3-001`, and a rewrite of mine the review's own standard caught.** The e2
 is no entry to go back to. The fix reads `history.length` before and after the click. **My first
 rewrite compared that length against itself**, which measures nothing; the corrected version reads it
 across the click, and switching `replaceState` to `pushState` now fails the spec.
+
+V5 **T3, the account panel.** `make test-frontend` **246** (was 242; +4), `make test-e2e` **28**
+(was 26; +2), backend 144, `make lint` clean, `make sqlx-check` in sync, `svelte-check` 0.
+
+V5b **The e2e found a real bug in T1's shipped SQL, and no unit test could have.**
+`GET /api/customers/{id}/account` selected **`s.id` into both** the `id` and the
+`source_document_id` columns of every unpaid document, so the obligation and the sale carried
+the same value. T1's test compared `id` against the sale's id and **passed, because it was
+equality with itself.** The e2e settled by `id`, answered `404`, and that was unambiguous.
+Fixed in both mirrors; T1's test now asserts the two ids differ and fails if the bug returns.
+
+**The lesson is about what a test asserts, not how many there are.** T1 had four tests over
+this endpoint and every one checked the field was *present* and correct-looking; none checked
+that two fields meaning different things were different. `R3-002` of the same review was the
+same shape in miniature: a count that also passes when a different row is there.
+
+V5c **`?c=` is the source of truth, and the pending paragraph became the real panel.** T2 shipped
+a paragraph saying the panel would arrive, because a click that rewrites the URL and shows
+nothing is the defect the review caught. T3 replaces it: a cold load of the link reopens the
+panel, closing removes the parameter, and a link to a party that does not exist renders the
+not-found state **with no figures at all**, so "owes nothing" can never be confused with "is not
+there".
+
+V5d **A flake avoided rather than discovered.** The fetch guards its replies with a `live` flag:
+without it a slow reply for the first party can land after the second and paint the wrong account
+under the right name. That is a race no test in this suite would find, so it is stated in the
+code instead of left implicit.
+
+V6 **T3 reviewed natively — approved**, lineage `review-899bd50b10d8b419`, lenses `risk` +
+`reliability`, 868 lines. Authority burned. Five findings, all `informational`, two real and fixed
+in `45ee30b`.
+
+V6b **`R3-001` was the serious one and it is the deep link's own failure mode.** The page read
+`?c=` once on mount and never listened for `popstate`, so the moment the browser moved — a link
+pasted into the address bar, Back leaving the page and Forward returning — the URL and the panel
+disagreed. A panel showing one party while the link names another is the single failure a
+deep-linkable panel must not have, and the deep link exists to prevent it. Both pages sync on
+`popstate` now, with teardown. Proven to bite: removing the listener fails the new spec.
+
+V6c **`R3-002`: a heading that promised content it did not have.** The not-found panel's title fell
+back to "reading the account…", which is a spinner that never resolves for a party that does not
+exist. Same class as the two lies the T2 review found — a string describing intent instead of fact.
+
+V6d **What this task produced that outlives it**: the SQL bug (V5b) and the missing listener (V6b)
+were both found by running the thing end to end, and neither could have been found by any unit
+test in the suite. Four backend tests over the endpoint checked that fields were present and
+correct-looking; none checked that two fields meaning different things were different. That is the
+argument for one e2e that exercises the whole path, stated with evidence rather than principle.
+
+V6e **A number in a commit message was wrong, and it is recorded rather than quietly fixed.** The
+`45ee30b` message says "**31** e2e" while the suite is **29**. The counts that changed in this task
+are 26 → 28 (the two panel specs) → 29 (the `popstate` spec), and the message added one more than
+existed. Nothing else in it is affected, the numbers in this document are the measured ones, and it
+is noted here because an unverified figure in a commit message is the same defect as an unverified
+figure in a report — the reader has no way to tell which of the two is which.

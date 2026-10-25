@@ -9,6 +9,9 @@
   import { lang } from '#lib/i18n/index.svelte.js';
   import { listSuppliers, type Supplier } from '#lib/api.js';
   import PartyList from '#lib/components/PartyList.svelte';
+  import AccountPanel from '#lib/components/AccountPanel.svelte';
+  import { getSupplierAccount } from '#lib/api.js';
+  import type { AccountLike } from '#lib/accountPanels.js';
 
   let parties = $state<Supplier[] | null>(null);
   let error = $state<string | null>(null);
@@ -31,31 +34,77 @@
   });
 
   /**
-   * **Opening a party is T3, and this is where it will attach.** Until the panel
-   * exists, the honest state is a URL that changes and a page that says so — not a
-   * button that looks live and does nothing.
+   * The selected party, and its account. **`?c=<id>` is the source of truth** (`S2`),
+   * so a refresh, a bookmark or a link pasted to a colleague reopens the same panel.
    *
-   * The review of this candidate (lineage `review-1817973d81dd8fda`, `R2-002` and
-   * `R3-004`) caught the earlier version claiming the click was "wired" when all it
-   * did was rewrite the query string: a comment that overstates is worse than none,
-   * because it is the reason nobody looks. So the page now **reads** the parameter it
-   * writes, and shows the pending state rather than pretending the click landed.
+   * Three outcomes, and they must never look alike: the account loaded, the id does
+   * not exist (`null` from the API — a `404`, not zeros), and the read failed. The
+   * panel renders each differently, which is why the error is kept apart from the data
+   * instead of being folded into an empty account.
    */
-  let opened = $state<string | null>(null);
+  let selected = $state<string | null>(null);
+  let account = $state<AccountLike | null>(null);
+  let notFound = $state(false);
+  let panelError = $state<string | null>(null);
 
-  function open(id: string) {
+  function setSelected(id: string | null) {
     const url = new URL(window.location.href);
-    url.searchParams.set('c', id);
+    if (id === null) url.searchParams.delete('c');
+    else url.searchParams.set('c', id);
     // `replaceState`: Back must leave the page, not close the panel (S2).
     history.replaceState(history.state, '', url);
-    opened = id;
+    selected = id;
   }
 
-  // The URL is the source of truth, so a deep link arrives with the panel "open".
-  // T3 replaces the paragraph below with the panel itself.
+  function open(id: string) {
+    setSelected(id);
+  }
+
+  // Read the id from the URL on arrival, **and on `popstate`** (`R3-001`).
+  //
+  // `replaceState` means this page never pushes an entry, but the *user* can still
+  // arrive at a different URL for it — a link pasted into the address bar, or Back
+  // leaving the page and Forward returning. Without the listener the panel and the URL
+  // disagree from that moment on: the URL says one party and the panel shows another,
+  // which is the one failure a deep-linkable panel must not have.
   $effect(() => {
-    const id = new URL(window.location.href).searchParams.get('c');
-    if (id !== null) opened = id;
+    const sync = () => {
+      selected = new URL(window.location.href).searchParams.get('c');
+    };
+    sync();
+    window.addEventListener('popstate', sync);
+    return () => window.removeEventListener('popstate', sync);
+  });
+
+  // Fetch whenever the selection changes. `live` guards the race a second selection
+  // opens: without it a slow reply for the first party can land after the second and
+  // paint the wrong account under the right name.
+  $effect(() => {
+    const id = selected;
+    account = null;
+    notFound = false;
+    panelError = null;
+    if (id === null) return;
+    let live = true;
+    getSupplierAccount(id)
+      .then((result) => {
+        if (!live) return;
+        if (result === null) notFound = true;
+        else
+          account = {
+            id: result.id,
+            name: result.name,
+            owed: result.owed_to_them,
+            inFavour: result.in_our_favour,
+            unpaid: result.unpaid_purchases
+          };
+      })
+      .catch(() => {
+        if (live) panelError = lang.t.suppliers_error;
+      });
+    return () => {
+      live = false;
+    };
   });
 </script>
 
@@ -67,13 +116,16 @@
   <section class="panel" aria-labelledby="suppliers-h">
     <h2 id="suppliers-h" class="sr-only">{lang.t.suppliers_title}</h2>
     <PartyList {parties} {error} empty={lang.t.suppliers_empty} onopen={open} />
-    {#if opened !== null}
-      <!-- T3 replaces this with the panel. Until then it says what is true: the id
-           is selected, and nothing reads it yet. A silent no-op is the defect the
-           review found. -->
-      <p class="state pending" role="status">{lang.t.party_panel_pending}</p>
-    {/if}
   </section>
+  {#if selected !== null}
+    <AccountPanel
+      side="supplier"
+      {account}
+      {notFound}
+      error={panelError}
+      onclose={() => setSelected(null)}
+    />
+  {/if}
 </div>
 
 <style>

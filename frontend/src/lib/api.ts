@@ -215,6 +215,22 @@ async function request<T>(url: URL, init?: RequestInit): Promise<T> {
   return (await r.json()) as T;
 }
 
+/**
+ * Reads a resource that may legitimately not exist, as `null` instead of a throw.
+ *
+ * **Only a 404 becomes `null`.** A 500 must still throw: "is not there" and "the
+ * server broke" are different facts, and the panel renders them differently — the
+ * same distinction `PartyList` makes between an empty list and a failed read. A
+ * blanket `catch` here would collapse the two and make an outage look like a
+ * deleted client.
+ */
+async function requestOrNull<T>(url: URL): Promise<T | null> {
+  const r = await fetch(url);
+  if (r.status === 404) return null;
+  if (!r.ok) throw new ApiError(r.status);
+  return (await r.json()) as T;
+}
+
 function json(method: string, body: unknown): RequestInit {
   return {
     method,
@@ -745,4 +761,57 @@ export async function createNote(text: string): Promise<Note> {
 export async function deleteNote(id: string): Promise<void> {
   const r = await fetch(new URL(`/api/notes/${id}`, base()), { method: 'DELETE' });
   if (!r.ok) throw new ApiError(r.status, `deleteNote failed: ${r.status}`);
+}
+
+/**
+ * One unpaid document of a party, as the account panel renders it.
+ *
+ * `outstanding` is derived by the server per row, so the panel shows "40 of 100"
+ * without subtracting anything itself — the same rule every other figure follows.
+ */
+export type UnpaidDocument = {
+  id: string;
+  source_document_id: string;
+  total: string;
+  outstanding: string;
+  occurred_at: string;
+};
+
+/**
+ * A client's account: the three boxes of the side panel in one response.
+ *
+ * `v5-customer-account.md` S3. **The two figures are never netted** — a client can
+ * owe 1000 on one sale and hold 500 from an overpayment at the same time, and one
+ * figure would destroy both facts.
+ */
+export type CustomerAccount = {
+  id: string;
+  name: string;
+  owed: string;
+  in_favour: string;
+  unpaid_sales: UnpaidDocument[];
+};
+
+/** A supplier's account: the same three boxes, with the direction reversed. */
+export type SupplierAccount = {
+  id: string;
+  name: string;
+  owed_to_them: string;
+  in_our_favour: string;
+  unpaid_purchases: UnpaidDocument[];
+};
+
+/**
+ * Reads a client's account, or answers `null` when the id does not exist.
+ *
+ * **`null`, not a throw and not zeros.** The panel's not-found state depends on
+ * telling "owes nothing" apart from "is not there" (`S2`), and an empty account
+ * with zeros would be the second rendered as the first.
+ */
+export async function getCustomerAccount(id: string): Promise<CustomerAccount | null> {
+  return requestOrNull<CustomerAccount>(new URL(`/api/customers/${id}/account`, base()));
+}
+
+export async function getSupplierAccount(id: string): Promise<SupplierAccount | null> {
+  return requestOrNull<SupplierAccount>(new URL(`/api/suppliers/${id}/account`, base()));
 }
