@@ -1,6 +1,7 @@
 # v5-customer-account — a client's account, and a supplier's, read from one panel
 
-Slice 1 of three for "cobros y pagos". **State: T1 implemented and green (143 backend tests); T2-T4 ahead.** The product
+Slice 1 of three for "cobros y pagos". **State: T1 reviewed natively and approved (lineage `review-437f7e5652c641fd`), green at 144
+backend tests; T2-T4 ahead.** The product
 shape was settled by the owner in conversation, and this file is the specification a later
 session reads.
 
@@ -196,3 +197,38 @@ rather than a string: the two branches read different tables, and a typo in a st
 query against the wrong table instead of a compile error. The structs stay separate
 (`CustomerAccount` has `owed`, `SupplierAccount` has `owed_to_them`) because a single shared field
 name would let a screen read "what we owe" and label it "what they owe".
+
+V2 **T1 reviewed natively — approved**, lineage `review-437f7e5652c641fd`, two lenses (`risk`,
+`reliability`), 894 lines, tier medium. Authority burned (`gentle-ai.review-acknowledged/v1`).
+
+**The first lineage of this task (`review-b1f1ea20a0e4419b`) found a CRITICAL and could not close.**
+Worth recording, because both halves matter:
+
+- **The finding was real and the refuter corroborated it.** `account_of` read `owed`,
+  `in_favour` and the unpaid list in three separate pool statements. A collection landing between
+  them could return `owed: "0.00"` above a sale with 40 outstanding — the panel contradicting
+  itself, which is the one thing a one-response endpoint exists to prevent. Fixed in `d0a6d05`:
+  every read runs in one `REPEATABLE READ READ ONLY` transaction, because the default
+  `READ COMMITTED` gives each statement its own snapshot, which is exactly the defect.
+- **The cycle could not be closed.** The provider demanded a targeted validation, and
+  `capture-validation` rejected the submitted evidence on every attempt — with `--input=<path>` and
+  with `--input=-` — as *"admitted targeted-validator evidence does not match its request and
+  digests"*, using the exact tokens its own transition printed. Two attempts, no hypothesis left
+  that was worth a third. **The correction was verified by reading the immutable candidate tree**
+  (`inspect-candidate --operation patch`), not by the provider.
+
+**What closed it instead was a fresh review of the corrected state**, which is a different
+candidate (`4eab8565`) and therefore judgeable on its own: approved, four findings, all
+`informational`. Two were fixed in `0c1ee1f`; two were left with reasons.
+
+V2b **The finding worth keeping is `R3-002`**, and it is the third time this repository pays for the
+same class: `assert_eq!(sales.len(), 2)` over a shared table. A length assertion also passes when a
+*different* sale is present — this file plants a `legacy-fixture` customer — so it says nothing about
+the two sales the test built. The id lookups beneath it were always the real claim; the count was
+decoration that could go red for reasons unrelated to the code.
+
+V2c **A guard can only be proven by a fixture where it changes the answer.** The neutering of the
+"never net the two figures" decision passed on the first try, because that fixture's `in_favour` is
+`0.00` and netting changed nothing. Moving the same neutering to the **overpayment** fixture made it
+fail with `owed: "-50.00"`. "The test passed after neutering" means the fixture is wrong — recorded
+as V1b, and it is the same lesson `v4-settlement.md` V6c and `v4-payables.md` V4d carry.
