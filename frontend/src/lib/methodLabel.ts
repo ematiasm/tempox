@@ -27,6 +27,20 @@
  * from a `.svelte` component (where `lang.t` is reactive state) and from a plain
  * test with equal ease — the caller decides where the words come from.
  */
+/**
+ * Whether a document's method cell is the on-account claim rather than a rail's name.
+ *
+ * **Exported separately because the class and the label must agree**, and computing
+ * them from two different expressions is how they stop agreeing: the components used
+ * `name === null` for the class and `methodLabel(...)` for the text, which disagree
+ * for `undefined` (the label says "on account", `=== null` says it is not) and for a
+ * blank name (the label says "—", `=== null` says "on account"). Recorded by review
+ * `R3-003` of lineage `review-fe994c43a8bc4a9e`.
+ */
+export function isOnAccount(name: string | null | undefined): name is null | undefined {
+  return name === null || name === undefined;
+}
+
 export function methodLabel(
   name: string | null | undefined,
   strings: { onAccount: string; unknown: string }
@@ -34,7 +48,7 @@ export function methodLabel(
   // `null` and `undefined` are the claim. Checked before the blank case on purpose:
   // an empty string is a *present* value that happens to be empty, and treating it
   // as "no method" would erase the distinction the schema makes.
-  if (name === null || name === undefined) {
+  if (isOnAccount(name)) {
     return strings.onAccount;
   }
   if (name.trim() === '') {

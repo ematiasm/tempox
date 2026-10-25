@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { methodLabel } from '#lib/methodLabel.js';
+import { isOnAccount, methodLabel } from '#lib/methodLabel.js';
 
 const es = { onAccount: 'A cuenta', unknown: '—' };
 const en = { onAccount: 'On account', unknown: '—' };
@@ -49,5 +49,29 @@ describe('methodLabel names the missing rail instead of leaving a hole', () => {
     // unknown label, which reads as a problem rather than as a normal state.
     expect(methodLabel('', es)).toBe('—');
     expect(methodLabel('   ', es)).toBe('—');
+  });
+});
+
+describe('the on-account class and the label cannot disagree', () => {
+  // **`R3-003` of review `review-fe994c43a8bc4a9e`.** The components once computed the
+  // class from `name === null` and the text from `methodLabel(...)`, so for `undefined`
+  // the label said "A cuenta" while the class said it was a rail — a cell that reads as
+  // a claim but is styled as a name. One predicate, used by both, is the fix; this is
+  // what keeps it one.
+  const cases: Array<string | null | undefined> = [null, undefined, '', '   ', 'cash'];
+
+  it('agrees for every value the wire can carry', () => {
+    for (const value of cases) {
+      const labelled = methodLabel(value, es) === es.onAccount;
+      expect(isOnAccount(value)).toBe(labelled);
+    }
+  });
+
+  it('treats a blank name as a defect, not as on account', () => {
+    // The one case where the two *should* differ from a naive `=== null`: a blank name
+    // is a broken method row, so it is styled as a name and labelled with the unknown
+    // mark. Asserted explicitly so a future simplification cannot merge the two states.
+    expect(isOnAccount('')).toBe(false);
+    expect(methodLabel('', es)).toBe(es.unknown);
   });
 });

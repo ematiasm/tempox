@@ -32,7 +32,7 @@
     returnedByLine
   } from '#lib/supplierReturns.js';
   import { lang } from '#lib/i18n/index.svelte.js';
-  import { methodLabel } from '#lib/methodLabel.js';
+  import { isOnAccount, methodLabel } from '#lib/methodLabel.js';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import Stamp from './Stamp.svelte';
   import { overflowsX } from '#lib/overflowsX.js';
@@ -407,7 +407,7 @@
                 <!-- Where the money left from, the mirror of the sales ledger's
                    column: a purchase paid from the bank is not money that left the
                    till. -->
-                <td class="method" class:on-account={row.purchase.payment_method_name === null}
+                <td class="method" class:on-account={isOnAccount(row.purchase.payment_method_name)}
                   >{methodLabel(row.purchase.payment_method_name, {
                     onAccount: lang.t.method_on_account,
                     unknown: lang.t.method_unknown

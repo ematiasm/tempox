@@ -29,7 +29,7 @@
     refundedByLine as saleRefundedByLine
   } from '#lib/salesRefund.js';
   import { lang } from '#lib/i18n/index.svelte.js';
-  import { methodLabel } from '#lib/methodLabel.js';
+  import { isOnAccount, methodLabel } from '#lib/methodLabel.js';
   import { createStaleNotice } from '#lib/screenTrust.js';
   import { runningBalances } from '#lib/runningBalance.js';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
@@ -727,7 +727,7 @@
                    the same size indistinguishable while one reached the till and the
                    other never did. The name is the server's join, not a snapshot, so
                    a rename corrects old rows instead of freezing a typo. -->
-                <td class="method" class:on-account={row.payment_method_name === null}
+                <td class="method" class:on-account={isOnAccount(row.payment_method_name)}
                   >{methodLabel(row.payment_method_name, {
                     onAccount: lang.t.method_on_account,
                     unknown: lang.t.method_unknown

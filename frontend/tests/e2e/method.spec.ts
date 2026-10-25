@@ -136,7 +136,6 @@ test('only the till exists, because debt is a document and not an account', asyn
 test('a sale on account says so in the ledger, instead of an empty cell', async ({ page }) => {
   const customerName = `e2e-onaccount-${Date.now().toString(36)}`;
   const productName = `e2e-onaccount-prod-${Date.now().toString(36)}`;
-  const price = '10,00';
 
   const customer = await page.request.post('/api/customers', {
     data: { name: customerName }
@@ -174,6 +173,22 @@ test('a sale on account says so in the ledger, instead of an empty cell', async 
   // at a glance rather than only by reading the word.
   await expect(cell).toHaveClass(/on-account/);
 
-  // The counter can still sell for cash, so this is not a blanket "no method" screen.
-  expect(price).toBe('10,00');
+  // **A real counter sale still names its rail**, so the screen did not simply lose
+  // the column. This used to be `expect(price).toBe('10,00')` — a tautology over a
+  // local constant that asserted nothing about the app, recorded by the review as
+  // `R3-002`. It is now a sale through the API on the seeded `cash` method, found in
+  // the ledger by identity, and it must render the method's name rather than the
+  // on-account label.
+  const { id: cashSaleId } = (await (
+    await page.request.post('/api/sales', {
+      data: { items: [{ product_id: productId, quantity: 1 }] }
+    })
+  ).json()) as { id: string };
+
+  await page.reload();
+  const cashRow = page.locator(`table.docs tbody tr.doc[aria-controls="lines-${cashSaleId}"]`);
+  await expect(cashRow).toHaveCount(1);
+  const cashCell = cashRow.locator('td.method');
+  await expect(cashCell).toHaveText('cash');
+  await expect(cashCell).not.toHaveClass(/on-account/);
 });
