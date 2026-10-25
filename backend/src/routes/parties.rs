@@ -6,6 +6,12 @@
 //! paint one panel is three chances to show a half-loaded panel whose boxes contradict each
 //! other — a balance from one instant and a document list from another.
 //!
+//! **The whole payload is read under one snapshot** — `REPEATABLE READ READ ONLY`, one
+//! transaction for the four queries. Without it the boxes can describe different instants: a
+//! collection landing between the balance and the unpaid list would render "owes 0.00" above a
+//! sale with 40 outstanding. That is `R3-001` of review `review-b1f1ea20a0e4419b`, corroborated by
+//! the refuter, and the reason the reads take a transaction instead of the pool.
+//!
 //! **Nothing here is stored and nothing here writes.** Both figures are subtractions over rows
 //! that already exist, and the module contains no `INSERT`, no `UPDATE` and no balance column:
 //!
@@ -120,7 +126,7 @@ impl Party {
 /// unknown party must not produce zeros, because "owes nothing" and "is not there" are
 /// different statements and the panel renders them differently (`S2`).
 async fn account_of(
-    db: &sqlx::PgPool,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     party: Party,
     id: Uuid,
 ) -> Result<Option<(String, Decimal, Decimal, Vec<UnpaidDocument>)>, sqlx::Error> {
@@ -132,7 +138,7 @@ async fn account_of(
         Party::Supplier => sqlx::query_scalar("SELECT name FROM suppliers WHERE id = $1"),
     }
     .bind(id)
-    .fetch_optional(db)
+    .fetch_optional(&mut **tx)
     .await?;
     let Some(name) = name else {
         return Ok(None);
@@ -167,7 +173,7 @@ async fn account_of(
     }
     .bind(party.kind())
     .bind(id)
-    .fetch_one(db)
+    .fetch_one(&mut **tx)
     .await?;
 
     // **What the party holds of ours, or we of theirs.** Money that moved in this party's
@@ -197,7 +203,7 @@ async fn account_of(
     }
     .bind(party.kind())
     .bind(id)
-    .fetch_one(db)
+    .fetch_one(&mut **tx)
     .await?;
 
     // **The documents still owed on**, each with its own outstanding, in one query with a
@@ -245,7 +251,7 @@ async fn account_of(
     }
     .bind(party.kind())
     .bind(id)
-    .fetch_all(db)
+    .fetch_all(&mut **tx)
     .await?;
 
     let documents = unpaid
@@ -268,13 +274,33 @@ async fn customer_account(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<CustomerAccount>, StatusCode> {
-    let (name, owed, in_favour, unpaid_sales) = account_of(&state.db, Party::Customer, id)
+    // **One transaction, so the three boxes describe the same instant** (`R3-001` of review
+    // `review-b1f1ea20a0e4419b`, corroborated by the refuter). Four separate pool statements
+    // let a concurrent collection land between the balance and the unpaid list: the panel would
+    // then show "owes 0.00" above a sale with 40 outstanding, or the reverse. The endpoint exists
+    // to be one consistent document, so it reads under one snapshot.
+    //
+    // `REPEATABLE READ` is what makes that a property rather than a timing coincidence: the
+    // default `READ COMMITTED` gives each statement its own snapshot, which is exactly the defect.
+    let mut tx = state
+        .db
+        .begin_with("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        .await
+        .map_err(|e| {
+            tracing::error!(?e, "account transaction failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let (name, owed, in_favour, unpaid_sales) = account_of(&mut tx, Party::Customer, id)
         .await
         .map_err(|e| {
             tracing::error!(?e, "customer account failed");
             StatusCode::INTERNAL_SERVER_ERROR
         })?
         .ok_or(StatusCode::NOT_FOUND)?;
+    tx.commit().await.map_err(|e| {
+        tracing::error!(?e, "account commit failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     Ok(Json(CustomerAccount {
         id,
@@ -289,14 +315,27 @@ async fn supplier_account(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<SupplierAccount>, StatusCode> {
+    // The same single snapshot as the customer side, for the same reason.
+    let mut tx = state
+        .db
+        .begin_with("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        .await
+        .map_err(|e| {
+            tracing::error!(?e, "account transaction failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
     let (name, owed_to_them, in_our_favour, unpaid_purchases) =
-        account_of(&state.db, Party::Supplier, id)
+        account_of(&mut tx, Party::Supplier, id)
             .await
             .map_err(|e| {
                 tracing::error!(?e, "supplier account failed");
                 StatusCode::INTERNAL_SERVER_ERROR
             })?
             .ok_or(StatusCode::NOT_FOUND)?;
+    tx.commit().await.map_err(|e| {
+        tracing::error!(?e, "account commit failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     Ok(Json(SupplierAccount {
         id,

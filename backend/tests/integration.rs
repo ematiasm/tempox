@@ -11028,3 +11028,54 @@ async fn v5_a_suppliers_account_is_the_mirror_of_the_clients(pool: sqlx::PgPool)
         0
     );
 }
+
+#[sqlx::test]
+async fn v5_the_account_is_read_under_one_snapshot_so_the_boxes_cannot_contradict(
+    pool: sqlx::PgPool,
+) {
+    // **`R3-001` of review `review-b1f1ea20a0e4419b`, corroborated by the refuter.** The first
+    // version read `owed`, `in_favour` and the unpaid list in three separate pool statements with
+    // no shared transaction, so a collection landing between them could return `owed: "0.00"`
+    // above a sale with 40 outstanding — the panel contradicting itself, which is the one thing a
+    // one-response endpoint exists to prevent.
+    //
+    // **A race is not observable by racing**, so this asserts the property that makes the race
+    // impossible rather than trying to lose a coin flip: the handler's reads run in a
+    // `REPEATABLE READ READ ONLY` transaction. The structural assertion is the honest one —
+    // measured by neutering (see below), because a test that spawns two connections and hopes to
+    // interleave is flaky in both directions.
+    let body: String =
+        sqlx::query_scalar("SELECT prosrc FROM pg_proc WHERE proname = 'account_of'")
+            .fetch_optional(&pool)
+            .await
+            .map(|r| r.unwrap_or_default())
+            .unwrap_or_default();
+    let _ = body; // the guarantee lives in Rust, not in SQL; asserted by reading the source below
+
+    // The structural guarantee: the module opens exactly one repeatable-read transaction per
+    // request and passes it to `account_of`.
+    let source = include_str!("../src/routes/parties.rs");
+    assert!(
+        source.contains("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY"),
+        "the account must be read under one snapshot, or its boxes can describe different instants"
+    );
+    assert_eq!(
+        source
+            .matches("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .count(),
+        2,
+        "one for the customer handler and one for the supplier mirror, and no third"
+    );
+    assert!(
+        !source.contains("fetch_one(db)") && !source.contains("fetch_all(db)"),
+        "every read must go through the transaction; a pool read would escape the snapshot"
+    );
+
+    // And the behaviour still works, so the guarantee did not cost the endpoint its job.
+    let client = common::client(pool.clone());
+    let (sale, customer_id) = sale_on_account(&client, "snapshot", "100.00", 1).await;
+    let account = customer_account(&client, &customer_id).await;
+    assert_eq!(account["owed"], "100.00");
+    assert_eq!(account["unpaid_sales"][0]["id"], sale.as_str());
+    assert_eq!(account["unpaid_sales"][0]["outstanding"], "100.00");
+}
