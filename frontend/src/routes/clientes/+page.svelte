@@ -31,16 +31,32 @@
   });
 
   /**
-   * Opening a party is T3. It is wired here as a no-op that names itself rather
-   * than left unwired, so the button is not a dead control that silently does
-   * nothing — the same rule the sales screen applies to a disabled action.
+   * **Opening a party is T3, and this is where it will attach.** Until the panel
+   * exists, the honest state is a URL that changes and a page that says so — not a
+   * button that looks live and does nothing.
+   *
+   * The review of this candidate (lineage `review-1817973d81dd8fda`, `R2-002` and
+   * `R3-004`) caught the earlier version claiming the click was "wired" when all it
+   * did was rewrite the query string: a comment that overstates is worse than none,
+   * because it is the reason nobody looks. So the page now **reads** the parameter it
+   * writes, and shows the pending state rather than pretending the click landed.
    */
+  let opened = $state<string | null>(null);
+
   function open(id: string) {
     const url = new URL(window.location.href);
     url.searchParams.set('c', id);
     // `replaceState`: Back must leave the page, not close the panel (S2).
     history.replaceState(history.state, '', url);
+    opened = id;
   }
+
+  // The URL is the source of truth, so a deep link arrives with the panel "open".
+  // T3 replaces the paragraph below with the panel itself.
+  $effect(() => {
+    const id = new URL(window.location.href).searchParams.get('c');
+    if (id !== null) opened = id;
+  });
 </script>
 
 <div class="page">
@@ -51,6 +67,12 @@
   <section class="panel" aria-labelledby="customers-h">
     <h2 id="customers-h" class="sr-only">{lang.t.customers_title}</h2>
     <PartyList {parties} {error} empty={lang.t.customers_empty} onopen={open} />
+    {#if opened !== null}
+      <!-- T3 replaces this with the panel. Until then it says what is true: the id
+           is selected, and nothing reads it yet. A silent no-op is the defect the
+           review found. -->
+      <p class="state pending" role="status">{lang.t.party_panel_pending}</p>
+    {/if}
   </section>
 </div>
 

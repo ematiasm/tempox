@@ -15,6 +15,7 @@ const en: Dict = {
   customers_empty: 'No customers yet',
   customers_error: 'Customers could not be read',
   customers_loading: 'Reading…',
+  party_panel_pending: 'The account panel arrives in the next slice.',
   suppliers_title: 'Suppliers',
   suppliers_tagline: 'Who we buy from, and what we owe them',
   suppliers_empty: 'No suppliers yet',

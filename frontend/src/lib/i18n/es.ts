@@ -24,6 +24,7 @@ const es: Dict = {
   customers_empty: 'Todavía no hay clientes',
   customers_error: 'No se pudieron leer los clientes',
   customers_loading: 'Leyendo…',
+  party_panel_pending: 'El panel de la cuenta llega en la próxima etapa.',
   suppliers_title: 'Proveedores',
   suppliers_tagline: 'A quién le compramos, y qué le debemos',
   suppliers_empty: 'Todavía no hay proveedores',

@@ -33,12 +33,29 @@ test('the rail offers the two party pages and each reads its own list', async ({
   const row = page.locator('li.row', { hasText: name });
   await expect(row).toHaveCount(1);
 
-  // **The whole row is the target**, and clicking it puts the id in the URL without
-  // adding a history entry — so Back leaves the page rather than closing a panel.
+  // **The whole row is the target**, and clicking it selects that party in the URL.
+  const before = page.url();
+
+  // **`replaceState`, measured by the history length, not by pressing Back.**
+  // `page.goBack()` was the first version of this assertion and it proved nothing:
+  // after a `replaceState` there is no new entry to go back to, so Back leaves the
+  // page for reasons unrelated to the property under test (review
+  // `review-1817973d81dd8fda`, `R3-001`). The length is the direct measurement.
+  // The length is read immediately before and after the click: `replaceState` leaves
+  // it unchanged, `pushState` would add one. Comparing it to itself, as the first
+  // version of this assertion did, measures nothing.
+  const beforeLength = await page.evaluate(() => window.history.length);
   await row.getByRole('button').click();
+  const afterLength = await page.evaluate(() => window.history.length);
+  expect(afterLength).toBe(beforeLength);
   await expect(page).toHaveURL(/\?c=[0-9a-f-]{36}$/);
-  await page.goBack();
+  await page.goto(before);
   await expect(page).not.toHaveURL(/\?c=/);
+
+  // And the page reads the parameter it writes instead of only rewriting the URL:
+  // the earlier version claimed the click was wired while nothing consumed it.
+  await page.goto(`${before}?c=00000000-0000-0000-0000-000000000001`);
+  await expect(page.getByRole('status')).toBeVisible();
 });
 
 test('a supplier is listed on its own page, and the two lists are not the same', async ({

@@ -24,6 +24,7 @@ export interface Dict {
   customers_empty: string;
   customers_error: string;
   customers_loading: string;
+  party_panel_pending: string;
   suppliers_title: string;
   suppliers_tagline: string;
   suppliers_empty: string;
