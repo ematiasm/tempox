@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { accountBoxes, type AccountLike } from '#lib/accountPanels.js';
+import { allocationPreview } from '#lib/collectionForm.js';
 
 /**
  * The three boxes of the side panel, and the two rules `DESIGN.md` puts at risk.
@@ -60,5 +61,33 @@ describe('the account panel boxes', () => {
     expect(accountBoxes(client()).showsBothFigures).toBe(true);
     expect(accountBoxes(client({ inFavour: '0.00' })).showsBothFigures).toBe(false);
     expect(accountBoxes(client({ owed: '0.00' })).showsBothFigures).toBe(false);
+  });
+});
+
+describe('the collection form never states what the server decides', () => {
+  it('exposes no field that names which documents the remainder closes', () => {
+    // **`S9` as a property of the module, not a promise in a comment.** The temptation in a
+    // form that holds every figure is to predict the allocation so the cashier sees the plan
+    // before submitting. That prediction is a second implementation of `S3`, and this
+    // repository paid for that class three times in one slice (`V7b` of
+    // `v5-customer-account.md`). The preview's shape is the assertion: it carries the
+    // remainder as a figure and refuses to carry a destination.
+    const preview = allocationPreview({
+      methodId: 'cash',
+      total: '250.00',
+      lines: [{ debtId: 'o-1', outstanding: '100.00', amount: '40.00' }]
+    });
+    // `lineUnreadable` is the opposite kind of field and belongs here: it reports what the
+    // form could **not** read, so the gate can refuse by name (`R3-001` of review
+    // `review-b6bebae2ab91c89f`). It names no destination — it names the absence of a figure.
+    expect(Object.keys(preview).sort()).toEqual([
+      'allocatedLines',
+      'lineOverDebt',
+      'lineUnreadable',
+      'manualTotal',
+      'overAllocated',
+      'remainder',
+      'total'
+    ]);
   });
 });

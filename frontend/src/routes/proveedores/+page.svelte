@@ -12,6 +12,7 @@
   import AccountPanel from '#lib/components/AccountPanel.svelte';
   import { getSupplierAccount } from '#lib/api.js';
   import type { AccountLike } from '#lib/accountPanels.js';
+  import type { Collection, SupplierAccount } from '#lib/api.js';
 
   let parties = $state<Supplier[] | null>(null);
   let error = $state<string | null>(null);
@@ -45,6 +46,8 @@
   let selected = $state<string | null>(null);
   let account = $state<AccountLike | null>(null);
   let notFound = $state(false);
+  /** The last collection's applied rows, or `null` before one is recorded. */
+  let collected = $state<Collection | null>(null);
   let panelError = $state<string | null>(null);
 
   function setSelected(id: string | null) {
@@ -58,6 +61,49 @@
 
   function open(id: string) {
     setSelected(id);
+  }
+
+  /**
+   * Replaces the panel's account with the one the collection's response carries.
+   *
+   * **No second request** (`S6` of `v5-payments.md`): the write answers with the account read
+   * in its own transaction, so what the panel shows and what it just wrote describe one
+   * instant. Asking again would reopen the window slice 1 closed — a balance from one moment
+   * above a document list from another.
+   *
+   * The wire shape is mapped exactly as the `$effect` above maps it. That duplication is the
+   * honest cost of one response shape serving two callers; a shared mapper would be a third
+   * thing to keep in step, and it is the panel's own fields these two lines write.
+   */
+
+  /**
+   * The wire's account, as the panel reads it.
+   *
+   * **One mapper, two callers**: the initial read and the collection's response. The two
+   * differ only in the field names the API uses (`owed`/`owed_to_them`,
+   * `in_favour`/`in_our_favour`, `unpaid_sales`/`unpaid_purchases`), which is the wire being
+   * honest about direction, and this is where that difference stops.
+   */
+  function mapAccount(result: SupplierAccount): AccountLike {
+    return {
+      id: result.id,
+      name: result.name,
+      owed: result.owed_to_them,
+      inFavour: result.in_our_favour,
+      unpaid: result.unpaid_purchases.map((d) => ({
+        id: d.id,
+        sourceDocumentId: d.source_document_id,
+        total: d.total,
+        outstanding: d.outstanding
+      }))
+    };
+  }
+
+  function applyCollection(collection: Collection) {
+    account = mapAccount(collection.account as SupplierAccount);
+    notFound = false;
+    panelError = null;
+    collected = collection;
   }
 
   // Read the id from the URL on arrival, **and on `popstate`** (`R3-001`).
@@ -90,19 +136,7 @@
       .then((result) => {
         if (!live) return;
         if (result === null) notFound = true;
-        else
-          account = {
-            id: result.id,
-            name: result.name,
-            owed: result.owed_to_them,
-            inFavour: result.in_our_favour,
-            unpaid: result.unpaid_purchases.map((d) => ({
-              id: d.id,
-              sourceDocumentId: d.source_document_id,
-              total: d.total,
-              outstanding: d.outstanding
-            }))
-          };
+        else account = mapAccount(result);
       })
       .catch(() => {
         if (live) panelError = lang.t.suppliers_error;
@@ -129,6 +163,8 @@
       {notFound}
       error={panelError}
       onclose={() => setSelected(null)}
+      oncollected={applyCollection}
+      {collected}
     />
   {/if}
 </div>

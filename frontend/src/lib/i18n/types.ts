@@ -40,6 +40,34 @@ export interface Dict {
   party_panel_not_found_short: string;
   party_panel_unpaid_sales: string;
   party_panel_unpaid_purchases: string;
+  // ── The collection form in the balance box (`v5-payments.md` S9) ──
+  /** The button that opens the form, per side: a client's money arrives, a supplier's leaves. */
+  collect_action_customer: string;
+  collect_action_supplier: string;
+  collect_amount: string;
+  collect_method: string;
+  collect_manual_heading: string;
+  /** What the unallocated remainder will do, in words, without naming documents (S9). */
+  collect_remainder: (amount: string) => string;
+  collect_remainder_none: string;
+  collect_submit_customer: string;
+  collect_submit_supplier: string;
+  collect_cancel: string;
+  /** One sentence per blocker, so the disabled submit names what it is waiting for. */
+  collect_need_method: string;
+  collect_need_total: string;
+  collect_amount_hint: string;
+  collect_over_allocated: string;
+  collect_line_over_debt: string;
+  collect_duplicate_line: string;
+  collect_line_unreadable: string;
+  collect_line_not_positive: string;
+  collect_failed: string;
+  /** The result of a collection, per applied row. `source` decides the sentence. */
+  collect_applied_manual: (amount: string) => string;
+  collect_applied_oldest: (amount: string) => string;
+  collect_unapplied: (amount: string) => string;
+  collect_recorded: string;
   suppliers_title: string;
   suppliers_tagline: string;
   suppliers_empty: string;
