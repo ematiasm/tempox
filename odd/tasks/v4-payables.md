@@ -179,10 +179,11 @@ S11 **Scope ends at the API.** No payables screen, no supplier statement, and `c
     `is_active = false`, following `v4-receivables.md` S11 and the owner's recorded decision
     (`v4-receivables.md` L4: *"Solo backend, como S3 y S4"*).
 
-    **Recorded, not fixed here:** a document with no method renders an empty
-    `payment_method_name` cell in both ledgers (`Ledger.svelte`, `PurchaseLedger.svelte`), and
-    the TypeScript type still says `string`. That is one UI decision for both sides, not a
-    backend correction, and fixing one ledger alone would be arbitrary.
+    **Fixed since, in PR #89** — it was recorded here first, which is the point of recording
+    things. A document with no method rendered an empty `payment_method_name` cell in both
+    ledgers, and the TypeScript type said `string` while the server answered `null`. Both are
+    corrected by one shared `methodLabel`, because the two ledgers render the same column from
+    the same shape and a rule written twice drifts.
 
 S12 **One migration for the three tables, because a re-cut is what went wrong.**
     `0022` re-cut `obligation_adjustments_within_amount` to add the settlement half and
@@ -247,10 +248,11 @@ supplier inexpressible. Recorded because a reader who sees two terms beside a th
 original will otherwise assume one was forgotten.
 
 L6 **The UI is not touched, and the consequence is written down instead of shipped silently**
-(S11). Both ledgers render `payment_method_name` for a document that has none, and
-`frontend/src/lib/api.ts` still types it `string`. That is one decision for two screens (sale
-on account from S6a, purchase on account from here), it is not a backend correction, and the
-owner's scope for this slice is API-only.
+(S11). Both ledgers rendered `payment_method_name` for a document that has none, and
+`frontend/src/lib/api.ts` typed it `string`. That was one decision for two screens (sale on
+account from S6a, purchase on account from here) and it is now made, in **PR #89**: an empty
+cell became "A cuenta" / "On account", and the type became `string | null`, which TypeScript
+accepted with no call-site change — the proof that nothing was reading it as a string.
 
 L7 **Measured baseline before any code**: `make test-backend` **127 passed** on `main` at
 `2e6f7be`, the development database at migration `0022`, worktree clean. Every number this
