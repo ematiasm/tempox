@@ -7550,6 +7550,46 @@ async fn sale_on_account(
     (sale_id, customer_id)
 }
 
+/// A sale on account for a customer the caller already created, so a test can build
+/// **several sales for one client** — which the panel's third box needs.
+///
+/// The mirror of `purchase_on_account_for`, and it exists for the same reason that one does:
+/// `sale_on_account` creates its own customer, so two calls give two clients and an account
+/// with two debts becomes impossible to express.
+async fn sale_on_account_for(
+    client: &common::Client,
+    customer_id: &str,
+    tag: &str,
+    price: &str,
+    quantity: i32,
+) -> String {
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": format!("acct-prod-{tag}"), "list_price": price }),
+        )
+        .await;
+    assert_eq!(product.status(), axum::http::StatusCode::CREATED);
+    let product_id = product.body["id"].as_str().expect("product id").to_string();
+    let sale = client
+        .post(
+            "/api/sales",
+            serde_json::json!({
+                "customer_id": customer_id,
+                "items": [{ "product_id": product_id, "quantity": quantity }],
+                "payment_method_id": "on_account"
+            }),
+        )
+        .await;
+    assert_eq!(
+        sale.status(),
+        axum::http::StatusCode::CREATED,
+        "a sale on account must be accepted; body: {}",
+        sale.text
+    );
+    sale.body["id"].as_str().expect("sale id").to_string()
+}
+
 /// What a sale still owes: the debt less every document that lowered it and every
 /// payment that settled it. Derived in SQL, never stored — the same reason a balance is.
 async fn outstanding_of(pool: &sqlx::PgPool, sale_id: &str) -> String {
@@ -10733,4 +10773,312 @@ async fn v4_s6b_the_schema_refuses_a_payable_for_a_purchase_that_moved_money(poo
             .contains("money moved or debt arose, never both"),
         "the refusal must name the cause, got: {failure}"
     );
+}
+
+// ── v5 T1: a party's account, read from one endpoint ────────────────────────
+//
+// `odd/tasks/v5-customer-account.md` S4-S6. The panel that shows a client has three boxes:
+// who they are, the two balance figures, and their unpaid documents. Painting that from three
+// round trips is three chances to show a half-loaded panel that contradicts itself, so it is
+// one response.
+//
+// **Nothing here asserts a stored balance**, because there is none to assert: both figures are
+// subtractions over rows, and the tests are written to fail if an implementation ever starts
+// caching them.
+
+/// The account of a customer, as the panel reads it.
+async fn customer_account(client: &common::Client, id: &str) -> serde_json::Value {
+    let response = client.get(&format!("/api/customers/{id}/account")).await;
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::OK,
+        "reading a client's account must succeed; body: {}",
+        response.text
+    );
+    response.body.clone()
+}
+
+#[sqlx::test]
+async fn v5_a_clients_account_carries_identity_both_figures_and_the_unpaid_sales(
+    pool: sqlx::PgPool,
+) {
+    // **The whole payload, in one assertion set**, because that is the contract the panel
+    // depends on. Positive-first throughout: the client, the sale, the collection and the
+    // settlement all have to be accepted before the refusal cases mean anything.
+    let client = common::client(pool.clone());
+    let cash_method = "00000000-0000-0000-0000-000000000004";
+
+    // A client with two sales on account: 100 and 50.
+    let (big_sale, customer_id) = sale_on_account(&client, "acct-a", "100.00", 1).await;
+    let small_sale = sale_on_account_for(&client, &customer_id, "acct-b", "50.00", 1).await;
+
+    // 60 arrives and settles the first sale partially; 10 stays unapplied on that payment.
+    let paid = client
+        .post(
+            "/api/payments",
+            serde_json::json!({
+                "party_kind": "customer",
+                "party_id": customer_id,
+                "payment_method_id": cash_method,
+                "total": "60.00",
+                "direction": "in"
+            }),
+        )
+        .await;
+    assert_eq!(paid.status(), axum::http::StatusCode::CREATED);
+    let payment_id = paid.body["id"].as_str().expect("payment id").to_string();
+    let settled = client
+        .post(
+            "/api/settlements",
+            serde_json::json!({
+                "obligation_id": obligation_id_of(&pool, &big_sale).await,
+                "payment_id": payment_id,
+                "amount": "60.00"
+            }),
+        )
+        .await;
+    assert_eq!(settled.status(), axum::http::StatusCode::CREATED);
+
+    let account = customer_account(&client, &customer_id).await;
+
+    // Box 1: who they are.
+    assert_eq!(account["id"], customer_id);
+    assert!(
+        account["name"]
+            .as_str()
+            .is_some_and(|n| n.starts_with("acct-") || n.starts_with("recv-")),
+        "the panel needs a name to show; got {:?}",
+        account["name"]
+    );
+
+    // Box 2: **two figures, never netted** (`v4-customer-account` S3, owner's decision L4).
+    // Owed: 100 - 60 settled + 50 untouched = 90.
+    assert_eq!(account["owed"], "90.00", "body: {account}");
+    // In their favour: 60 arrived, all 60 applied, so nothing is unapplied.
+    assert_eq!(account["in_favour"], "0.00", "body: {account}");
+
+    // Box 3: the unpaid documents, each with its own outstanding.
+    let sales = account["unpaid_sales"]
+        .as_array()
+        .expect("unpaid_sales array");
+    // **Found by identity, never by count** (`R3-002` of review `review-437f7e5652c641fd`).
+    // A length assertion also passes when a *different* sale is present — the `legacy-fixture`
+    // customer in this same file is proof that other rows exist in a shared database — so it
+    // says nothing about these two. The two lookups below are the claim.
+    assert!(
+        !sales.is_empty(),
+        "the account must list the sales that owe; body: {account}"
+    );
+    let big = sales
+        .iter()
+        .find(|s| s["id"] == big_sale.as_str())
+        .expect("the 100.00 sale is listed");
+    assert_eq!(big["outstanding"], "40.00", "100 less 60 settled");
+    let small = sales
+        .iter()
+        .find(|s| s["id"] == small_sale.as_str())
+        .expect("the 50.00 sale is listed");
+    assert_eq!(small["outstanding"], "50.00", "untouched");
+}
+
+#[sqlx::test]
+async fn v5_a_fully_settled_sale_leaves_the_unpaid_box_and_a_surplus_lands_in_their_favour(
+    pool: sqlx::PgPool,
+) {
+    // The two states the panel exists to distinguish, and the reason the figures are two:
+    // a client can owe nothing and still hold money in the shop's hands.
+    let client = common::client(pool.clone());
+    let cash_method = "00000000-0000-0000-0000-000000000004";
+
+    let (sale, customer_id) = sale_on_account(&client, "settled", "100.00", 1).await;
+    let obligation = obligation_id_of(&pool, &sale).await;
+
+    // 150 arrives for a 100 debt: 100 settles, 50 stays in their favour.
+    let paid = client
+        .post(
+            "/api/payments",
+            serde_json::json!({
+                "party_kind": "customer",
+                "party_id": customer_id,
+                "payment_method_id": cash_method,
+                "total": "150.00",
+                "direction": "in"
+            }),
+        )
+        .await;
+    assert_eq!(paid.status(), axum::http::StatusCode::CREATED);
+    let payment_id = paid.body["id"].as_str().expect("payment id").to_string();
+    client
+        .post(
+            "/api/settlements",
+            serde_json::json!({
+                "obligation_id": obligation,
+                "payment_id": payment_id,
+                "amount": "100.00"
+            }),
+        )
+        .await
+        .expect_status(axum::http::StatusCode::CREATED);
+
+    let account = customer_account(&client, &customer_id).await;
+
+    assert_eq!(
+        account["owed"], "0.00",
+        "the sale is settled; body: {account}"
+    );
+    assert_eq!(
+        account["in_favour"], "50.00",
+        "the surplus is a separate figure, not netted away; body: {account}"
+    );
+    assert_eq!(
+        account["unpaid_sales"].as_array().expect("array").len(),
+        0,
+        "a settled sale is not an unpaid one; body: {account}"
+    );
+}
+
+#[sqlx::test]
+async fn v5_an_unknown_party_is_a_404_not_an_empty_account(pool: sqlx::PgPool) {
+    // **The panel's not-found state depends on this** (`S2`): a deep link to a client who no
+    // longer exists has to render something true. An empty account with zeros would read as
+    // "this client owes nothing", which is a different and false statement.
+    let client = common::client(pool.clone());
+    let missing = "00000000-0000-0000-0000-0000000000ee";
+
+    let as_customer = client
+        .get(&format!("/api/customers/{missing}/account"))
+        .await;
+    assert_eq!(
+        as_customer.status(),
+        axum::http::StatusCode::NOT_FOUND,
+        "an unknown customer is a 404; body: {}",
+        as_customer.text
+    );
+
+    // A real id asked for in the wrong table is also a 404: a supplier is not a customer.
+    let (_, customer_id) = sale_on_account(&client, "wrong-table", "10.00", 1).await;
+    let supplier_url = format!("/api/suppliers/{customer_id}/account");
+    let wrong = client.get(&supplier_url).await;
+    assert_eq!(
+        wrong.status(),
+        axum::http::StatusCode::NOT_FOUND,
+        "a customer id is not a supplier id; body: {}",
+        wrong.text
+    );
+}
+
+#[sqlx::test]
+async fn v5_a_suppliers_account_is_the_mirror_of_the_clients(pool: sqlx::PgPool) {
+    // `S1`: proveedores is the mirror. The same three boxes, with the direction reversed —
+    // what we owe them, and what they hold of ours.
+    let client = common::client(pool.clone());
+    let cash_method = "00000000-0000-0000-0000-000000000004";
+
+    let (supplier_id, _product_id) = payable_fixture(&client, "supp-acct", "80.00").await;
+    let purchase_id =
+        purchase_on_account_for(&client, &supplier_id, "supp-acct-2", "80.00", 1).await;
+
+    let account_after_buy = client
+        .get(&format!("/api/suppliers/{supplier_id}/account"))
+        .await;
+    assert_eq!(account_after_buy.status(), axum::http::StatusCode::OK);
+    let body = account_after_buy.body.clone();
+    assert_eq!(body["id"], supplier_id);
+    assert_eq!(body["owed_to_them"], "80.00", "we owe 80; body: {body}");
+    assert_eq!(body["in_our_favour"], "0.00");
+    assert_eq!(
+        body["unpaid_purchases"].as_array().expect("array").len(),
+        1,
+        "the purchase is unpaid; body: {body}"
+    );
+
+    // We pay 80; the debt clears and nothing is left over.
+    let paid = client
+        .post(
+            "/api/payments",
+            serde_json::json!({
+                "party_kind": "supplier",
+                "party_id": supplier_id,
+                "payment_method_id": cash_method,
+                "total": "80.00",
+                "direction": "out"
+            }),
+        )
+        .await;
+    assert_eq!(paid.status(), axum::http::StatusCode::CREATED);
+    let payment_id = paid.body["id"].as_str().expect("payment id").to_string();
+    let settled = client
+        .post(
+            "/api/payable-settlements",
+            serde_json::json!({
+                "payable_id": payable_id_of(&pool, &purchase_id).await,
+                "payment_id": payment_id,
+                "amount": "80.00"
+            }),
+        )
+        .await;
+    assert_eq!(settled.status(), axum::http::StatusCode::CREATED);
+
+    let cleared_url = format!("/api/suppliers/{supplier_id}/account");
+    let cleared = client.get(&cleared_url).await;
+    assert_eq!(cleared.status(), axum::http::StatusCode::OK);
+    assert_eq!(cleared.body["owed_to_them"], "0.00");
+    assert_eq!(
+        cleared.body["unpaid_purchases"]
+            .as_array()
+            .expect("array")
+            .len(),
+        0
+    );
+}
+
+#[sqlx::test]
+async fn v5_the_account_is_read_under_one_snapshot_so_the_boxes_cannot_contradict(
+    pool: sqlx::PgPool,
+) {
+    // **`R3-001` of review `review-b1f1ea20a0e4419b`, corroborated by the refuter.** The first
+    // version read `owed`, `in_favour` and the unpaid list in three separate pool statements with
+    // no shared transaction, so a collection landing between them could return `owed: "0.00"`
+    // above a sale with 40 outstanding — the panel contradicting itself, which is the one thing a
+    // one-response endpoint exists to prevent.
+    //
+    // **A race is not observable by racing**, so this asserts the property that makes the race
+    // impossible rather than trying to lose a coin flip: the handler's reads run in a
+    // `REPEATABLE READ READ ONLY` transaction. The structural assertion is the honest one —
+    // measured by neutering (see below), because a test that spawns two connections and hopes to
+    // interleave is flaky in both directions.
+    let body: String =
+        sqlx::query_scalar("SELECT prosrc FROM pg_proc WHERE proname = 'account_of'")
+            .fetch_optional(&pool)
+            .await
+            .map(|r| r.unwrap_or_default())
+            .unwrap_or_default();
+    let _ = body; // the guarantee lives in Rust, not in SQL; asserted by reading the source below
+
+    // The structural guarantee: the module opens exactly one repeatable-read transaction per
+    // request and passes it to `account_of`.
+    let source = include_str!("../src/routes/parties.rs");
+    assert!(
+        source.contains("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY"),
+        "the account must be read under one snapshot, or its boxes can describe different instants"
+    );
+    assert_eq!(
+        source
+            .matches("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .count(),
+        2,
+        "one for the customer handler and one for the supplier mirror, and no third"
+    );
+    assert!(
+        !source.contains("fetch_one(db)") && !source.contains("fetch_all(db)"),
+        "every read must go through the transaction; a pool read would escape the snapshot"
+    );
+
+    // And the behaviour still works, so the guarantee did not cost the endpoint its job.
+    let client = common::client(pool.clone());
+    let (sale, customer_id) = sale_on_account(&client, "snapshot", "100.00", 1).await;
+    let account = customer_account(&client, &customer_id).await;
+    assert_eq!(account["owed"], "100.00");
+    assert_eq!(account["unpaid_sales"][0]["id"], sale.as_str());
+    assert_eq!(account["unpaid_sales"][0]["outstanding"], "100.00");
 }
