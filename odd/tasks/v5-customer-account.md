@@ -1,6 +1,7 @@
 # v5-customer-account — a client's account, and a supplier's, read from one panel
 
-Slice 1 of three for "cobros y pagos". **State: T1 and T2 reviewed natively and approved; T3-T4 ahead.** The product
+Slice 1 of three for "cobros y pagos". **State: T1 and T2 reviewed natively and approved; T3 implemented (246 frontend + 28 e2e tests);
+T4 ahead.** The product
 shape was settled by the owner in conversation, and this file is the specification a later
 session reads.
 
@@ -282,3 +283,30 @@ V4c **`R3-001`, and a rewrite of mine the review's own standard caught.** The e2
 is no entry to go back to. The fix reads `history.length` before and after the click. **My first
 rewrite compared that length against itself**, which measures nothing; the corrected version reads it
 across the click, and switching `replaceState` to `pushState` now fails the spec.
+
+V5 **T3, the account panel.** `make test-frontend` **246** (was 242; +4), `make test-e2e` **28**
+(was 26; +2), backend 144, `make lint` clean, `make sqlx-check` in sync, `svelte-check` 0.
+
+V5b **The e2e found a real bug in T1's shipped SQL, and no unit test could have.**
+`GET /api/customers/{id}/account` selected **`s.id` into both** the `id` and the
+`source_document_id` columns of every unpaid document, so the obligation and the sale carried
+the same value. T1's test compared `id` against the sale's id and **passed, because it was
+equality with itself.** The e2e settled by `id`, answered `404`, and that was unambiguous.
+Fixed in both mirrors; T1's test now asserts the two ids differ and fails if the bug returns.
+
+**The lesson is about what a test asserts, not how many there are.** T1 had four tests over
+this endpoint and every one checked the field was *present* and correct-looking; none checked
+that two fields meaning different things were different. `R3-002` of the same review was the
+same shape in miniature: a count that also passes when a different row is there.
+
+V5c **`?c=` is the source of truth, and the pending paragraph became the real panel.** T2 shipped
+a paragraph saying the panel would arrive, because a click that rewrites the URL and shows
+nothing is the defect the review caught. T3 replaces it: a cold load of the link reopens the
+panel, closing removes the parameter, and a link to a party that does not exist renders the
+not-found state **with no figures at all**, so "owes nothing" can never be confused with "is not
+there".
+
+V5d **A flake avoided rather than discovered.** The fetch guards its replies with a `live` flag:
+without it a slow reply for the first party can land after the second and paint the wrong account
+under the right name. That is a race no test in this suite would find, so it is stated in the
+code instead of left implicit.
