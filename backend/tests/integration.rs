@@ -10869,14 +10869,25 @@ async fn v5_a_clients_account_carries_identity_both_figures_and_the_unpaid_sales
         !sales.is_empty(),
         "the account must list the sales that owe; body: {account}"
     );
+    // **`id` is the obligation and `source_document_id` is the sale, and they are
+    // different rows.** The first version of the SQL selected the sale's id into both
+    // columns, so this test passed by accident: it matched `id` against the sale and
+    // the two happened to be equal. Found by the T3 e2e, which settled by `id` and got
+    // a 404 — nothing in this file exercised the value, only its presence.
+    for document in sales {
+        assert_ne!(
+            document["id"], document["source_document_id"],
+            "the obligation id and the sale id are different documents; body: {account}"
+        );
+    }
     let big = sales
         .iter()
-        .find(|s| s["id"] == big_sale.as_str())
+        .find(|s| s["source_document_id"] == big_sale.as_str())
         .expect("the 100.00 sale is listed");
     assert_eq!(big["outstanding"], "40.00", "100 less 60 settled");
     let small = sales
         .iter()
-        .find(|s| s["id"] == small_sale.as_str())
+        .find(|s| s["source_document_id"] == small_sale.as_str())
         .expect("the 50.00 sale is listed");
     assert_eq!(small["outstanding"], "50.00", "untouched");
 }
@@ -11079,6 +11090,12 @@ async fn v5_the_account_is_read_under_one_snapshot_so_the_boxes_cannot_contradic
     let (sale, customer_id) = sale_on_account(&client, "snapshot", "100.00", 1).await;
     let account = customer_account(&client, &customer_id).await;
     assert_eq!(account["owed"], "100.00");
-    assert_eq!(account["unpaid_sales"][0]["id"], sale.as_str());
+    // The **sale** is identified by `source_document_id`; `id` is the obligation. This
+    // assertion compared `id` to the sale and passed only while the SQL selected the
+    // sale's id into both columns.
+    assert_eq!(
+        account["unpaid_sales"][0]["source_document_id"],
+        sale.as_str()
+    );
     assert_eq!(account["unpaid_sales"][0]["outstanding"], "100.00");
 }

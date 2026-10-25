@@ -217,7 +217,12 @@ async fn account_of(
     // all, so `outstanding > 0` belongs in the query and not in the client.
     let unpaid: Vec<(Uuid, Uuid, Decimal, Decimal, DateTime<Utc>)> = match party {
         Party::Customer => sqlx::query_as(
-            "SELECT s.id, o.source_document_id, s.total,
+            // **`o.id`, not `s.id`**: the first column is the obligation, and the second
+            // is the sale that caused it. Selecting `s.id` twice made both fields the
+            // sale's id, so a caller that settled by the document's `id` was naming a
+            // sale where the API wants an obligation — found by the e2e, not by a unit
+            // test, because only an end-to-end settlement exercises the value.
+            "SELECT o.id, o.source_document_id, s.total,
                     o.amount
                       - COALESCE((SELECT SUM(a.amount) FROM obligations_adjustments a
                                    WHERE a.obligation_id = o.id), 0)
@@ -236,7 +241,9 @@ async fn account_of(
               ORDER BY s.created_at DESC, s.id",
         ),
         Party::Supplier => sqlx::query_as(
-            "SELECT p.id, o.source_document_id, p.total,
+            // The mirror of the customer branch, with the same correction: the first
+            // column is the payable, the second is the purchase.
+            "SELECT o.id, o.source_document_id, p.total,
                     o.amount
                       - COALESCE((SELECT SUM(a.amount) FROM payables_adjustments a
                                    WHERE a.payable_id = o.id), 0)
