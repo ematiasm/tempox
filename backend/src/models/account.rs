@@ -13,14 +13,6 @@ pub const CASH_ACCOUNT_ID: Uuid = Uuid::from_u128(3);
 /// The seeded `cash` payment method (`…0004`).
 pub const CASH_PAYMENT_METHOD_ID: Uuid = Uuid::from_u128(4);
 
-/// The seeded `credit` account (`…0005`), carrying what customers owe. It exists
-/// in v3 so the credit guards are testable; its method is inactive because v3
-/// cannot yet collect a credit sale.
-pub const CREDIT_ACCOUNT_ID: Uuid = Uuid::from_u128(5);
-
-/// The seeded `credit` payment method (`…0006`).
-pub const CREDIT_PAYMENT_METHOD_ID: Uuid = Uuid::from_u128(6);
-
 /// An account: where money lives. `is_default` marks the one the shop means by
 /// "the till", and exactly one row holds it.
 ///

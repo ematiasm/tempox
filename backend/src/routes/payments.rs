@@ -32,7 +32,6 @@ use uuid::Uuid;
 
 use crate::AppState;
 use crate::db::conflict_or_500;
-use crate::models::account::CREDIT_ACCOUNT_ID;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/payments", post(create_payment))
@@ -250,10 +249,7 @@ async fn create_payment(
                 tracing::error!(?e, "payment method lookup failed");
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
-    let account_id = account_id.ok_or(StatusCode::NOT_FOUND)?;
-    if account_id == CREDIT_ACCOUNT_ID {
-        return Err(StatusCode::BAD_REQUEST);
-    }
+    let _account_id = account_id.ok_or(StatusCode::NOT_FOUND)?;
 
     // The party has to exist. A payment from a customer nobody has recorded is a document
     // whose counterparty cannot be named, and the FK-less `party_id` cannot say so — this

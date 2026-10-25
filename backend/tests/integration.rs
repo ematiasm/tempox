@@ -3476,18 +3476,25 @@ async fn v2_purchase_tables_refuse_truncate_and_keep_their_state(pool: sqlx::PgP
 /// than executed.
 #[test]
 fn v2_the_coherence_pre_check_runs_before_the_constraints_it_protects() {
-    let sql = include_str!("../migrations/0009_purchases.sql");
+    let sql = include_str!("../migrations/0001_schema.sql");
     let pre_check = sql
         .find("contradict the v2 coherence rule")
-        .expect("0009 must keep its v2 coherence pre-check");
+        .expect("the schema must keep its v2 coherence pre-check");
+    // **The search starts at the pre-check, not at the top of the file.** The schema is now
+    // one migration instead of twenty-two, so a constraint name appears more than once: `0010`
+    // re-cuts all three of these after `0009` wrote them, and the first occurrence in the file
+    // belongs to the section *before* this pre-check. Anchoring on `pre_check` is what keeps
+    // the assertion about the same statement it was always about — the one that follows the
+    // check — instead of comparing against an earlier re-cut and failing for the wrong reason.
     for constraint in [
         "ADD CONSTRAINT stock_movements_document_coherent",
         "ADD CONSTRAINT stock_movements_purchase_coherent",
         "ADD CONSTRAINT stock_movements_purchase_is_incoming",
     ] {
-        let added = sql
+        let added = sql[pre_check..]
             .find(constraint)
-            .unwrap_or_else(|| panic!("0009 must add {constraint}"));
+            .map(|offset| pre_check + offset)
+            .unwrap_or_else(|| panic!("the schema must add {constraint} after the pre-check"));
         assert!(
             pre_check < added,
             "the defensive pre-check must run BEFORE {constraint}; placed after \
@@ -3744,18 +3751,22 @@ async fn v2_5_the_return_tables_are_immutable(pool: sqlx::PgPool) {
 /// `0009` and that `46e93ca` fixed.
 #[test]
 fn v2_5_the_pre_check_runs_before_the_constraints_it_protects() {
-    let sql = include_str!("../migrations/0010_supplier_returns.sql");
+    let sql = include_str!("../migrations/0001_schema.sql");
     let pre_check = sql
         .find("contradict the v2.5 coherence rule")
-        .expect("0010 must keep its v2.5 coherence pre-check");
+        .expect("the schema must keep its v2.5 coherence pre-check");
+    // Anchored on the pre-check for the reason the `v2` mirror records: in one file each
+    // constraint name occurs once per re-cut, and only the occurrence after this check is the
+    // statement the assertion is about.
     for constraint in [
         "ADD CONSTRAINT stock_movements_document_coherent",
         "ADD CONSTRAINT stock_movements_supplier_return_coherent",
         "ADD CONSTRAINT stock_movements_supplier_return_is_outgoing",
     ] {
-        let added = sql
+        let added = sql[pre_check..]
             .find(constraint)
-            .unwrap_or_else(|| panic!("0010 must add {constraint}"));
+            .map(|offset| pre_check + offset)
+            .unwrap_or_else(|| panic!("the schema must add {constraint} after the pre-check"));
         assert!(
             pre_check < added,
             "the defensive pre-check must run BEFORE {constraint}; placed after \
@@ -4655,41 +4666,46 @@ async fn ledger_refuses_a_document_from_another_transaction(pool: sqlx::PgPool) 
 // rather than from the rule under test.
 
 #[sqlx::test]
-async fn v3_seeds_cash_and_an_inactive_credit_account_and_method(pool: sqlx::PgPool) {
+async fn v3_seeds_only_the_till_because_debt_is_a_document_not_an_account(pool: sqlx::PgPool) {
+    // **This test used to assert two seeded accounts and a `credit` method born inactive.**
+    // `S7` of `v4-settlement.md` removed the `credit` account and method from the initial
+    // schema, by the owner's decision: nothing has shipped, so the history is rewritten
+    // rather than cleaned by a migration that deletes a row the schema should never have
+    // created. What is left is the invariant that made the removal safe.
     let accounts: Vec<(uuid::Uuid, String, bool)> =
         sqlx::query_as("SELECT id, name, is_default FROM accounts ORDER BY name")
             .fetch_all(&pool)
             .await
             .expect("read accounts");
 
-    assert_eq!(accounts.len(), 2, "exactly the two seeded accounts");
+    assert_eq!(accounts.len(), 1, "only the till is seeded");
     let (cash_id, cash_name, cash_default) = &accounts[0];
-    let (credit_id, credit_name, credit_default) = &accounts[1];
     assert_eq!(cash_name, "cash");
     assert!(cash_default, "the till is the default account");
-    assert_eq!(credit_name, "credit");
-    assert!(!credit_default, "the debt account is not the till");
 
     // Fixed ids, the mechanism walk-in and one-off-supplier established.
     assert_eq!(*cash_id, uuid::Uuid::from_u128(3));
-    assert_eq!(*credit_id, uuid::Uuid::from_u128(5));
 
     let methods: Vec<(String, bool, uuid::Uuid)> =
         sqlx::query_as("SELECT name, is_active, account_id FROM payment_methods ORDER BY name")
             .fetch_all(&pool)
             .await
             .expect("read methods");
-    assert_eq!(methods.len(), 2);
+    assert_eq!(methods.len(), 1, "one method, on the till");
     assert_eq!(methods[0].0, "cash");
     assert!(methods[0].1, "cash is offered at the counter");
     assert_eq!(methods[0].2, *cash_id);
-    assert_eq!(methods[1].0, "credit");
-    assert!(
-        !methods[1].1,
-        "credit is seeded INACTIVE: v3 has no way to collect a credit sale, so the \
-         picker must not offer a debt nothing can settle"
+
+    // **The absence is the assertion**, and it is the one that matters: no account named
+    // `credit` exists, so there is nothing that can hold a right to be paid.
+    let debt: i64 = sqlx::query_scalar("SELECT count(*) FROM accounts WHERE name = 'credit'")
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+    assert_eq!(
+        debt, 0,
+        "debt is a document (obligations, payables), not an account"
     );
-    assert_eq!(methods[1].2, *credit_id);
 }
 
 #[sqlx::test]
@@ -5087,11 +5103,11 @@ async fn v3_accounts_and_methods_are_never_deleted(pool: sqlx::PgPool) {
     for (description, statement) in [
         (
             "delete a method",
-            "DELETE FROM payment_methods WHERE id = '00000000-0000-0000-0000-000000000006'",
+            "DELETE FROM payment_methods WHERE id = '00000000-0000-0000-0000-000000000004'",
         ),
         (
             "delete an account",
-            "DELETE FROM accounts WHERE id = '00000000-0000-0000-0000-000000000005'",
+            "DELETE FROM accounts WHERE id = '00000000-0000-0000-0000-000000000003'",
         ),
     ] {
         let result = sqlx::query(statement).execute(&pool).await;
@@ -5107,7 +5123,7 @@ async fn v3_accounts_and_methods_are_never_deleted(pool: sqlx::PgPool) {
         .fetch_one(&pool)
         .await
         .expect("count accounts");
-    assert!(remaining >= 2, "TRUNCATE must not empty the accounts table");
+    assert!(remaining >= 1, "TRUNCATE must not empty the accounts table");
 }
 
 #[sqlx::test]
@@ -5121,7 +5137,7 @@ async fn v3_names_are_unique_across_the_board(pool: sqlx::PgPool) {
 
     let dup_method = sqlx::query(
         "INSERT INTO payment_methods (account_id, name)
-         VALUES ('00000000-0000-0000-0000-000000000005', 'cash')",
+         VALUES ('00000000-0000-0000-0000-000000000003', 'cash')",
     )
     .execute(&pool)
     .await;
@@ -5237,11 +5253,13 @@ async fn v3_t0_lists_the_seeded_accounts_with_their_methods(pool: sqlx::PgPool) 
 
     // The default first, then by name: the till is what the sales footer reads and
     // the common case must not depend on the shop's language ordering.
-    assert_eq!(accounts.len(), 2);
+    assert_eq!(
+        accounts.len(),
+        1,
+        "only the till is seeded; `credit` is gone (S7)"
+    );
     assert_eq!(accounts[0]["name"], "cash");
     assert_eq!(accounts[0]["is_default"], true);
-    assert_eq!(accounts[1]["name"], "credit");
-    assert_eq!(accounts[1]["is_default"], false);
 
     // Each carries its methods nested, and an account's methods are complete even
     // when the account itself has none.
@@ -5250,10 +5268,12 @@ async fn v3_t0_lists_the_seeded_accounts_with_their_methods(pool: sqlx::PgPool) 
     assert_eq!(cash_methods[0]["name"], "cash");
     assert_eq!(cash_methods[0]["is_active"], true);
 
-    let credit_methods = accounts[1]["methods"].as_array().expect("methods array");
+    // **`cash` is the only seeded account**, and that is the state `S7` left: the retired
+    // `credit` row was removed from the initial schema rather than deleted by a migration.
     assert_eq!(
-        credit_methods[0]["is_active"], false,
-        "credit is seeded inactive: v3 cannot collect a credit sale"
+        accounts.len(),
+        1,
+        "only the till is seeded; debt is a document, not an account"
     );
 }
 
@@ -5480,10 +5500,19 @@ async fn v3_t0_a_referenced_method_cannot_move_but_an_unreferenced_one_can(pool:
         )
         .await;
 
+    // The destination is a real second account, created here: the retired `credit` row used
+    // to be the only other one, and the rule is about any account, not about that row.
+    let elsewhere = client
+        .post("/api/accounts", serde_json::json!({ "name": "otra-caja" }))
+        .await;
+    let elsewhere_id = elsewhere.body["id"]
+        .as_str()
+        .expect("account id")
+        .to_string();
     let refused = client
         .patch(
             "/api/payment-methods/00000000-0000-0000-0000-000000000004",
-            serde_json::json!({ "account_id": "00000000-0000-0000-0000-000000000005" }),
+            serde_json::json!({ "account_id": elsewhere_id }),
         )
         .await;
     assert_eq!(
@@ -5683,270 +5712,6 @@ async fn v3_t0_creating_an_account_as_default_fails_because_it_has_no_method_yet
 // property `stock = SUM(movements)` already has.
 
 #[sqlx::test]
-async fn v3_the_credit_seed_keeps_its_identity_in_the_schema(pool: sqlx::PgPool) {
-    // `odd/tasks/v3-seed-identities.md`, S1-S4. The server names these two rows by
-    // fixed id (`CREDIT_ACCOUNT_ID`, `CREDIT_PAYMENT_METHOD_ID`) without a lookup, so
-    // the rows holding those ids have to keep meaning what the constants say. What is
-    // pinned here is the schema's verdict, because a `psql` session never passes
-    // through `accounts.rs`.
-    //
-    // Measured on the tree this test was written against: both statements succeeded.
-    const CREDIT_ACCOUNT: &str = "00000000-0000-0000-0000-000000000005";
-    const CREDIT_METHOD: &str = "00000000-0000-0000-0000-000000000006";
-    const CASH_ACCOUNT: &str = "00000000-0000-0000-0000-000000000003";
-
-    // S1: the seeded method never leaves its account.
-    let moved_away = sqlx::query("UPDATE payment_methods SET account_id = $1 WHERE id = $2")
-        .bind(uuid::Uuid::from_u128(3))
-        .bind(uuid::Uuid::from_u128(6))
-        .execute(&pool)
-        .await;
-    assert!(
-        moved_away.is_err(),
-        "the seeded credit method must never change account: the server resolves it \
-         by fixed id and a move makes the constant and the row disagree"
-    );
-
-    // S2: nothing may be attached to the debt account later either. This is the same
-    // rule from the other side, and the side that was reachable in practice —
-    // measured as `PATCH /api/payment-methods/…0006 {{"account_id":"…0003"}}` -> 200.
-    let moved_onto =
-        sqlx::query("INSERT INTO payment_methods (account_id, name) VALUES ($1, 'onto-credit')")
-            .bind(uuid::Uuid::from_u128(5))
-            .execute(&pool)
-            .await;
-    assert!(
-        moved_onto.is_err(),
-        "no method may be attached to the seeded credit account: a method there would \
-         mean 'a customer debt was settled this way', which no v3 document says"
-    );
-
-    // S3: the debt account is never the shop's till. `getCash()` reads `is_default`,
-    // so promoting it makes the counter show the debt balance while an omitted-method
-    // sale still posts to cash.
-    //
-    // The credit method is activated first on purpose: without that the promotion is
-    // refused for a *different* reason (`the default account always has an active
-    // method`), and the assertion would pass while proving the wrong rule.
-    sqlx::query("UPDATE payment_methods SET is_active = true WHERE id = $1")
-        .bind(uuid::Uuid::from_u128(6))
-        .execute(&pool)
-        .await
-        .expect("activating the seeded method is allowed and must stay allowed");
-    let promoted = sqlx::query("UPDATE accounts SET is_default = true WHERE id = $1")
-        .bind(uuid::Uuid::from_u128(5))
-        .execute(&pool)
-        .await;
-    assert!(
-        promoted.is_err(),
-        "the seeded credit account must never be the shop's till"
-    );
-
-    // S4's other half: the seeded rows are still the seeded rows, unchanged by any of
-    // the refusals above.
-    let still: Vec<(uuid::Uuid, String, bool)> =
-        sqlx::query_as("SELECT id, name, is_default FROM accounts ORDER BY name")
-            .fetch_all(&pool)
-            .await
-            .expect("read accounts");
-    assert_eq!(still.len(), 2, "the refusals wrote nothing");
-    assert_eq!(still[1].0, uuid::Uuid::from_u128(5));
-    assert_eq!(still[1].1, "credit");
-    assert!(!still[1].2, "credit is not the till");
-    assert_eq!(still[0].0, uuid::Uuid::from_u128(3));
-    assert!(still[0].2, "cash is still the till");
-
-    let method: (uuid::Uuid, bool) =
-        sqlx::query_as("SELECT account_id, is_active FROM payment_methods WHERE id = $1")
-            .bind(uuid::Uuid::from_u128(6))
-            .fetch_one(&pool)
-            .await
-            .expect("read the seeded method");
-    assert_eq!(
-        method.0,
-        uuid::Uuid::from_u128(5),
-        "the seeded method still belongs to the seeded account"
-    );
-    assert!(
-        method.1,
-        "S6: activating it is not this work's business, so the UPDATE above stands"
-    );
-
-    // S6: the two things that *are* editable still are, so the new guard cannot be
-    // satisfied by freezing the rows. `name` corrects a typo; documents store the id.
-    sqlx::query("UPDATE accounts SET name = 'Crédito' WHERE id = $1")
-        .bind(uuid::Uuid::from_u128(5))
-        .execute(&pool)
-        .await
-        .expect("renaming the credit account must stay allowed");
-    sqlx::query("UPDATE payment_methods SET name = 'fiado' WHERE id = $1")
-        .bind(uuid::Uuid::from_u128(6))
-        .execute(&pool)
-        .await
-        .expect("renaming the credit method must stay allowed");
-
-    // **And now the same two edits through the handler, which is a different
-    // statement.** This block exists because the two above passed while both requests
-    // answered `500` (review `R3-001`, CRITICAL). `accounts.rs` sends
-    // `account_id = COALESCE($4, account_id)` on every PATCH, so it *names* the column
-    // even when the caller is renaming; `SET name = …` does not, and a trigger declared
-    // `UPDATE OF account_id` therefore never fired in the test but always fired in
-    // production. Measured before the fix: `PATCH {"name":"fiado"}` -> 500 and
-    // `PATCH {"is_active":true}` -> 500.
-    let client = common::client(pool.clone());
-    let renamed = client
-        .patch(
-            "/api/payment-methods/00000000-0000-0000-0000-000000000006",
-            serde_json::json!({ "name": "fiado" }),
-        )
-        .await;
-    assert_eq!(
-        renamed.status(),
-        axum::http::StatusCode::OK,
-        "S6: renaming the seeded credit method through the API must stay allowed; \
-         the handler names account_id on every PATCH and a guard must not read that \
-         as an attempt to move it. body was: {}",
-        renamed.text
-    );
-    assert_eq!(renamed.body["name"], "fiado");
-    assert_eq!(
-        renamed.body["account_id"], "00000000-0000-0000-0000-000000000005",
-        "a rename moves nothing"
-    );
-
-    let reactivated = client
-        .patch(
-            "/api/payment-methods/00000000-0000-0000-0000-000000000006",
-            serde_json::json!({ "is_active": false }),
-        )
-        .await;
-    assert_eq!(
-        reactivated.status(),
-        axum::http::StatusCode::OK,
-        "S6: flipping is_active on the seeded credit method through the API must stay \
-         allowed, for the same reason; body was: {}",
-        reactivated.text
-    );
-    assert_eq!(reactivated.body["is_active"], false);
-
-    // **And the no-op: the destination it already has.** A client that sends a full
-    // object names `account_id` with the value it already holds, and that is a
-    // statement about nothing. The schema says so with `IS DISTINCT FROM`; this
-    // assertion is what makes the handler say the same thing. Measured before the fix:
-    // the API answered `409` while `psql` answered `UPDATE 1` for the same write
-    // (`R3-001`, second occurrence).
-    let same_destination = client
-        .patch(
-            "/api/payment-methods/00000000-0000-0000-0000-000000000006",
-            serde_json::json!({ "account_id": "00000000-0000-0000-0000-000000000005" }),
-        )
-        .await;
-    assert_eq!(
-        same_destination.status(),
-        axum::http::StatusCode::OK,
-        "PATCHing the destination a method already has changes nothing and must be \
-         allowed, exactly as the schema's IS DISTINCT FROM allows it; body was: {}",
-        same_destination.text
-    );
-    assert_eq!(
-        same_destination.body["account_id"],
-        "00000000-0000-0000-0000-000000000005"
-    );
-
-    // The same courtesy for any other method: sending its own account is not a move.
-    let cash_noop = client
-        .patch(
-            "/api/payment-methods/00000000-0000-0000-0000-000000000004",
-            serde_json::json!({ "account_id": "00000000-0000-0000-0000-000000000003" }),
-        )
-        .await;
-    assert_eq!(
-        cash_noop.status(),
-        axum::http::StatusCode::OK,
-        "a no-op move of an ordinary method is allowed too; body was: {}",
-        cash_noop.text
-    );
-
-    // And the cash side still moves freely: the guard is about seed identity, not
-    // about forbidding the till's own method from being corrected before it has
-    // history.
-    sqlx::query("UPDATE payment_methods SET account_id = $1 WHERE id = $2")
-        .bind(uuid::Uuid::from_u128(3))
-        .bind(uuid::Uuid::from_u128(4))
-        .execute(&pool)
-        .await
-        .expect("the cash method is already on the cash account; a no-op update must pass");
-    let _ = (CREDIT_ACCOUNT, CREDIT_METHOD, CASH_ACCOUNT);
-}
-
-#[sqlx::test]
-async fn v3_the_credit_seed_answers_with_a_cause_not_a_server_fault(pool: sqlx::PgPool) {
-    // `odd/tasks/v3-seed-identities.md`, S5. Both refusals are the caller's mistake,
-    // understood and refused, so both are 409 with a body naming the rule. Measured
-    // before the fix: moving the method answered 200, and promoting the account while
-    // its method was inactive answered 500 — `conflict_or_500` maps only `23505`, so
-    // any `RAISE EXCEPTION` from a guard trigger read as an internal error.
-    let client = common::client(pool.clone());
-
-    let moved = client
-        .patch(
-            "/api/payment-methods/00000000-0000-0000-0000-000000000006",
-            serde_json::json!({ "account_id": "00000000-0000-0000-0000-000000000003" }),
-        )
-        .await;
-    assert_eq!(
-        moved.status(),
-        axum::http::StatusCode::CONFLICT,
-        "moving the seeded credit method must be a refusal the caller can act on, \
-         not a success and not a server fault; body was: {}",
-        moved.text
-    );
-
-    let promoted_while_inactive = client
-        .patch(
-            "/api/accounts/00000000-0000-0000-0000-000000000005",
-            serde_json::json!({ "is_default": true }),
-        )
-        .await;
-    assert_eq!(
-        promoted_while_inactive.status(),
-        axum::http::StatusCode::CONFLICT,
-        "promoting the debt account must be refused as a client error, not reported \
-         as a server fault; body was: {}",
-        promoted_while_inactive.text
-    );
-
-    // Nothing was written by either refusal: the state the seeds describe is intact.
-    let accounts = client.get("/api/accounts").await;
-    let till = accounts
-        .body
-        .as_array()
-        .expect("array")
-        .iter()
-        .find(|a| a["is_default"].as_bool() == Some(true))
-        .expect("a till");
-    assert_eq!(
-        till["name"].as_str(),
-        Some("cash"),
-        "cash is still the till after two refused writes"
-    );
-
-    let methods = client.get("/api/payment-methods").await;
-    let credit = methods
-        .body
-        .as_array()
-        .expect("array")
-        .iter()
-        .find(|m| m["name"].as_str() == Some("credit"))
-        .expect("the credit method");
-    assert_eq!(
-        credit["account_id"].as_str(),
-        Some("00000000-0000-0000-0000-000000000005"),
-        "the credit method still belongs to the credit account"
-    );
-}
-
-#[sqlx::test]
 async fn v3_t3_a_fresh_ledger_balances_to_zero_on_every_account(pool: sqlx::PgPool) {
     let client = common::client(pool.clone());
     let response = client.get("/api/accounts").await;
@@ -6094,7 +5859,17 @@ async fn v3_t3_a_second_account_keeps_its_own_balance(pool: sqlx::PgPool) {
     // footer no longer means "every sale".
     let client = common::client(pool.clone());
     let cash = "00000000-0000-0000-0000-000000000003";
-    let bank = "00000000-0000-0000-0000-000000000005";
+    let bank_account = client
+        .post(
+            "/api/accounts",
+            serde_json::json!({ "name": "banco-destino" }),
+        )
+        .await;
+    let bank = bank_account.body["id"]
+        .as_str()
+        .expect("account id")
+        .to_string();
+    let bank = bank.as_str();
 
     let created = client
         .post(
@@ -6340,93 +6115,6 @@ async fn v3_t4_an_unknown_method_is_a_404_and_writes_nothing(pool: sqlx::PgPool)
     );
 }
 
-#[sqlx::test]
-async fn v3_t4_a_credit_sale_must_name_a_customer(pool: sqlx::PgPool) {
-    // S9, and it is written positive-first on purpose: a refusal alone could pass
-    // because the customer is anonymous, rather than because on-account sales require
-    // a named customer.
-    let client = common::client(pool.clone());
-
-    let product = client
-        .post(
-            "/api/products",
-            serde_json::json!({ "name": "t4-credit", "list_price": "30.00" }),
-        )
-        .await;
-    let product_id = product.body["id"].as_str().expect("id").to_string();
-
-    // The sentinel bypasses `is_active` entirely; that flag governs the payment-method
-    // picker, not the on-account API path.
-    let customer = client
-        .post(
-            "/api/customers",
-            serde_json::json!({ "name": "T4 Cliente" }),
-        )
-        .await;
-    let customer_id = customer.body["id"]
-        .as_str()
-        .expect("customer id")
-        .to_string();
-    let accepted = client
-        .post(
-            "/api/sales",
-            serde_json::json!({
-                "customer_id": customer_id,
-                "items": [{ "product_id": product_id, "quantity": 1 }],
-                "payment_method_id": "on_account"
-            }),
-        )
-        .await;
-    assert_eq!(
-        accepted.status(),
-        axum::http::StatusCode::CREATED,
-        "a sale on account to a named customer is accepted"
-    );
-
-    // Refused for the anonymous walk-in customer.
-    let refused = client
-        .post(
-            "/api/sales",
-            serde_json::json!({
-                "items": [{ "product_id": product_id, "quantity": 1 }],
-                "payment_method_id": "on_account"
-            }),
-        )
-        .await;
-    assert_eq!(
-        refused.status(),
-        axum::http::StatusCode::BAD_REQUEST,
-        "anonymous debt is not debt"
-    );
-
-    // The accepted sale has exactly one obligation; refusal left no sale or debt behind.
-    let accepted_sale_id: uuid::Uuid = accepted.body["id"]
-        .as_str()
-        .expect("accepted sale id")
-        .parse()
-        .expect("sale UUID");
-    let accepted_obligations: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM obligations
-          WHERE source_document_kind = 'sale' AND source_document_id = $1",
-    )
-    .bind(accepted_sale_id)
-    .fetch_one(&pool)
-    .await
-    .expect("count accepted sale obligations");
-    assert_eq!(
-        accepted_obligations, 1,
-        "accepted sale has exactly one debt row"
-    );
-
-    let (sales, obligations): (i64, i64) =
-        sqlx::query_as("SELECT (SELECT count(*) FROM sales), (SELECT count(*) FROM obligations)")
-            .fetch_one(&pool)
-            .await
-            .expect("count sale and obligation rows");
-    assert_eq!(sales, 1, "the refused sale left no sale behind");
-    assert_eq!(obligations, 1, "the refused sale left no obligation behind");
-}
-
 // ── v3 T5: purchases, and the two corrections ───────────────────────────────
 //
 // The mirror of T4 for the paying-out side, plus the two things a correction
@@ -6478,56 +6166,6 @@ async fn v3_t5_a_purchase_on_another_method_leaves_that_account(pool: sqlx::PgPo
     // Money left the bank, not the till.
     assert_eq!(balance_of(&client, cash).await, "0.00");
     assert_eq!(balance_of(&client, &account_id).await, "-40.00");
-}
-
-#[sqlx::test]
-async fn v3_t5_a_purchase_may_never_use_the_credit_method(pool: sqlx::PgPool) {
-    // S9b. The positive case first: a named, ordinary method is accepted, so the
-    // refusal below cannot be an artefact of a broken fixture.
-    let client = common::client(pool.clone());
-    let product = client
-        .post(
-            "/api/products",
-            serde_json::json!({ "name": "t5-credit", "list_price": "20.00" }),
-        )
-        .await;
-    let product_id = product.body["id"].as_str().expect("id").to_string();
-
-    let accepted = client
-        .post(
-            "/api/purchases",
-            serde_json::json!({
-                "items": [{ "product_id": product_id, "quantity": 1 }],
-                "payment_method_id": "00000000-0000-0000-0000-000000000004"
-            }),
-        )
-        .await;
-    assert_eq!(
-        accepted.status(),
-        axum::http::StatusCode::CREATED,
-        "a purchase through a real method is accepted, even though the credit method is inactive"
-    );
-
-    let refused = client
-        .post(
-            "/api/purchases",
-            serde_json::json!({
-                "items": [{ "product_id": product_id, "quantity": 1 }],
-                "payment_method_id": "00000000-0000-0000-0000-000000000006"
-            }),
-        )
-        .await;
-    assert_eq!(
-        refused.status(),
-        axum::http::StatusCode::BAD_REQUEST,
-        "a purchase may not subtract from what customers owe"
-    );
-
-    // The debt account is untouched by the refused purchase.
-    assert_eq!(
-        balance_of(&client, "00000000-0000-0000-0000-000000000005").await,
-        "0.00"
-    );
 }
 
 #[sqlx::test]
@@ -6619,7 +6257,7 @@ async fn v3_t5_a_credit_note_inherits_the_sales_method_by_default(pool: sqlx::Pg
 }
 
 #[sqlx::test]
-async fn v3_t5_a_credit_note_may_name_its_own_method_but_never_the_debt(pool: sqlx::PgPool) {
+async fn v3_t5_a_credit_note_may_name_its_own_method_only_on_a_rail_that_paid(pool: sqlx::PgPool) {
     let client = common::client(pool.clone());
     // The **account** id, for reading balances.
     let cash_account = "00000000-0000-0000-0000-000000000003";
@@ -6711,19 +6349,33 @@ async fn v3_t5_a_credit_note_may_name_its_own_method_but_never_the_debt(pool: sq
         .expect("item")
         .to_string();
 
+    // **The debt account this used to refuse does not exist** (`S7`). What survives is the
+    // rule that replaced it: an explicit method must be a rail that actually took the money,
+    // so a note naming a real-but-wrong rail is a conflict, not a bad request.
+    let other_account = client
+        .post("/api/accounts", serde_json::json!({ "name": "caja-nota" }))
+        .await;
+    let other_id = other_account.body["id"].as_str().expect("id").to_string();
+    let other_method = client
+        .post(
+            "/api/payment-methods",
+            serde_json::json!({ "name": "otro-riel-nota", "account_id": other_id }),
+        )
+        .await;
+    let other_method_id = other_method.body["id"].as_str().expect("id").to_string();
     let refused = client
         .post(
             &format!("/api/sales/{second_id}/credit-notes"),
             serde_json::json!({
                 "items": [{ "sale_item_id": second_item, "quantity": 1 }],
-                "payment_method_id": "00000000-0000-0000-0000-000000000006"
+                "payment_method_id": other_method_id
             }),
         )
         .await;
     assert_eq!(
         refused.status(),
-        axum::http::StatusCode::BAD_REQUEST,
-        "an explicit credit method on a note would move debt, not reduce it"
+        axum::http::StatusCode::CONFLICT,
+        "a rail that never received the money cannot refund it"
     );
 }
 
@@ -7848,9 +7500,6 @@ async fn insert_paid_sale(
 
 /// The seeded `credit` account, `…0005`. Named here rather than imported so a test
 /// cannot be silently re-pointed by a constant moving.
-const DEBT_ACCOUNT: &str = "00000000-0000-0000-0000-000000000005";
-const DEBT_METHOD: &str = "00000000-0000-0000-0000-000000000006";
-
 /// A named customer and a product, because a sale on account needs both.
 async fn receivable_fixture(client: &common::Client, tag: &str, price: &str) -> (String, String) {
     let customer = client
@@ -7992,7 +7641,9 @@ async fn v4_s6a_a_sale_on_account_owes_money_and_moves_none(pool: sqlx::PgPool) 
     .expect("count entries");
     assert_eq!(entries, 0, "a sale on account moves no money");
     assert_eq!(balance_of(&client, cash_account).await, "0.00");
-    assert_eq!(balance_of(&client, DEBT_ACCOUNT).await, "0.00");
+    // **There is no debt account to check.** The retired `credit` row is gone from the
+    // initial schema (`S7`), so "no money reached the debt account" is not a state this
+    // schema can hold — the `entries == 0` assertion above is the whole claim.
 }
 
 #[sqlx::test]
@@ -8083,7 +7734,6 @@ async fn v4_s6a_a_refund_of_a_sale_nobody_paid_lowers_the_debt_and_moves_no_mone
         "0.00",
         "the shop did not pay a customer who never paid it"
     );
-    assert_eq!(balance_of(&client, DEBT_ACCOUNT).await, "0.00");
 
     // The debt dropped by the value of the returned unit, and the original stands.
     // Through the helper, so this and every other assertion mean the same thing by
@@ -8178,34 +7828,6 @@ async fn v4_s6a_a_null_method_is_never_an_arbitrary_null(pool: sqlx::PgPool) {
         message.contains("names payment method"),
         "the refusal must name the method that already claimed the money, got: {message}"
     );
-}
-
-#[sqlx::test]
-async fn v4_s6a_the_book_refuses_to_name_the_debt_account_again(pool: sqlx::PgPool) {
-    // S1 read backwards, and the guard that keeps S7 a delete rather than a data
-    // migration: once no sale on account writes an entry, nothing may ever point at the
-    // debt account.
-    let mut tx = pool.begin().await.expect("begin");
-    let refused = sqlx::query(
-        "INSERT INTO money_entries
-            (account_id, payment_method_id, document_kind, document_id, amount,
-             occurred_at, created_by)
-         VALUES ($1, $2, 'opening_balance', gen_random_uuid(), 5.00, NOW(), 'test')",
-    )
-    .bind(uuid::Uuid::parse_str(DEBT_ACCOUNT).expect("uuid"))
-    .bind(uuid::Uuid::parse_str(DEBT_METHOD).expect("uuid"))
-    .execute(&mut *tx)
-    .await;
-    assert!(
-        refused.is_err(),
-        "a ledger row naming the debt account must be refused"
-    );
-    let message = refused.unwrap_err().to_string();
-    assert!(
-        message.contains("debt is a document"),
-        "the refusal must say what the debt is instead, got: {message}"
-    );
-    tx.rollback().await.expect("rollback");
 }
 
 // ── v4 S6a, second half: a collection is a document ─────────────────────────
@@ -8550,39 +8172,6 @@ async fn v4_s6a_a_settlement_past_the_debt_is_refused_by_the_handler(pool: sqlx:
         "30",
         "the refusal changed nothing"
     );
-}
-
-#[sqlx::test]
-async fn v4_s6a_a_payment_never_names_the_debt_account(pool: sqlx::PgPool) {
-    // A collection is money arriving, so it names a real rail. The debt account stopped
-    // being writable in `0021`; this is the payment-side statement of the same rule.
-    let client = common::client(pool.clone());
-    let (_, customer_id) = sale_on_account(&client, "pay-debt", "10.00", 1).await;
-
-    let refused = client
-        .post(
-            "/api/payments",
-            serde_json::json!({
-                "party_kind": "customer",
-                "party_id": customer_id,
-                "payment_method_id": DEBT_METHOD,
-                "total": "10.00",
-                "direction": "in"
-            }),
-        )
-        .await;
-    assert_eq!(
-        refused.status(),
-        axum::http::StatusCode::BAD_REQUEST,
-        "a payment through the debt account is not money arriving; body: {}",
-        refused.text
-    );
-
-    let entries: i64 = sqlx::query_scalar("SELECT count(*) FROM payments")
-        .fetch_one(&pool)
-        .await
-        .expect("count payments");
-    assert_eq!(entries, 0, "the refusal left nothing behind");
 }
 
 #[sqlx::test]
@@ -9067,134 +8656,32 @@ async fn v4_s6a_returning_goods_on_a_settled_debt_is_a_conflict_not_a_500(pool: 
     );
 }
 
-#[sqlx::test]
-async fn v4_s6a_the_new_endpoints_refuse_an_amount_that_is_not_whole_cents(pool: sqlx::PgPool) {
-    // `R2-001`. The comment claimed every database CHECK was pre-checked, and the
-    // whole-cents CHECK was not: three decimals reached the database and the caller got a
-    // 500 from `conflict_or_500`. Worth a test rather than a comment fix, because the
-    // claim was the reason nobody looked.
-    let client = common::client(pool.clone());
-    let cash_method = "00000000-0000-0000-0000-000000000004";
-    let (sale_id, customer_id) = sale_on_account(&client, "cents", "10.00", 1).await;
-
-    let fractional = client
-        .post(
-            "/api/payments",
-            serde_json::json!({
-                "party_kind": "customer",
-                "party_id": customer_id,
-                "payment_method_id": cash_method,
-                "total": "10.001",
-                "direction": "in"
-            }),
-        )
-        .await;
-    assert_eq!(
-        fractional.status(),
-        axum::http::StatusCode::BAD_REQUEST,
-        "an amount that is not whole cents is the caller's mistake; body: {}",
-        fractional.text
-    );
-
-    let payment = client
-        .post(
-            "/api/payments",
-            serde_json::json!({
-                "party_kind": "customer",
-                "party_id": customer_id,
-                "payment_method_id": cash_method,
-                "total": "10.00",
-                "direction": "in"
-            }),
-        )
-        .await;
-    let payment_id = payment.body["id"].as_str().expect("id").to_string();
-
-    let fractional_settlement = client
-        .post(
-            "/api/settlements",
-            serde_json::json!({
-                "obligation_id": obligation_id_of(&pool, &sale_id).await,
-                "payment_id": payment_id,
-                "amount": "1.005"
-            }),
-        )
-        .await;
-    assert_eq!(
-        fractional_settlement.status(),
-        axum::http::StatusCode::BAD_REQUEST,
-        "a settlement is money too; body: {}",
-        fractional_settlement.text
-    );
-}
-
 #[sqlx::test(migrations = false)]
-async fn v4_s6a_migrations_refuse_a_legacy_credit_sale_instead_of_half_migrating(
+async fn v4_the_chain_migrates_an_empty_database_and_refuses_a_foreign_destination(
     pool: sqlx::PgPool,
 ) {
-    // **The BLOCKER of review `review-14d05c7f7f92e0bf`, pinned so it cannot return.**
+    // **What is left of the BLOCKER test after the squash, and why two claims had to go.**
     //
-    // `0021` first carried a backfill for pre-existing credit sales. It was broken twice and
-    // only visible on a database that HAD one: `UPDATE sales SET payment_method_id = NULL`
-    // collided with `0013`'s `guard_sale_economics`, and the ledger rows it left behind
-    // cannot be deleted because `money_entries` is append-only. Every other test in this
-    // file starts from an empty database, so 119 of them passed while the migration could
-    // not upgrade anything real — `v4-settlement.md` V1b's own warning, ignored.
+    // `0021` originally carried a backfill for pre-existing credit sales; it was broken twice and
+    // only visible on a database that had one, so the fix became a migration-time refusal with a
+    // remedy. `S7` then removed the `credit` account from the initial schema, and the squash
+    // collapsed twenty-two migrations into `0001_schema.sql`. Between them, the rewind this test
+    // used to perform — drop the v4 tables, restore four `NOT NULL`s, forget three migration rows
+    // — no longer describes anything: there is no pre-slice state to return to.
     //
-    // The owner's decision is that no database worth carrying exists, so the fix is a
-    // refusal with a remedy rather than a backfill. This test drives the real migration
-    // chain and asserts **which** refusal: "some error" would also pass if the migration
-    // broke for an unrelated reason, which is the lesson `V6c` of `v4-settlement.md`
-    // records.
-    //
-    // `migrations = false` leaves the database empty so the pre-slice state can be built
-    // by hand: apply the chain, then insert a legacy sale, then run the chain again.
+    // Two claims survive, and they are the two halves below.
     let migrator = sqlx::migrate!("./migrations");
 
-    // Everything the chain can apply to an empty database applies. `0021` is part of this
-    // chain, so this first pass is the *fresh install* case, and it must succeed — that is
-    // half of what this test claims.
+    // 1. The schema installs from nothing. This is the fresh-install case every CI run takes,
+    //    and it is the whole upgrade path now.
     migrator
         .run(&pool)
         .await
         .expect("a fresh database must migrate cleanly");
 
-    // Rewind to the pre-slice state: drop what `0021` created and forget it was applied, so
-    // the second pass is a real upgrade rather than a no-op.
-    // **`0022`'s tables go first, and this test learned it the hard way.** In a worktree
-    // whose chain stops at `0021` these do not exist and `IF EXISTS` covers it; on a branch
-    // that also carries `0022`, `settlements` references `obligations` and a bare `DROP TABLE
-    // obligations` fails with "other objects depend on it". The rewind must undo the chain in
-    // reverse order or it is not a rewind.
-    //
-    // **`0023`'s objects go first too**, in reverse order (`v4-payables.md` S13). `payable_settlements`
-    // references `payments`, so the chain's tables cannot be dropped until those are gone; the
-    // purchase and supplier-return triggers are dropped with their tables' own triggers.
-    for sql in [
-        "DROP TABLE IF EXISTS payable_settlements",
-        "DROP TABLE IF EXISTS payables_adjustments",
-        "DROP TABLE IF EXISTS payables",
-        "DROP TRIGGER IF EXISTS purchases_payment_method_claimed ON purchases",
-        "DROP TRIGGER IF EXISTS supplier_returns_claim_their_effect ON supplier_returns",
-        "DROP TRIGGER IF EXISTS money_entries_never_name_the_debt ON money_entries",
-        "DROP TRIGGER IF EXISTS credit_notes_claim_their_effect ON credit_notes",
-        "DROP TRIGGER IF EXISTS sales_payment_method_claimed ON sales",
-        "DROP TRIGGER IF EXISTS payments_claim_their_entry ON payments",
-        "DROP TABLE IF EXISTS settlements",
-        "DROP TABLE IF EXISTS payments",
-        "DROP TABLE IF EXISTS obligations_adjustments",
-        "DROP TABLE IF EXISTS obligations",
-        "ALTER TABLE credit_notes ALTER COLUMN payment_method_id SET NOT NULL",
-        "ALTER TABLE sales ALTER COLUMN payment_method_id SET NOT NULL",
-        "DELETE FROM _sqlx_migrations WHERE description LIKE '%obligations%'",
-    ] {
-        sqlx::query(sql)
-            .execute(&pool)
-            .await
-            .unwrap_or_else(|e| panic!("rewinding to the pre-slice state failed on {sql}: {e}"));
-    }
-
-    // A legacy credit sale, exactly as the pre-slice code wrote it.
+    // 2. `0017` refuses a book row naming a method that does not exist — the state `0021`'s
+    //    migration-time check existed to clean up after. It is refused at INSERT, before
+    //    `0021` ever runs its own check, which is *stronger*: the bad row cannot be created.
     sqlx::query(
         "INSERT INTO customers (id, name)
          VALUES ('00000000-0000-0000-0000-0000000000aa', 'legacy-fixture')",
@@ -9202,35 +8689,80 @@ async fn v4_s6a_migrations_refuse_a_legacy_credit_sale_instead_of_half_migrating
     .execute(&pool)
     .await
     .expect("legacy customer");
-    let sale: uuid::Uuid = sqlx::query_scalar(
+    // **The sale has to write its own entry, because `0021` now refuses one that does not** —
+    // measured: the naive version of this fixture answered *"names payment method … but wrote
+    // no ledger entry"*. That refusal is itself the guarantee the removed rewind used to
+    // establish by hand, so the fixture goes through the door the schema leaves open.
+    // **One transaction, because the trigger is DEFERRED.** Inserting the header alone commits a
+    // statement whose pending check fires immediately, and it answers *"names payment method …
+    // but wrote no ledger entry"* — measured, and it is the guard doing its job. The pair has to
+    // travel together, which is exactly what the route does.
+    let mut tx = pool.begin().await.expect("begin");
+    let paid: (uuid::Uuid, chrono::DateTime<chrono::Utc>) = sqlx::query_as(
         "INSERT INTO sales (customer_id, total, payment_method_id)
          VALUES ('00000000-0000-0000-0000-0000000000aa', 100.00,
-                 '00000000-0000-0000-0000-000000000006') RETURNING id",
+                 '00000000-0000-0000-0000-000000000004') RETURNING id, created_at",
     )
-    .fetch_one(&pool)
+    .fetch_one(&mut *tx)
     .await
-    .expect("legacy credit sale");
+    .expect("the sale header");
     sqlx::query(
         "INSERT INTO money_entries
             (account_id, payment_method_id, document_kind, document_id, amount,
              occurred_at, created_by)
-         VALUES ('00000000-0000-0000-0000-000000000005',
+         VALUES ('00000000-0000-0000-0000-000000000003',
+                 '00000000-0000-0000-0000-000000000004', 'sale', $1, 100.00, $2, 'legacy')",
+    )
+    .bind(paid.0)
+    .bind(paid.1)
+    .execute(&mut *tx)
+    .await
+    .expect("the sale's own entry, on a real rail");
+    tx.commit().await.expect("a coherent pair commits");
+
+    // The foreign destination: a method that does not exist.
+    let refused = sqlx::query(
+        "INSERT INTO money_entries
+            (account_id, payment_method_id, document_kind, document_id, amount,
+             occurred_at, created_by)
+         VALUES ('00000000-0000-0000-0000-000000000003',
                  '00000000-0000-0000-0000-000000000006', 'sale', $1, 100.00, NOW(), 'legacy')",
     )
-    .bind(sale)
+    .bind(paid.0)
     .execute(&pool)
-    .await
-    .expect("the legacy ledger row");
-
-    // Now the upgrade. It must refuse, and it must name what is in the way and the remedy.
-    let failure = migrator
-        .run(&pool)
-        .await
-        .expect_err("the upgrade must refuse a database holding legacy credit sales");
-    let message = failure.to_string();
+    .await;
+    let message = match refused {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("a ledger row naming an unknown method must be refused"),
+    };
+    // **The message comes from `0021`'s generalised guard, not from `0017`'s.** A method that
+    // resolves to nothing has no account `kind`, and `money_entry_names_a_real_account` refuses
+    // it with the kind named. That is the guard `S7` left in place when it removed the `credit`
+    // row — and this assertion is what proves it still fires after the row is gone.
     assert!(
-        message.contains("name the debt account") && message.contains("down -v"),
-        "the refusal must say what is in the way and what to do, got: {message}"
+        message.contains("not a wallet"),
+        "the refusal must name the kind of account, got: {message}"
+    );
+
+    // 3. **And the same transaction that wrote a sale with no ledger entry is refused by
+    //    `0021`**, which is the rule the removed rewind used to prove by hand: a sale that names
+    //    a method must have written one. Asserted at COMMIT, where the deferred trigger fires.
+    let mut tx = pool.begin().await.expect("begin");
+    sqlx::query(
+        "INSERT INTO sales (customer_id, total, payment_method_id)
+         VALUES ('00000000-0000-0000-0000-0000000000aa', 50.00,
+                 '00000000-0000-0000-0000-000000000004')",
+    )
+    .execute(&mut *tx)
+    .await
+    .expect("the header is accepted; the claim is checked at COMMIT");
+    let failure = tx
+        .commit()
+        .await
+        .expect_err("a sale naming a method with no ledger entry must be refused at COMMIT");
+    assert!(
+        failure.to_string().contains("wrote no ledger entry"),
+        "the refusal must name the missing entry, got: {failure}"
     );
 }
 
@@ -9810,7 +9342,7 @@ async fn v4_s6a_the_adjustment_ceiling_still_serialises_direct_writers(pool: sql
 // slice `POST /api/purchases` could not say "we owe" at all, so every purchase was a
 // cash movement whether or not any money had left.
 
-/// The seeded one-off supplier, `…0002`. Named here rather than imported, as `DEBT_ACCOUNT` is.
+/// The seeded one-off supplier, `…0002`. Named here rather than imported.
 const ONE_OFF_SUPPLIER: &str = "00000000-0000-0000-0000-000000000002";
 /// The seeded `cash` method, `…0004`, and its account, `…0003`.
 const CASH_METHOD: &str = "00000000-0000-0000-0000-000000000004";
@@ -11008,15 +10540,22 @@ async fn v4_s6b_a_return_may_name_a_rail_but_only_one_that_paid_for_the_goods(po
         .to_string();
     assert_eq!(balance_of(&client, &bank_id).await, "-200.00");
 
-    // The debt account is not a rail: naming it is a 400, not a 409. It holds nothing, so money
-    // cannot come back through it — the same refusal a sale and a purchase already make.
-    let debt_method = "00000000-0000-0000-0000-000000000006";
-    let debt = return_of(&client, &purchase_id, &item_id, 1, Some(debt_method)).await;
+    // An unknown method is a 404, not a 400 and not a 500 — the refusal that survives once the
+    // `credit` row it used to name is gone (`S7`). Nothing here reads a method's account any
+    // more, so "the debt account is not a rail" became "there is no such rail".
+    let gone = return_of(
+        &client,
+        &purchase_id,
+        &item_id,
+        1,
+        Some("00000000-0000-0000-0000-000000000006"),
+    )
+    .await;
     assert_eq!(
-        debt.status(),
-        axum::http::StatusCode::BAD_REQUEST,
-        "the debt account cannot be a refund rail; body: {}",
-        debt.text
+        gone.status(),
+        axum::http::StatusCode::NOT_FOUND,
+        "an unknown method is not a rail; body: {}",
+        gone.text
     );
 
     // A return through the till: refused. The till never paid for these goods.
