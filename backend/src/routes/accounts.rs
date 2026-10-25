@@ -28,11 +28,12 @@
 //! clear status code, not for safety: a `psql` session bypasses this file entirely,
 //! which is exactly why the invariants live in the schema.
 //!
-//! **The seeded `credit` rows are refused, never rearranged.** `CREDIT_ACCOUNT_ID`
-//! and `CREDIT_PAYMENT_METHOD_ID` are resolved by the sale and purchase guards with
-//! no lookup, so the two rows they name must stay what the constants say: the method
-//! never changes account, nothing is attached to the account, and the account is
-//! never the till. Those three are `odd/tasks/v3-seed-identities.md` S1-S3.
+//! **There is no `credit` row, and its absence is the design**, not an omission. Debt is a
+//! document (`obligations`, `payables` since v4) and every reason this file once had to
+//! protect an account named `credit` — it is never the till, no method is attached to it, its
+//! method never moves — went with it. `S7` of `v4-settlement.md` retired it by rewriting the
+//! initial schema rather than shipping a migration that deletes a row the schema should never
+//! have created: the application has never shipped, so no database holds a document naming it.
 
 use axum::{
     Json, Router,
@@ -45,7 +46,7 @@ use uuid::Uuid;
 
 use crate::AppState;
 use crate::db::conflict_or_500;
-use crate::models::account::{Account, CREDIT_ACCOUNT_ID, CREDIT_PAYMENT_METHOD_ID, PaymentMethod};
+use crate::models::account::{Account, PaymentMethod};
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -252,16 +253,6 @@ async fn update_account(
         None => None,
     };
 
-    // S3: the debt account is never the shop's till. Checked before the transaction
-    // because it needs no row state, and because the schema's own refusal arrives at
-    // commit time where it can only be reported as a server fault.
-    //
-    // Decided before the "clear the old default" statement below on purpose:
-    // refusing after it would abandon a half-done move for the wrong reason.
-    if body.is_default == Some(true) && id == CREDIT_ACCOUNT_ID {
-        return Err(StatusCode::CONFLICT);
-    }
-
     let mut tx = state.db.begin().await.map_err(|e| {
         tracing::error!(?e, "tx begin failed");
         StatusCode::INTERNAL_SERVER_ERROR
@@ -358,13 +349,6 @@ async fn create_payment_method(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    // S2: nothing may be attached to the debt account. Decided before the existence
-    // lookup, because the seeded account does exist and the refusal is about the
-    // rule rather than about whether the row is there.
-    if body.account_id == CREDIT_ACCOUNT_ID {
-        return Err(StatusCode::CONFLICT);
-    }
-
     // An unknown account is a 404 rather than a 500 from the foreign key, the same
     // distinction `create_purchase` makes for an unknown supplier.
     let account_exists: i64 = sqlx::query_scalar!(
@@ -437,19 +421,6 @@ async fn update_payment_method(
         //
         // **Both are about a change, not about the field being present.** A client that
         // sends a full object, or `PATCH`es the destination it already has, is making a
-        // statement about nothing; `0016` allows that deliberately (`IS DISTINCT FROM`)
-        // and this file has to say the same thing. Written the other way first — refuse
-        // whenever the id appeared — it answered `409` to a no-op while the schema
-        // answered `UPDATE 1`, so the two layers disagreed about the same write. Found
-        // by review (`R3-001`, second occurrence, CRITICAL) and reproduced: the no-op
-        // answered `409` through the API and succeeded through `psql`.
-        if id == CREDIT_PAYMENT_METHOD_ID && account_id != CREDIT_ACCOUNT_ID {
-            return Err(StatusCode::CONFLICT);
-        }
-        if account_id == CREDIT_ACCOUNT_ID && id != CREDIT_PAYMENT_METHOD_ID {
-            return Err(StatusCode::CONFLICT);
-        }
-
         let account_exists: i64 = sqlx::query_scalar!(
             "SELECT count(*) AS \"count!\" FROM accounts WHERE id = $1",
             account_id

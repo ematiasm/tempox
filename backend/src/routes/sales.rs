@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::AppState;
 use crate::db::conflict_or_500;
-use crate::models::account::{CASH_ACCOUNT_ID, CASH_PAYMENT_METHOD_ID, CREDIT_ACCOUNT_ID};
+use crate::models::account::{CASH_ACCOUNT_ID, CASH_PAYMENT_METHOD_ID};
 use crate::models::destination::{self, Destination};
 use crate::models::{
     credit_note::CreditNote, credit_note_item::CreditNoteItem, sale::Sale, sale_item::SaleItem,
@@ -219,17 +219,6 @@ async fn create_sale(
     };
 
     // **A sale claims one of two things, and the debt account is neither.** Naming
-    // `credit` would say "money moved into an account that holds nothing", which is the
-    // defect this slice removes (`v3-accounts.md` L4-L5). The constraint trigger in
-    // `0021` refuses it; this is the status code, not the rule. A boolean refusal is the
-    // honest answer for an incoherent claim, and it is the one this path already
-    // answered before the column became nullable.
-    if let Some((_, account_id)) = destination
-        && account_id == CREDIT_ACCOUNT_ID
-    {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-
     // S9: a sale on account must name a real customer. The check is written
     // **positively first** in the tests — a sale on account to a named customer is
     // accepted — because a refusal on its own could pass for the wrong reason.
@@ -575,18 +564,12 @@ async fn create_credit_note(
                         tracing::error!(?e, "payment method lookup failed");
                         StatusCode::INTERNAL_SERVER_ERROR
                     })?;
-            let account_id = account_id.ok_or_else(|| {
+            // The method must exist. Nothing is read off its account any more: the debt
+            // account that used to be refused here does not exist (`S7`).
+            account_id.ok_or_else(|| {
                 tracing::error!("METHOD-LOOKUP-404");
                 StatusCode::NOT_FOUND
             })?;
-            // A note may not target the debt account, which is now redundant with
-            // `0021`'s refusal on every ledger row — and is kept anyway. The schema is the
-            // rule; this is the 400 that tells the caller, and a removed pre-check would
-            // turn a caller's mistake into a 500 the first time the trigger fired.
-            if account_id == CREDIT_ACCOUNT_ID {
-                return Err(StatusCode::BAD_REQUEST);
-            }
-
             // **`v3-accounts.md` L107, closed here.** An explicit method means money goes
             // back through a rail — so that rail must have received that money first. The
             // measured defect was a refund of a sale nobody paid taking 100 out of the

@@ -379,28 +379,34 @@ AFTER INSERT ON credit_notes
 DEFERRABLE INITIALLY DEFERRED
 FOR EACH ROW EXECUTE FUNCTION credit_note_moves_money_or_lowers_debt();
 
--- ── The book keeps refusing to name the debt account ──────────────────────
+-- ── The book refuses a destination that is not a wallet ───────────────────
 --
 -- `S1` read backwards: since no sale on account writes a ledger entry, nothing in the book
--- may ever point at the debt account again. This trigger is what makes S7's delete of
--- `credit` a delete rather than a data migration, and it is honest about its own limit —
--- **it does not clean up rows written before it existed**, because the book is append-only
--- and rewriting it is exactly what this repository refuses. The `DO` block below refuses to
--- continue if such rows exist, naming the remedy instead of silently producing two
--- generations of credit history.
-CREATE OR REPLACE FUNCTION money_entry_never_names_the_debt_account() RETURNS trigger AS $$
+-- may point at a destination that holds nothing. `0017`'s `money_entry_resolves_account`
+-- already refuses a row whose method resolves to no account; this refuses the other shape,
+-- a method that **does** resolve but to an account that is not a wallet.
+--
+-- **`credit` is gone from the schema entirely** (`S7` of `v4-settlement.md`, and the seed is
+-- removed from `0012` rather than deleted by a migration — the owner's decision, because
+-- nothing has shipped). What remains here is the general rule that made its removal safe,
+-- stated without naming a row that no longer exists: debt is a document, not a balance, so a
+-- ledger row can never be the record of somebody owing something.
+--
+-- The rule is expressed as the closed set `accounts.kind` already declares (`0017`: `cash` or
+-- `digital`). A future account kind that is not a wallet would have to be added to that CHECK
+-- first, which is the review this repository wants for that change.
+CREATE OR REPLACE FUNCTION money_entry_names_a_real_account() RETURNS trigger AS $$
 DECLARE
-    debt UUID;
+    kind TEXT;
 BEGIN
-    SELECT a.id INTO debt
+    SELECT a.kind INTO kind
       FROM payment_methods pm JOIN accounts a ON a.id = pm.account_id
-     WHERE pm.id = NEW.payment_method_id
-       AND a.name = 'credit';
+     WHERE pm.id = NEW.payment_method_id;
 
-    IF debt IS NOT NULL THEN
+    IF kind IS NULL OR kind NOT IN ('cash', 'digital') THEN
         RAISE EXCEPTION
-            'money entry % names a method on the debt account: debt is a document (obligations), not a balance',
-            NEW.id;
+            'money entry % names a method on account kind %, which is not a wallet: debt is a document (obligations, payables), not a balance',
+            NEW.id, kind;
     END IF;
 
     RETURN NEW;
@@ -408,9 +414,10 @@ END;
 $$ LANGUAGE plpgsql;
 
 DROP TRIGGER IF EXISTS money_entries_never_name_the_debt ON money_entries;
-CREATE TRIGGER money_entries_never_name_the_debt
+DROP TRIGGER IF EXISTS money_entries_name_a_real_account ON money_entries;
+CREATE TRIGGER money_entries_name_a_real_account
 BEFORE INSERT ON money_entries
-FOR EACH ROW EXECUTE FUNCTION money_entry_never_names_the_debt_account();
+FOR EACH ROW EXECUTE FUNCTION money_entry_names_a_real_account();
 
 -- ── No backfill, and that is a decision rather than an omission ──────────
 --
@@ -460,7 +467,7 @@ BEGIN
               ('obligations_adjustments', 'obligations_adjustments_ceiling'),
               ('sales', 'sales_payment_method_claimed'),
               ('credit_notes', 'credit_notes_claim_their_effect'),
-              ('money_entries', 'money_entries_never_name_the_debt')
+              ('money_entries', 'money_entries_name_a_real_account')
            ) AS wanted(table_name, name)
      WHERE EXISTS (
              SELECT 1 FROM pg_trigger t
@@ -484,17 +491,21 @@ BEGIN
     END IF;
 
     -- **No legacy data may be in the way, and the remedy is a DROP** — the owner's
-    -- decision: nothing has shipped, so no database holds history worth carrying. The
-    -- message says that instead of asking for a judgement call the project has already
-    -- made.
+    -- decision: nothing has shipped, so no database holds history worth carrying.
+    --
+    -- The check runs against **any** ledger row whose method resolves to no account, which
+    -- is the shape the retired `credit` account used to have: a book row pointing at a
+    -- destination that is not a wallet. With `credit` removed from the initial schema (`S7`
+    -- of `v4-settlement.md`, and the seed is gone from `0012`) this can only be violated by
+    -- rows written before that rewrite, which is exactly the case the refusal exists for.
     SELECT count(*) INTO legacy
       FROM money_entries me
-      JOIN payment_methods pm ON pm.id = me.payment_method_id
-      JOIN accounts a         ON a.id = pm.account_id
-     WHERE a.name = 'credit';
+      LEFT JOIN payment_methods pm ON pm.id = me.payment_method_id
+      LEFT JOIN accounts a         ON a.id = pm.account_id
+     WHERE a.id IS NULL;
     IF legacy > 0 THEN
         RAISE EXCEPTION
-            '% money_entries row(s) name the debt account, from a credit sale recorded before this slice. This migration does not migrate them: the application has never shipped, so the remedy is to drop the development database and start from empty ("docker compose down -v"). If a database ever does hold history worth keeping, replace this refusal with a real backfill — and relax guard_sale_economics for exactly the payment_method_id to NULL transition, which the first attempt at this file did not.',
+            '% money_entries row(s) name a payment method that resolves to no account. This migration does not migrate them: the application has never shipped, so the remedy is to drop the development database and start from empty ("docker compose down -v").',
             legacy;
     END IF;
 

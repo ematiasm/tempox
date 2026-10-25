@@ -105,19 +105,17 @@ test('a sale paid by transfer lands in that account, not in the till', async ({ 
  * second account called `credit` cannot exist — the seeded name is unique across the
  * table, and this spec creates nothing.
  */
-test('the seeded debt account is never offered as the till', async ({ page }) => {
+test('only the till exists, because debt is a document and not an account', async ({ page }) => {
+  // **This spec used to assert the opposite**: that the seeded `credit` account appeared as a
+  // destination while the promotion button was withheld from it. `S7` of
+  // `v4-settlement.md` removed that account from the initial schema — the owner's decision,
+  // because nothing has shipped — so the screen has one destination, and the property worth
+  // pinning is that the old row cannot come back through the UI.
   await page.goto('/accounts');
 
-  const creditRow = page.locator('li.row', { hasText: 'credit' });
-  await expect(creditRow).toHaveCount(1);
+  await expect(page.locator('li.row', { hasText: 'credit' })).toHaveCount(0);
 
-  // The account exists and is a destination like any other: renaming and attaching a
-  // method stay offered. What is withheld is the promotion.
-  await expect(creditRow.getByRole('button', { name: 'Renombrar' })).toBeVisible();
-  await expect(creditRow.getByRole('button', { name: 'Marcar como caja' })).toHaveCount(0);
-
-  // And the till still says so about itself, so the absence above cannot be read as
-  // "the screen stopped offering promotion to anyone".
   const cashRow = page.locator('li.row', { hasText: 'cash' });
+  await expect(cashRow).toHaveCount(1);
   await expect(cashRow).toContainText('Caja del negocio');
 });

@@ -77,23 +77,27 @@ CREATE INDEX IF NOT EXISTS payment_methods_account_id_idx
 -- A fixed id is what lets the server find a known row without a lookup and
 -- without a classification column.
 --
--- `credit` exists in v3 but its method is born **inactive**: v3 has no way to
--- collect a credit sale (that document belongs to the next slice), so offering it
--- in the picker would let the employee create a debt nothing can settle. Seeding
--- it now is what makes the "a credit sale may not be walk-in" guard testable at
--- all — a guard about a row that does not exist has no case that can make it
--- fail, and a guard no test can make fail is not yet a guard. The next slice
--- activates it with one UPDATE.
+-- **`credit` is not seeded, and it never was, in this history.** v3 seeded an
+-- account (`…0005`) and an inactive method (`…0006`) named `credit` so that a
+-- guard about "a credit sale may not be walk-in" had a row that could make it
+-- fail. That guard is gone and so is the row: debt is a document (`obligations`,
+-- `payables`) and there is no account that holds a right to be paid. `S7` of
+-- `v4-settlement.md` retired it, and the owner's decision was to rewrite the
+-- history rather than add a migration that deletes a row the initial schema
+-- should never have created — the application has never shipped, so no database
+-- holds a document naming it.
+--
+-- **This leaves only `cash` as a seeded destination**, which is what the write
+-- paths already assume: `CASH_ACCOUNT_ID` and `CASH_PAYMENT_METHOD_ID` in
+-- `models/account.rs` are the only fixed ids the server resolves without a
+-- lookup.
 INSERT INTO accounts (id, name, is_default)
-VALUES ('00000000-0000-0000-0000-000000000003', 'cash', true),
-       ('00000000-0000-0000-0000-000000000005', 'credit', false)
+VALUES ('00000000-0000-0000-0000-000000000003', 'cash', true)
 ON CONFLICT DO NOTHING;
 
 INSERT INTO payment_methods (id, account_id, name, is_active)
 VALUES ('00000000-0000-0000-0000-000000000004',
-        '00000000-0000-0000-0000-000000000003', 'cash', true),
-       ('00000000-0000-0000-0000-000000000006',
-        '00000000-0000-0000-0000-000000000005', 'credit', false)
+        '00000000-0000-0000-0000-000000000003', 'cash', true)
 ON CONFLICT DO NOTHING;
 
 -- ── The default account always has an active method ─────────────────────────

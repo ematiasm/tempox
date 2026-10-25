@@ -557,12 +557,12 @@ BEGIN
     -- decision: nothing has shipped, so no database holds history worth carrying.
     SELECT count(*) INTO legacy
       FROM money_entries me
-      JOIN payment_methods pm ON pm.id = me.payment_method_id
-      JOIN accounts a         ON a.id = pm.account_id
-     WHERE a.name = 'credit';
+      LEFT JOIN payment_methods pm ON pm.id = me.payment_method_id
+      LEFT JOIN accounts a         ON a.id = pm.account_id
+     WHERE a.id IS NULL;
     IF legacy > 0 THEN
         RAISE EXCEPTION
-            '% money_entries row(s) name the debt account. This migration does not migrate them: the application has never shipped, so the remedy is to drop the development database and start from empty ("docker compose down -v").',
+            '% money_entries row(s) name a payment method that resolves to no account. This migration does not migrate them: the application has never shipped, so the remedy is to drop the development database and start from empty ("docker compose down -v").',
             legacy;
     END IF;
 

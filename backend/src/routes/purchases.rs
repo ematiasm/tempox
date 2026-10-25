@@ -10,7 +10,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::AppState;
-use crate::models::account::{CASH_ACCOUNT_ID, CASH_PAYMENT_METHOD_ID, CREDIT_ACCOUNT_ID};
+use crate::models::account::{CASH_ACCOUNT_ID, CASH_PAYMENT_METHOD_ID};
 use crate::models::destination::{self, Destination};
 use crate::models::purchase::{Purchase, PurchaseItem, PurchaseWithItems};
 use crate::models::supplier_return::{SupplierReturn, SupplierReturnItem, SupplierReturnWithItems};
@@ -236,12 +236,6 @@ async fn create_purchase(
     //
     // Written as an equality against the account rather than against the method id so
     // it keeps holding if the shop ever attaches a second method to that account.
-    if let Some((_, account_id)) = destination
-        && account_id == CREDIT_ACCOUNT_ID
-    {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-
     // S3: a purchase on account must name a real supplier. The one-off supplier is
     // anonymous and cannot be owed: anonymous debt is not debt, mirroring the refusal of
     // `walk-in` for a sale on account.
@@ -749,12 +743,9 @@ async fn create_supplier_return(
                         tracing::error!(?e, "payment method lookup failed");
                         StatusCode::INTERNAL_SERVER_ERROR
                     })?;
-            let account_id = account_id.ok_or(StatusCode::NOT_FOUND)?;
-            // The debt account is not a rail. The same refusal a sale and a purchase already
-            // make, for the same reason: it holds nothing, so money cannot come back through it.
-            if account_id == CREDIT_ACCOUNT_ID {
-                return Err(StatusCode::BAD_REQUEST);
-            }
+            // The method must exist. Nothing is read off its account any more: the debt
+            // account that used to be refused here does not exist (`S7`).
+            account_id.ok_or(StatusCode::NOT_FOUND)?;
 
             // **An explicit method means money comes back through a rail, so that rail must have
             // received that money first** (`v3-accounts.md` L107 mirrored; the credit-note side

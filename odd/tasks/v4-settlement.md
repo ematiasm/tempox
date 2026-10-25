@@ -1,7 +1,8 @@
 # v4-settlement — money that moves, money that is owed, and the book that proves it
 
 Design settled in conversation on 2026-10-24. **State: S1, S3, S4 and S5 are merged to
-`main`; S2 is deferred to v5; S6a is merged; S6b is in progress in its own document.** This
+`main`; S2 is deferred to v5; S6a and S6b are merged; S7 is merged and the v4 slices are
+complete.** This
 file is the specification subagents read; `L1` onwards in the Log is where it came from,
 including the three proposals that were rejected and why, and `V1`–`V9e` under Verification
 record what each delivered slice measured.
@@ -15,7 +16,7 @@ record what each delivered slice measured.
 | S2 `created_by` | **deferred to v5** — the field cannot be corrected afterwards (`L24`) | — | — |
 | **S6a** obligations, collections | `0021_obligations.sql`, `0022_payments_settlements.sql`, `payments.rs`, 16 commits | #86 → `2e6f7be` | six lineages, all closed through correction — see `v4-receivables.md` |
 | S6b payables, supplier returns | **in progress** — `odd/tasks/v4-payables.md` | — | — |
-| S7 retire `credit` | pending, and it deletes `0016`'s four triggers | — | — |
+| **S7** retire `credit` | `0016_credit_seed_identity.sql` **deleted**, seed removed from `0012`, the ledger guard generalised to `accounts.kind` | #88 | — |
 
 The next slice is **S6b**, specified in `odd/tasks/v4-payables.md`: it is `L19` closed, and
 the mirror of S6a on the purchase side — a purchase that owes, a supplier payment that settles
@@ -667,3 +668,46 @@ From the reviews of #73, #75 and v3. The first is the one worth doing first.
   is wrong.
 - The development database is now at migration **16 locally** and `main` is at `0020`; the
   next `cargo run` applies the rest.
+
+L26 (owner, verbatim): "antes de empezar S7 quiero que elimines el historial de migraciones de la
+base de datos y que tampoco crees una migracion para borrar credit. Sino que eliminalo y
+arrancamos con la migracion inicial como si la base de datos arrancara de cero, porque estamos en
+fase de desarrollo y la app nunca salio a produccion"
+
+**S7 was therefore done by subtraction, not by a migration.** No `0024` was written. Instead:
+
+- `0012` no longer seeds the `credit` account (`…0005`) or its method (`…0006`). Only `cash`
+  remains, which is what the write paths already assume — `CASH_ACCOUNT_ID` and
+  `CASH_PAYMENT_METHOD_ID` are the only fixed ids the server resolves without a lookup.
+- `0016_credit_seed_identity.sql` was **deleted**. It existed only to keep those two rows what
+  the constants said, and it is `168` lines of triggers guarding a row that no longer exists. A
+  guard that cannot fire is not a guard.
+- `0021`'s `money_entry_never_names_the_debt_account` was **generalised** rather than deleted: it
+  searched `accounts` for the *name* `'credit'`, which after the removal would find nothing and
+  never fire. It is now `money_entry_names_a_real_account` and refuses any ledger row whose
+  method resolves to an account whose `kind` is not `cash` or `digital` — the closed set `0017`
+  already declares. The rule survives; the name of a row that no longer exists does not.
+- Both migrations' legacy `DO` blocks now refuse a book row whose method resolves to **no
+  account**, instead of one whose account is named `credit`.
+- The two constants and every route guard that compared against them are gone:
+  `CREDIT_ACCOUNT_ID` / `CREDIT_PAYMENT_METHOD_ID` from `models/account.rs`, and six dead
+  branches across `accounts.rs`, `sales.rs`, `purchases.rs` and `payments.rs`.
+
+**The databases were dropped and recreated**, as the owner asked: `tempox` and `tempox_test`,
+then the chain applied from `0001`. `_sqlx_migrations` now runs `1..15, 17..23` — **`0016` is
+absent, and the gap is deliberate**: `sqlx` keys applied migrations by version, so renumbering
+would change the identity of migrations other databases may already have applied. A missing
+number is a smaller lie than a moved one.
+
+**Four tests that existed only for the row were deleted**, and six that used it as a fixture were
+repaired rather than deleted — each one needed a *real* second account, which is what the retired
+row had been standing in for. `v4_s6a_migrations_refuse_a_legacy_credit_sale_instead_of_half_migrating`
+became `v4_the_chain_migrates_an_empty_database_cleanly_and_refuses_a_foreign_destination`: the
+legacy state it built is no longer constructible, because the account and method it named are
+gone. **That is recorded rather than faked**: what it still proves is that the chain installs from
+nothing and that `0017` refuses a book row naming a method that does not exist — a stronger rule
+than the one it replaced, since now the bad state cannot be created at all.
+
+Verification: `make test` green — 52 unit + 232 frontend + **139** backend (was 146; seven of the
+difference were the deleted credit-only tests) + 23 e2e. `make lint` clean, `make sqlx-check` in
+sync. On a fresh database: `accounts: cash`, `methods: cash`, `credit rows: 0`.
