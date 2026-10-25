@@ -12,6 +12,7 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::db::conflict_or_500;
 use crate::models::account::{CASH_ACCOUNT_ID, CASH_PAYMENT_METHOD_ID, CREDIT_ACCOUNT_ID};
+use crate::models::destination::{self, Destination};
 use crate::models::{
     credit_note::CreditNote, credit_note_item::CreditNoteItem, sale::Sale, sale_item::SaleItem,
 };
@@ -61,46 +62,13 @@ pub struct NewSale {
     ///
     /// An unknown id is a 404, and a sale on account must name a real customer (S9):
     /// anonymous debt is not debt.
-    #[serde(default, deserialize_with = "deserialize_destination")]
-    pub payment_method_id: Option<Destination>,
+    ///
+    /// Kept raw here and judged by `Destination::from_field`, the one shared definition
+    /// (`odd/tasks/v4-payables.md` S3). `keep_present` preserves an explicit null as
+    /// distinct from an omitted key, which `Option<Uuid>` cannot do.
+    #[serde(default, deserialize_with = "destination::keep_present")]
+    pub payment_method_id: Option<serde_json::Value>,
     pub items: Vec<NewSaleItem>,
-}
-
-/// Where a sale's money went, or the explicit claim that it did not move.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Destination {
-    /// Money moved, through this method.
-    Method(Uuid),
-    /// Money did not move. The sale owes.
-    OnAccount,
-}
-
-/// Deserializes `payment_method_id` as a method id, or as the literal `"on_account"`.
-///
-/// A uuid that does not parse is a `BAD_REQUEST` rather than a 500, which is the same
-/// contract `amount` has: a malformed request is the caller's, not the server's.
-fn deserialize_destination<'de, D>(deserializer: D) -> Result<Option<Destination>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let raw = Option::<String>::deserialize(deserializer)?;
-    let Some(raw) = raw else {
-        // **An explicit null is refused, and this is the whole reason the sentinel
-        // exists.** It cannot mean "the till" without turning a debt into a cash sale, and
-        // it cannot mean "on account" without turning every older client's omitted field
-        // into a debt. Saying which one you mean is the price of having two meanings.
-        return Err(serde::de::Error::custom(
-            "payment_method_id may not be null: send a method id, \"on_account\", or omit the key",
-        ));
-    };
-    if raw == "on_account" {
-        return Ok(Some(Destination::OnAccount));
-    }
-    Uuid::parse_str(&raw)
-        .map(|id| Some(Destination::Method(id)))
-        .map_err(|_| {
-            serde::de::Error::custom("payment_method_id must be a method id or \"on_account\"")
-        })
 }
 
 #[derive(Debug, Deserialize)]
@@ -232,7 +200,9 @@ async fn create_sale(
     // `None` is the sale on account: money did not move, so there is no method to
     // resolve and no account to name. It is not "the till" — omitted means the till and
     // is resolved below, which is what keeps every older client's behaviour intact.
-    let destination = match body.payment_method_id {
+    let destination = match Destination::from_field(body.payment_method_id)
+        .map_err(|_| StatusCode::BAD_REQUEST)?
+    {
         Some(Destination::Method(id)) => {
             let row = sqlx::query!("SELECT account_id FROM payment_methods WHERE id = $1", id)
                 .fetch_optional(&mut *tx)

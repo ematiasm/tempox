@@ -9166,7 +9166,16 @@ async fn v4_s6a_migrations_refuse_a_legacy_credit_sale_instead_of_half_migrating
     // that also carries `0022`, `settlements` references `obligations` and a bare `DROP TABLE
     // obligations` fails with "other objects depend on it". The rewind must undo the chain in
     // reverse order or it is not a rewind.
+    //
+    // **`0023`'s objects go first too**, in reverse order (`v4-payables.md` S13). `payable_settlements`
+    // references `payments`, so the chain's tables cannot be dropped until those are gone; the
+    // purchase and supplier-return triggers are dropped with their tables' own triggers.
     for sql in [
+        "DROP TABLE IF EXISTS payable_settlements",
+        "DROP TABLE IF EXISTS payables_adjustments",
+        "DROP TABLE IF EXISTS payables",
+        "DROP TRIGGER IF EXISTS purchases_payment_method_claimed ON purchases",
+        "DROP TRIGGER IF EXISTS supplier_returns_claim_their_effect ON supplier_returns",
         "DROP TRIGGER IF EXISTS money_entries_never_name_the_debt ON money_entries",
         "DROP TRIGGER IF EXISTS credit_notes_claim_their_effect ON credit_notes",
         "DROP TRIGGER IF EXISTS sales_payment_method_claimed ON sales",
@@ -9792,4 +9801,1397 @@ async fn v4_s6a_the_adjustment_ceiling_still_serialises_direct_writers(pool: sql
         "the ceiling must still refuse an over-lowering that never passed the route"
     );
     let _ = cash_method;
+}
+
+// ── v4 S6b: what we owe (payables) ──────────────────────────────────────────
+//
+// `odd/tasks/v4-payables.md` S1-S3. The mirror of S6a on the purchase side: a purchase
+// on account is a document that owes a supplier, and it moves no money. Before this
+// slice `POST /api/purchases` could not say "we owe" at all, so every purchase was a
+// cash movement whether or not any money had left.
+
+/// The seeded one-off supplier, `…0002`. Named here rather than imported, as `DEBT_ACCOUNT` is.
+const ONE_OFF_SUPPLIER: &str = "00000000-0000-0000-0000-000000000002";
+/// The seeded `cash` method, `…0004`, and its account, `…0003`.
+const CASH_METHOD: &str = "00000000-0000-0000-0000-000000000004";
+const CASH_ACCOUNT: &str = "00000000-0000-0000-0000-000000000003";
+
+/// A named supplier and a product, because a purchase on account needs a real supplier:
+/// the one-off supplier is anonymous and cannot be owed.
+async fn payable_fixture(client: &common::Client, tag: &str, price: &str) -> (String, String) {
+    let supplier = client
+        .post(
+            "/api/suppliers",
+            serde_json::json!({ "name": format!("pay-{tag}") }),
+        )
+        .await;
+    assert_eq!(supplier.status(), axum::http::StatusCode::CREATED);
+    let supplier_id = supplier.body["id"]
+        .as_str()
+        .expect("supplier id")
+        .to_string();
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": format!("pay-prod-{tag}"), "list_price": price }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("product id").to_string();
+    (supplier_id, product_id)
+}
+
+/// The payable a purchase owes, as `(amount, party_id, party_kind)`, or `None`.
+async fn payable_of(pool: &sqlx::PgPool, purchase_id: &str) -> Option<(String, String, String)> {
+    let row: Option<(rust_decimal::Decimal, uuid::Uuid, String)> = sqlx::query_as(
+        "SELECT amount, party_id, party_kind FROM payables
+          WHERE source_document_kind = 'purchase' AND source_document_id = $1",
+    )
+    .bind(uuid::Uuid::parse_str(purchase_id).expect("uuid"))
+    .fetch_optional(pool)
+    .await
+    .expect("read the payable");
+    row.map(|(amount, party, kind)| (amount.to_string(), party.to_string(), kind))
+}
+
+/// Ledger rows naming one purchase, of any account.
+async fn purchase_entries(pool: &sqlx::PgPool, purchase_id: &str) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM money_entries WHERE document_kind = 'purchase' AND document_id = $1",
+    )
+    .bind(uuid::Uuid::parse_str(purchase_id).expect("uuid"))
+    .fetch_one(pool)
+    .await
+    .expect("count purchase entries")
+}
+
+#[sqlx::test]
+async fn v4_s6b_a_purchase_on_account_owes_the_supplier_and_moves_no_money(pool: sqlx::PgPool) {
+    // S1 and S3. Positive first: the purchase must be ACCEPTED. A refusal alone could pass
+    // because the route rejects every on-account purchase, which is the wrong reason.
+    let client = common::client(pool.clone());
+    let (supplier_id, product_id) = payable_fixture(&client, "owed", "40.00").await;
+    let till_before = balance_of(&client, CASH_ACCOUNT).await;
+
+    let purchase = client
+        .post(
+            "/api/purchases",
+            serde_json::json!({
+                "supplier_id": supplier_id,
+                "items": [{ "product_id": product_id, "quantity": 2 }],
+                "payment_method_id": "on_account"
+            }),
+        )
+        .await;
+    assert_eq!(
+        purchase.status(),
+        axum::http::StatusCode::CREATED,
+        "a purchase on account is accepted; body was: {}",
+        purchase.text
+    );
+    let purchase_id = purchase.body["purchase"]["id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+
+    // The purchase says, in its own row, that it moved no money.
+    assert!(
+        purchase.body["purchase"]["payment_method_id"].is_null(),
+        "a purchase on account names no method; body was: {}",
+        purchase.body
+    );
+    assert!(
+        purchase.body["purchase"]["payment_method_name"].is_null(),
+        "a purchase on account names no method name; body was: {}",
+        purchase.body
+    );
+
+    // Exactly one payable, for the purchase's total, owed to its own supplier.
+    let (amount, party, kind) = payable_of(&pool, &purchase_id)
+        .await
+        .expect("a purchase on account must owe exactly one payable");
+    assert_eq!(amount, "80.000000");
+    assert_eq!(party, supplier_id);
+    assert_eq!(kind, "supplier");
+
+    // And nothing entered the book, not the till and not the debt account.
+    assert_eq!(
+        purchase_entries(&pool, &purchase_id).await,
+        0,
+        "money did not leave, so the ledger records nothing"
+    );
+    assert_eq!(balance_of(&client, CASH_ACCOUNT).await, till_before);
+}
+
+#[sqlx::test]
+async fn v4_s6b_a_purchase_paid_in_cash_writes_one_entry_and_no_payable(pool: sqlx::PgPool) {
+    // The other half of S2, and the one that protects every existing purchase: a purchase
+    // that names a method writes its entry and must not acquire a payable.
+    let client = common::client(pool.clone());
+    let (supplier_id, product_id) = payable_fixture(&client, "paid", "25.00").await;
+
+    let purchase = client
+        .post(
+            "/api/purchases",
+            serde_json::json!({
+                "supplier_id": supplier_id,
+                "items": [{ "product_id": product_id, "quantity": 1 }]
+            }),
+        )
+        .await;
+    assert_eq!(purchase.status(), axum::http::StatusCode::CREATED);
+    let purchase_id = purchase.body["purchase"]["id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+
+    assert_eq!(purchase.body["purchase"]["payment_method_id"], CASH_METHOD);
+    assert_eq!(
+        purchase_entries(&pool, &purchase_id).await,
+        1,
+        "a paid purchase writes one entry"
+    );
+    assert!(
+        payable_of(&pool, &purchase_id).await.is_none(),
+        "money moved, so the purchase owes nothing"
+    );
+}
+
+#[sqlx::test]
+async fn v4_s6b_the_one_off_supplier_cannot_be_owed_but_can_be_paid(pool: sqlx::PgPool) {
+    // S3's refusal, and its positive twin in the same test so the refusal cannot pass for the
+    // wrong reason. Anonymous debt is not debt, exactly as a sale to walk-in is refused.
+    let client = common::client(pool.clone());
+    let (_, product_id) = payable_fixture(&client, "oneoff", "15.00").await;
+
+    let paid = client
+        .post(
+            "/api/purchases",
+            serde_json::json!({
+                "items": [{ "product_id": product_id, "quantity": 1 }]
+            }),
+        )
+        .await;
+    assert_eq!(
+        paid.status(),
+        axum::http::StatusCode::CREATED,
+        "a paid purchase from the one-off supplier is still accepted; body: {}",
+        paid.text
+    );
+    assert_eq!(paid.body["purchase"]["supplier_id"], ONE_OFF_SUPPLIER);
+
+    let refused = client
+        .post(
+            "/api/purchases",
+            serde_json::json!({
+                "supplier_id": ONE_OFF_SUPPLIER,
+                "items": [{ "product_id": product_id, "quantity": 1 }],
+                "payment_method_id": "on_account"
+            }),
+        )
+        .await;
+    assert_eq!(
+        refused.status(),
+        axum::http::StatusCode::BAD_REQUEST,
+        "a debt to nobody is refused; body: {}",
+        refused.text
+    );
+
+    // The refusal wrote nothing: no purchase, no payable, no entry, under that supplier.
+    let owed: i64 = sqlx::query_scalar("SELECT count(*) FROM payables WHERE party_id = $1::uuid")
+        .bind(ONE_OFF_SUPPLIER)
+        .fetch_one(&pool)
+        .await
+        .expect("count payables");
+    assert_eq!(owed, 0, "the refused purchase must not have owed anything");
+}
+
+#[sqlx::test]
+async fn v4_s6b_the_list_carries_a_purchase_on_account_with_no_method(pool: sqlx::PgPool) {
+    // The `LEFT JOIN` proof. With `INNER JOIN payment_methods` this purchase would be absent
+    // from the list, with no error and no sign of it — the trap sales.rs documents.
+    let client = common::client(pool.clone());
+    let (supplier_id, product_id) = payable_fixture(&client, "listed", "30.00").await;
+
+    let purchase = client
+        .post(
+            "/api/purchases",
+            serde_json::json!({
+                "supplier_id": supplier_id,
+                "items": [{ "product_id": product_id, "quantity": 1 }],
+                "payment_method_id": "on_account"
+            }),
+        )
+        .await;
+    assert_eq!(purchase.status(), axum::http::StatusCode::CREATED);
+    let purchase_id = purchase.body["purchase"]["id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+
+    let list = client.get("/api/purchases").await;
+    assert_eq!(list.status(), axum::http::StatusCode::OK);
+    let found = list
+        .body
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|p| p["purchase"]["id"] == purchase_id.as_str())
+        .unwrap_or_else(|| {
+            panic!(
+                "a purchase on account must appear in the list; body: {}",
+                list.text
+            )
+        });
+    assert!(found["purchase"]["payment_method_id"].is_null());
+    assert!(found["purchase"]["payment_method_name"].is_null());
+}
+
+#[sqlx::test]
+async fn v4_s6b_an_explicit_null_method_is_refused_not_read_as_the_till_or_a_debt(
+    pool: sqlx::PgPool,
+) {
+    // S3. `null` cannot mean "the till" (it would silently turn a debt into cash) nor "on
+    // account" (it would turn every omitted field into a debt). It is refused, and the
+    // refusal writes nothing. Positive first, so the refusal is not a broken fixture.
+    let client = common::client(pool.clone());
+    let (supplier_id, product_id) = payable_fixture(&client, "nullish", "12.00").await;
+
+    let accepted = client
+        .post(
+            "/api/purchases",
+            serde_json::json!({
+                "supplier_id": supplier_id,
+                "items": [{ "product_id": product_id, "quantity": 1 }]
+            }),
+        )
+        .await;
+    assert_eq!(accepted.status(), axum::http::StatusCode::CREATED);
+
+    let before_purchases: i64 = sqlx::query_scalar("SELECT count(*) FROM purchases")
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+    let refused = client
+        .post(
+            "/api/purchases",
+            serde_json::json!({
+                "supplier_id": supplier_id,
+                "items": [{ "product_id": product_id, "quantity": 1 }],
+                "payment_method_id": null
+            }),
+        )
+        .await;
+    assert_eq!(
+        refused.status(),
+        axum::http::StatusCode::BAD_REQUEST,
+        "an explicit null is refused; body: {}",
+        refused.text
+    );
+    let after_purchases: i64 = sqlx::query_scalar("SELECT count(*) FROM purchases")
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+    assert_eq!(
+        before_purchases, after_purchases,
+        "a refused null writes no purchase"
+    );
+}
+
+#[sqlx::test]
+async fn v4_s6b_the_database_refuses_a_purchase_that_moved_no_money_and_owes_nothing(
+    pool: sqlx::PgPool,
+) {
+    // Reached below the route, where only the trigger is watching. A purchase that says it
+    // moved no money must name exactly one payable; with none, COMMIT refuses it, and the
+    // message names the cause rather than a generic constraint.
+    let supplier: (uuid::Uuid,) = sqlx::query_as("SELECT id FROM suppliers WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(ONE_OFF_SUPPLIER).expect("uuid"))
+        .fetch_one(&pool)
+        .await
+        .expect("the one-off supplier is seeded");
+
+    let mut tx = pool.begin().await.expect("begin");
+    sqlx::query(
+        "INSERT INTO purchases (supplier_id, total, payment_method_id)
+         VALUES ($1, 10.00, NULL)",
+    )
+    .bind(supplier.0)
+    .execute(&mut *tx)
+    .await
+    .expect("the column accepts NULL; the claim is the trigger's to check");
+    let failure = tx
+        .commit()
+        .await
+        .expect_err("a purchase claiming to have moved no money with no payable must be refused");
+    let message = failure.to_string();
+    assert!(
+        message.contains("0 payable(s) name it"),
+        "the refusal must name the missing payable, got: {message}"
+    );
+}
+
+#[sqlx::test]
+async fn v4_s6b_a_return_of_an_on_account_purchase_no_longer_answers_a_server_fault(
+    pool: sqlx::PgPool,
+) {
+    // **This test used to assert a 409, and T7.4 replaced it — the premise expired, not the
+    // assertion.** T7.2 refused a return of a purchase on account outright because the inherited
+    // `NULL` path did not exist yet; its purpose was to keep a reachable ordinary operation from
+    // answering 500 at COMMIT (`R1-004` of `review-336e2618582310f9`). T7.4 built that path, so the
+    // refusal is gone and what must hold now is the opposite: the return is **accepted**, writes no
+    // money, and lowers the debt.
+    //
+    // It is kept rather than deleted because the property it was protecting is the one that
+    // matters — no 500 on this path — and that property outlived the refusal.
+    let client = common::client(pool.clone());
+    let (supplier_id, product_id) = payable_fixture(&client, "noreturn", "40.00").await;
+    let purchase = client
+        .post(
+            "/api/purchases",
+            serde_json::json!({
+                "supplier_id": supplier_id,
+                "items": [{ "product_id": product_id, "quantity": 2 }],
+                "payment_method_id": "on_account"
+            }),
+        )
+        .await;
+    assert_eq!(purchase.status(), axum::http::StatusCode::CREATED);
+    let purchase_id = purchase.body["purchase"]["id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+    let item_id = purchase.body["items"][0]["id"]
+        .as_str()
+        .expect("item")
+        .to_string();
+
+    let returned = return_of(&client, &purchase_id, &item_id, 1, None).await;
+    assert_eq!(
+        returned.status(),
+        axum::http::StatusCode::CREATED,
+        "a return of an unpaid purchase is accepted and lowers the debt; body: {}",
+        returned.text
+    );
+    assert!(
+        !returned.status().is_server_error(),
+        "and it must never be a server fault"
+    );
+    assert_eq!(
+        payable_of(&pool, &purchase_id).await.map(|p| p.0),
+        Some("80.000000".to_string()),
+        "the debt itself stands; a return lowers it through an adjustment"
+    );
+    assert_eq!(
+        payable_outstanding_of(&pool, &payable_id_of(&pool, &purchase_id).await).await,
+        "40",
+        "one of the two 40.00 units came back"
+    );
+}
+
+// ── v4 S6b (T7.3): paying a supplier settles what we owe ────────────────────
+//
+// `odd/tasks/v4-payables.md` S6, S7, S10. The mirror of the S6a collection side: there money
+// arrives and settles what a customer owes; here money leaves and settles what we owe a
+// supplier. The three refusals this route must keep are the three the customer side learned
+// the expensive way — a payment that does not exist, one that went the wrong way, and one
+// belonging to another party — plus the ceiling that asks how much we have actually sent.
+
+/// A purchase on account, through the API. Returns `(purchase_id, supplier_id)`.
+///
+/// Creates its own supplier, so two calls give two suppliers. A test that needs several
+/// payables for ONE supplier uses [`purchase_on_account_for`] — and it must, because the party
+/// check correctly refuses to mix them.
+async fn purchase_on_account(
+    client: &common::Client,
+    tag: &str,
+    price: &str,
+    quantity: i64,
+) -> (String, String) {
+    let (supplier_id, _product_id) = payable_fixture(client, tag, price).await;
+    let purchase_id = purchase_on_account_for(client, &supplier_id, tag, price, quantity).await;
+    (purchase_id, supplier_id)
+}
+
+/// A purchase on account for a supplier and product the caller already owns.
+async fn purchase_on_account_for(
+    client: &common::Client,
+    supplier_id: &str,
+    tag: &str,
+    price: &str,
+    quantity: i64,
+) -> String {
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": format!("pay-for-{tag}"), "list_price": price }),
+        )
+        .await;
+    assert_eq!(product.status(), axum::http::StatusCode::CREATED);
+    let product_id = product.body["id"].as_str().expect("product id").to_string();
+    let purchase = client
+        .post(
+            "/api/purchases",
+            serde_json::json!({
+                "supplier_id": supplier_id,
+                "items": [{ "product_id": product_id, "quantity": quantity }],
+                "payment_method_id": "on_account"
+            }),
+        )
+        .await;
+    assert_eq!(
+        purchase.status(),
+        axum::http::StatusCode::CREATED,
+        "a purchase on account must be accepted; body: {}",
+        purchase.text
+    );
+    purchase.body["purchase"]["id"]
+        .as_str()
+        .expect("purchase id")
+        .to_string()
+}
+
+/// The id of the payable a purchase owes.
+async fn payable_id_of(pool: &sqlx::PgPool, purchase_id: &str) -> String {
+    sqlx::query_scalar::<_, uuid::Uuid>(
+        "SELECT id FROM payables
+          WHERE source_document_kind = 'purchase' AND source_document_id = $1",
+    )
+    .bind(uuid::Uuid::parse_str(purchase_id).expect("uuid"))
+    .fetch_one(pool)
+    .await
+    .expect("the purchase owes one payable")
+    .to_string()
+}
+
+/// What a payable still owes: the debt less every document that lowered it and every payment
+/// that settled it. Derived, never stored — the same reason a balance is.
+async fn payable_outstanding_of(pool: &sqlx::PgPool, payable_id: &str) -> String {
+    let value: rust_decimal::Decimal = sqlx::query_scalar(
+        "SELECT o.amount
+                - COALESCE((SELECT SUM(a.amount) FROM payables_adjustments a
+                             WHERE a.payable_id = o.id), 0)
+                - COALESCE((SELECT SUM(s.amount) FROM payable_settlements s
+                             WHERE s.payable_id = o.id), 0)
+           FROM payables o WHERE o.id = $1",
+    )
+    .bind(uuid::Uuid::parse_str(payable_id).expect("uuid"))
+    .fetch_one(pool)
+    .await
+    .expect("payable outstanding");
+    value.normalize().to_string()
+}
+
+/// Money we sent a supplier, through the API. Returns the payment id.
+async fn pay_supplier(
+    client: &common::Client,
+    supplier_id: &str,
+    method: &str,
+    total: &str,
+) -> String {
+    let paid = client
+        .post(
+            "/api/payments",
+            serde_json::json!({
+                "party_kind": "supplier",
+                "party_id": supplier_id,
+                "payment_method_id": method,
+                "total": total,
+                "direction": "out"
+            }),
+        )
+        .await;
+    assert_eq!(
+        paid.status(),
+        axum::http::StatusCode::CREATED,
+        "paying a supplier is a legitimate outflow; body: {}",
+        paid.text
+    );
+    paid.body["id"].as_str().expect("payment id").to_string()
+}
+
+#[sqlx::test]
+async fn v4_s6b_paying_a_supplier_settles_what_we_owe(pool: sqlx::PgPool) {
+    // S6, positive first: the settlement must be ACCEPTED, the payable must drop, and **the
+    // book must not gain a row** — the money moved when the payment was recorded.
+    let client = common::client(pool.clone());
+    let cash_account = "00000000-0000-0000-0000-000000000003";
+    let cash_method = "00000000-0000-0000-0000-000000000004";
+    let (purchase_id, supplier_id) = purchase_on_account(&client, "settle", "100.00", 1).await;
+    let payable_id = payable_id_of(&pool, &purchase_id).await;
+
+    let payment_id = pay_supplier(&client, &supplier_id, cash_method, "100.00").await;
+    assert_eq!(
+        balance_of(&client, cash_account).await,
+        "-100.00",
+        "the money really left"
+    );
+
+    let entries_before: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM money_entries WHERE document_kind = 'purchase'")
+            .fetch_one(&pool)
+            .await
+            .expect("count purchase entries");
+
+    let settled = client
+        .post(
+            "/api/payable-settlements",
+            serde_json::json!({
+                "payable_id": payable_id,
+                "payment_id": payment_id,
+                "amount": "100.00"
+            }),
+        )
+        .await;
+    assert_eq!(
+        settled.status(),
+        axum::http::StatusCode::CREATED,
+        "settling a payable with money we sent is accepted; body: {}",
+        settled.text
+    );
+    assert_eq!(settled.body["amount"], "100.00");
+    assert_eq!(
+        settled.body["payable_outstanding"], "0.00",
+        "the debt is settled; body: {}",
+        settled.body
+    );
+    assert_eq!(settled.body["payment_unapplied"], "0.00");
+
+    assert_eq!(outstanding_zero(&pool, &payable_id).await, "0");
+    // **No ledger entry, and it is the assertion this test exists for.** A settlement says
+    // which debt the money answered; the money already moved with the payment.
+    let entries_after: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM money_entries WHERE document_kind = 'purchase'")
+            .fetch_one(&pool)
+            .await
+            .expect("count purchase entries");
+    assert_eq!(entries_before, entries_after, "a settlement moves no money");
+    assert_eq!(
+        balance_of(&client, cash_account).await,
+        "-100.00",
+        "and the till is where the payment left it"
+    );
+}
+
+/// The outstanding figure, normalised to what a test compares against.
+async fn outstanding_zero(pool: &sqlx::PgPool, payable_id: &str) -> String {
+    payable_outstanding_of(pool, payable_id).await
+}
+
+#[sqlx::test]
+async fn v4_s6b_a_payment_may_cover_several_payables_and_a_payable_may_be_paid_in_parts(
+    pool: sqlx::PgPool,
+) {
+    // S6's two ceilings, from the side that makes them sums rather than comparisons: one
+    // payment covering two payables, and one payable paid by two payments.
+    let client = common::client(pool.clone());
+    let cash_method = "00000000-0000-0000-0000-000000000004";
+
+    let (first_purchase, supplier_id) = purchase_on_account(&client, "parts-a", "100.00", 1).await;
+    let first_payable = payable_id_of(&pool, &first_purchase).await;
+    // The second purchase is for the SAME supplier, because one payment settles only that
+    // supplier's debts — the party check refuses anything else, which the next test proves.
+    let second_purchase =
+        purchase_on_account_for(&client, &supplier_id, "parts-b", "40.00", 1).await;
+    let second_payable = payable_id_of(&pool, &second_purchase).await;
+
+    // One payment of 140 covering both debts, 100 + 40.
+    let payment_id = pay_supplier(&client, &supplier_id, cash_method, "140.00").await;
+    for (payable, amount) in [(&first_payable, "100.00"), (&second_payable, "40.00")] {
+        let settled = client
+            .post(
+                "/api/payable-settlements",
+                serde_json::json!({
+                    "payable_id": payable,
+                    "payment_id": payment_id,
+                    "amount": amount
+                }),
+            )
+            .await;
+        assert_eq!(
+            settled.status(),
+            axum::http::StatusCode::CREATED,
+            "one payment may cover several payables; body: {}",
+            settled.text
+        );
+    }
+    assert_eq!(payable_outstanding_of(&pool, &first_payable).await, "0");
+    assert_eq!(payable_outstanding_of(&pool, &second_payable).await, "0");
+
+    // A debt paid in parts: a fresh payable of 90 for the SAME supplier, settled 30 then 60 from
+    // two payments.
+    let partial_purchase =
+        purchase_on_account_for(&client, &supplier_id, "parts-c", "90.00", 1).await;
+    let partial_payable = payable_id_of(&pool, &partial_purchase).await;
+    for amount in ["30.00", "60.00"] {
+        let payment = pay_supplier(&client, &supplier_id, cash_method, amount).await;
+        let settled = client
+            .post(
+                "/api/payable-settlements",
+                serde_json::json!({
+                    "payable_id": partial_payable,
+                    "payment_id": payment,
+                    "amount": amount
+                }),
+            )
+            .await;
+        assert_eq!(
+            settled.status(),
+            axum::http::StatusCode::CREATED,
+            "a payable may be paid in parts; body: {}",
+            settled.text
+        );
+    }
+    assert_eq!(payable_outstanding_of(&pool, &partial_payable).await, "0");
+}
+
+#[sqlx::test]
+async fn v4_s6b_both_ceilings_refuse_and_each_names_its_own(pool: sqlx::PgPool) {
+    // Both ceilings, and the reason the messages name which one: an over-applied payment is a
+    // different correction from an over-settled debt, and a single message would leave the
+    // caller guessing.
+    let client = common::client(pool.clone());
+    let cash_method = "00000000-0000-0000-0000-000000000004";
+    let (purchase_id, supplier_id) = purchase_on_account(&client, "ceil", "100.00", 1).await;
+    let payable_id = payable_id_of(&pool, &purchase_id).await;
+
+    // 70 sent, 70 applied: fine.
+    let payment_id = pay_supplier(&client, &supplier_id, cash_method, "70.00").await;
+    let ok = client
+        .post(
+            "/api/payable-settlements",
+            serde_json::json!({ "payable_id": payable_id, "payment_id": payment_id, "amount": "70.00" }),
+        )
+        .await;
+    assert_eq!(ok.status(), axum::http::StatusCode::CREATED);
+
+    // **1 more against that same, exhausted payment: refused by the PAYMENT.** A second, fully
+    // unapplied payment of 500 is sent first, deliberately: without it the party-sent ceiling
+    // would answer the same 409, and neutering the payment ceiling would leave this green —
+    // measured. The extra money is what makes the two ceilings distinguishable, so the assertion
+    // is about the one it names.
+    let _unapplied = pay_supplier(&client, &supplier_id, cash_method, "500.00").await;
+    let over_payment = client
+        .post(
+            "/api/payable-settlements",
+            serde_json::json!({ "payable_id": payable_id, "payment_id": payment_id, "amount": "1.00" }),
+        )
+        .await;
+    assert_eq!(
+        over_payment.status(),
+        axum::http::StatusCode::CONFLICT,
+        "a payment cannot apply more than it is worth; body: {}",
+        over_payment.text
+    );
+
+    // 30 left owed, 40 sent: 40 against the debt is refused by the PAYABLE.
+    let more = pay_supplier(&client, &supplier_id, cash_method, "40.00").await;
+    let over_payable = client
+        .post(
+            "/api/payable-settlements",
+            serde_json::json!({ "payable_id": payable_id, "payment_id": more, "amount": "40.00" }),
+        )
+        .await;
+    assert_eq!(
+        over_payable.status(),
+        axum::http::StatusCode::CONFLICT,
+        "a debt cannot be settled for more than it is worth; body: {}",
+        over_payable.text
+    );
+
+    // The remaining 30 is accepted, and 10 stays unapplied on that payment.
+    let exact = client
+        .post(
+            "/api/payable-settlements",
+            serde_json::json!({ "payable_id": payable_id, "payment_id": more, "amount": "30.00" }),
+        )
+        .await;
+    assert_eq!(
+        exact.status(),
+        axum::http::StatusCode::CREATED,
+        "body: {}",
+        exact.text
+    );
+    assert_eq!(exact.body["payable_outstanding"], "0.00");
+    assert_eq!(exact.body["payment_unapplied"], "10.00");
+    assert_eq!(payable_outstanding_of(&pool, &payable_id).await, "0");
+}
+
+#[sqlx::test]
+async fn v4_s6b_only_money_we_sent_to_that_supplier_can_retire_what_we_owe(pool: sqlx::PgPool) {
+    // The three-way check, and each half is a different mistake with a different answer.
+    //
+    // The direction half is the mirror of `R1-002`/`R3-002` of `review-336e2618582310f9`: there a
+    // customer's refund settled a debt and resolved the same money twice. Here the harm is that a
+    // customer's collection — money that ARRIVED — retires a bill we never paid, so the shop
+    // believes a supplier has been paid out of money that came in over the counter.
+    let client = common::client(pool.clone());
+    let cash_method = "00000000-0000-0000-0000-000000000004";
+    let (purchase_id, supplier_id) = purchase_on_account(&client, "three", "100.00", 1).await;
+    let payable_id = payable_id_of(&pool, &purchase_id).await;
+
+    // (1) an unknown payment: 404, because the document cannot be named.
+    let unknown = client
+        .post(
+            "/api/payable-settlements",
+            serde_json::json!({
+                "payable_id": payable_id,
+                "payment_id": "00000000-0000-0000-0000-0000000000f9",
+                "amount": "10.00"
+            }),
+        )
+        .await;
+    assert_eq!(unknown.status(), axum::http::StatusCode::NOT_FOUND);
+
+    // (2) money that came IN: 400. A collection cannot pay a supplier.
+    let collected = client
+        .post(
+            "/api/payments",
+            serde_json::json!({
+                "party_kind": "customer",
+                "party_id": "00000000-0000-0000-0000-000000000001",
+                "payment_method_id": cash_method,
+                "total": "100.00",
+                "direction": "in"
+            }),
+        )
+        .await;
+    assert_eq!(collected.status(), axum::http::StatusCode::CREATED);
+    let inbound = collected.body["id"]
+        .as_str()
+        .expect("payment id")
+        .to_string();
+    let wrong_direction = client
+        .post(
+            "/api/payable-settlements",
+            serde_json::json!({ "payable_id": payable_id, "payment_id": inbound, "amount": "100.00" }),
+        )
+        .await;
+    assert_eq!(
+        wrong_direction.status(),
+        axum::http::StatusCode::BAD_REQUEST,
+        "money that arrived cannot pay what we owe; body: {}",
+        wrong_direction.text
+    );
+
+    // **What case (2) actually measures, measured by neutering it.** With
+    // `direction != "out"` in the handler turned into `if false && ...`, this test stays GREEN:
+    // the party check answers the same 400 and fires first. So case (2) pins the *refusal*, not
+    // the direction clause — and the direction clause in the handler turns out to be
+    // **unreachable for any schema-legal payment**: `payments_direction_matches_party` makes every
+    // `in` payment a customer's, and a customer's `party_kind` never equals a supplier payable's.
+    //
+    // It stays in the handler anyway, deliberately, as defence in depth: the schema is the rule
+    // and the handler is agreeing with it, exactly as `create_settlement` keeps its own direction
+    // check beside `0022`'s trigger. What it is *not* is tested, and saying so is cheaper than a
+    // test that appears to cover it. The direction rule is really proven **below the route**, in
+    // `v4_s6b_the_database_refuses_a_payable_settlement_outside_its_invariants`, where the
+    // trigger checks direction *before* party — that ordering is what makes it observable there.
+    //
+    // (3) money we really sent, but to ANOTHER supplier: 400. One supplier's payment cannot
+    // retire another supplier's bill, or both books read wrong.
+    let (_, other_product) = payable_fixture(&client, "three-other", "50.00").await;
+    let other_supplier = client
+        .post(
+            "/api/suppliers",
+            serde_json::json!({ "name": "three-other-supplier" }),
+        )
+        .await;
+    let other_supplier_id = other_supplier.body["id"].as_str().expect("id").to_string();
+    let _ = other_product;
+    let elsewhere = pay_supplier(&client, &other_supplier_id, cash_method, "100.00").await;
+    let wrong_party = client
+        .post(
+            "/api/payable-settlements",
+            serde_json::json!({ "payable_id": payable_id, "payment_id": elsewhere, "amount": "100.00" }),
+        )
+        .await;
+    assert_eq!(
+        wrong_party.status(),
+        axum::http::StatusCode::BAD_REQUEST,
+        "another supplier's payment cannot retire this bill; body: {}",
+        wrong_party.text
+    );
+
+    // And the debt is untouched by all three.
+    assert_eq!(payable_outstanding_of(&pool, &payable_id).await, "100");
+    let _ = supplier_id;
+
+    // The legitimate path still works, so none of the three refusals is a blanket one.
+    let right = pay_supplier(&client, &supplier_id, cash_method, "100.00").await;
+    let accepted = client
+        .post(
+            "/api/payable-settlements",
+            serde_json::json!({ "payable_id": payable_id, "payment_id": right, "amount": "100.00" }),
+        )
+        .await;
+    assert_eq!(
+        accepted.status(),
+        axum::http::StatusCode::CREATED,
+        "the supplier we owe, paid with money we sent it, settles the bill; body: {}",
+        accepted.text
+    );
+    assert_eq!(payable_outstanding_of(&pool, &payable_id).await, "0");
+}
+
+#[sqlx::test]
+async fn v4_s6b_a_settlement_cannot_spend_money_we_already_had_come_back(pool: sqlx::PgPool) {
+    // **S7, and the mirror of `R1-001`/`R3-001` of `review-1becd57b99cb3a1f`.** The per-payment
+    // ceiling counts one payment's own settlements and cannot see that the party's money is no
+    // longer out there: we sent 100, we applied it, and then it came back to us. Settling a
+    // second bill with it would spend the same money twice.
+    let client = common::client(pool.clone());
+    let cash_method = "00000000-0000-0000-0000-000000000004";
+    let (first_purchase, supplier_id) = purchase_on_account(&client, "spent-a", "100.00", 1).await;
+    let first_payable = payable_id_of(&pool, &first_purchase).await;
+
+    let payment = pay_supplier(&client, &supplier_id, cash_method, "100.00").await;
+    let settled = client
+        .post(
+            "/api/payable-settlements",
+            serde_json::json!({ "payable_id": first_payable, "payment_id": payment, "amount": "100.00" }),
+        )
+        .await;
+    assert_eq!(settled.status(), axum::http::StatusCode::CREATED);
+
+    // **What this test measures, and what it does not — measured by neutering it.** With
+    // `body.amount > sent_available` turned into `if false && ...`, this test stays GREEN.
+    //
+    // That is not a weak test, it is arithmetic, and it is worth stating because the design
+    // document claims a guard that does not exist as a guard. On the customer side the party
+    // balance has three terms (`in − settlements − out`) and the middle one is **not** the sum of
+    // the per-payment remainders, because a refund can take money back out without touching any
+    // settlement — that is `R1-001`/`R3-001`, and the helper is what closed it. On the supplier
+    // side the mirror is `Σ(payments out) − Σ(payable_settlements)`, which **is exactly**
+    // `Σ(payment.total − applied)`: the per-payment ceiling already implies it, term for term.
+    // Measured on a live database, both formulas, one fixture: 30.000000 and 30.000000.
+    //
+    // So the ceiling that actually bites here is the per-payment one above, and this test pins
+    // the *behaviour* the route promises — money already applied cannot settle a second bill —
+    // with its refutation named instead of implied. The helper stays because it is what makes a
+    // future third term expressible (an inbound supplier payment, if the schema ever allows one)
+    // and because S7 is written in one place; it is a **restatement, not an independent guard.**
+    // `v4-payables.md` S7 and L5 say so, and this comment is the second half of that correction.
+    let second_purchase =
+        purchase_on_account_for(&client, &supplier_id, "spent-b", "100.00", 1).await;
+    let second_payable = payable_id_of(&pool, &second_purchase).await;
+
+    let reuse = client
+        .post(
+            "/api/payable-settlements",
+            serde_json::json!({ "payable_id": second_payable, "payment_id": payment, "amount": "100.00" }),
+        )
+        .await;
+    assert_eq!(
+        reuse.status(),
+        axum::http::StatusCode::CONFLICT,
+        "money already applied cannot settle a second bill; body: {}",
+        reuse.text
+    );
+    assert_eq!(payable_outstanding_of(&pool, &second_payable).await, "100");
+
+    // New money settles it, so the refusal is not a blanket one.
+    let fresh = pay_supplier(&client, &supplier_id, cash_method, "100.00").await;
+    let accepted = client
+        .post(
+            "/api/payable-settlements",
+            serde_json::json!({ "payable_id": second_payable, "payment_id": fresh, "amount": "100.00" }),
+        )
+        .await;
+    assert_eq!(accepted.status(), axum::http::StatusCode::CREATED);
+    assert_eq!(payable_outstanding_of(&pool, &second_payable).await, "0");
+}
+
+#[sqlx::test]
+async fn v4_s6b_the_new_endpoint_refuses_an_amount_that_is_not_whole_cents(pool: sqlx::PgPool) {
+    // `R2-001`'s lesson from the customer side: the CHECK exists, and without a pre-check it
+    // reaches the caller as a 500. A settlement is money too.
+    let client = common::client(pool.clone());
+    let cash_method = "00000000-0000-0000-0000-000000000004";
+    let (purchase_id, supplier_id) = purchase_on_account(&client, "cents", "100.00", 1).await;
+    let payable_id = payable_id_of(&pool, &purchase_id).await;
+    let payment = pay_supplier(&client, &supplier_id, cash_method, "100.00").await;
+
+    for bad in ["1.005", "0.001", "0.00", "-5.00"] {
+        let refused = client
+            .post(
+                "/api/payable-settlements",
+                serde_json::json!({ "payable_id": payable_id, "payment_id": payment, "amount": bad }),
+            )
+            .await;
+        assert_eq!(
+            refused.status(),
+            axum::http::StatusCode::BAD_REQUEST,
+            "a settlement of {bad} must be refused as a bad request, not a 500; body: {}",
+            refused.text
+        );
+    }
+    assert_eq!(
+        payable_outstanding_of(&pool, &payable_id).await,
+        "100",
+        "none of the refusals wrote anything"
+    );
+}
+
+#[sqlx::test]
+async fn v4_s6b_the_database_refuses_a_payable_settlement_outside_its_invariants(
+    pool: sqlx::PgPool,
+) {
+    // **Below the route, where only the trigger is watching.** A ceiling enforced only above the
+    // database is a suggestion to everyone who reaches below it — `R3-005` of
+    // `review-b40b15076ff2c498`, reproduced on this side because the payable trigger is a second
+    // copy of the rule and a second copy is a second chance to get it wrong.
+    let client = common::client(pool.clone());
+    let cash_method = "00000000-0000-0000-0000-000000000004";
+    let (purchase_id, _supplier_id) = purchase_on_account(&client, "below", "100.00", 1).await;
+    let payable_id = payable_id_of(&pool, &purchase_id).await;
+
+    // A customer's collection: money that came in, not out.
+    let collected = client
+        .post(
+            "/api/payments",
+            serde_json::json!({
+                "party_kind": "customer",
+                "party_id": "00000000-0000-0000-0000-000000000001",
+                "payment_method_id": cash_method,
+                "total": "100.00",
+                "direction": "in"
+            }),
+        )
+        .await;
+    let inbound = collected.body["id"]
+        .as_str()
+        .expect("payment id")
+        .to_string();
+
+    let mutated = sqlx::query(
+        "INSERT INTO payable_settlements (payable_id, payment_id, amount, created_by)
+         VALUES ($1, $2, 100.00, 'test')",
+    )
+    .bind(uuid::Uuid::parse_str(&payable_id).expect("uuid"))
+    .bind(uuid::Uuid::parse_str(&inbound).expect("uuid"))
+    .execute(&pool)
+    .await;
+
+    let message = match mutated {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("the trigger accepted money that came in as paying a supplier"),
+    };
+    assert!(
+        message.contains("not money going out"),
+        "the refusal must name the direction, got: {message}"
+    );
+    assert_eq!(
+        payable_outstanding_of(&pool, &payable_id).await,
+        "100",
+        "the bill stands, because we never paid it"
+    );
+}
+
+// ── v4 S6b (T7.4): the return that owes ────────────────────────────────────
+//
+// `odd/tasks/v4-payables.md` S8, S9, S10. This is `v4-settlement.md` L19 closed, and
+// `v3-accounts.md` L107 mirrored: `supplier_returns` inherits the purchase's method with no
+// override, and **that inheritance is only true for a purchase that was paid**. Returning goods
+// on an unpaid purchase credits the debt; it does not hand money back.
+
+/// A supplier return through the API.
+async fn return_of(
+    client: &common::Client,
+    purchase_id: &str,
+    item_id: &str,
+    quantity: i64,
+    method: Option<&str>,
+) -> common::TestResponse {
+    let mut body = serde_json::json!({
+        "items": [{ "purchase_item_id": item_id, "quantity": quantity }]
+    });
+    if let Some(method) = method {
+        body["payment_method_id"] = serde_json::json!(method);
+    }
+    client
+        .post(
+            &format!("/api/purchases/{purchase_id}/supplier-returns"),
+            body,
+        )
+        .await
+}
+
+#[sqlx::test]
+async fn v4_s6b_a_return_of_an_unpaid_purchase_lowers_the_debt_and_moves_no_money(
+    pool: sqlx::PgPool,
+) {
+    // **S8, the positive case, and the one T7.2 refused until this task existed.** A return that
+    // inherits the purchase's NULL method writes no ledger entry and exactly one adjustment.
+    let client = common::client(pool.clone());
+    let cash_account = "00000000-0000-0000-0000-000000000003";
+    let (purchase_id, _supplier_id) = purchase_on_account(&client, "ret-owed", "100.00", 2).await;
+    let payable_id = payable_id_of(&pool, &purchase_id).await;
+    let item_id = payable_item_of(&pool, &purchase_id).await;
+
+    let returned = return_of(&client, &purchase_id, &item_id, 1, None).await;
+    assert_eq!(
+        returned.status(),
+        axum::http::StatusCode::CREATED,
+        "returning goods on an unpaid purchase is accepted; body: {}",
+        returned.text
+    );
+    // The note says, in its own row, that it moved no money.
+    assert!(
+        returned.body["return"]["payment_method_id"].is_null(),
+        "a return that lowers a debt names no rail; body: {}",
+        returned.body
+    );
+
+    assert_eq!(
+        payable_outstanding_of(&pool, &payable_id).await,
+        "100",
+        "a 200.00 debt, one of two units returned at 100.00 each"
+    );
+    assert_eq!(
+        balance_of(&client, cash_account).await,
+        "0.00",
+        "no money left an account that never paid for these goods"
+    );
+    let entries: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM money_entries WHERE document_kind = 'supplier_return'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count return entries");
+    assert_eq!(entries, 0, "the book stays silent");
+    let adjustments: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM payables_adjustments WHERE payable_id = $1")
+            .bind(uuid::Uuid::parse_str(&payable_id).expect("uuid"))
+            .fetch_one(&pool)
+            .await
+            .expect("count adjustments");
+    assert_eq!(adjustments, 1, "exactly one adjustment names the return");
+}
+
+/// The first purchase line's id, for a return.
+async fn payable_item_of(pool: &sqlx::PgPool, purchase_id: &str) -> String {
+    sqlx::query_scalar::<_, uuid::Uuid>(
+        "SELECT id FROM purchase_items WHERE purchase_id = $1 ORDER BY product_name, id LIMIT 1",
+    )
+    .bind(uuid::Uuid::parse_str(purchase_id).expect("uuid"))
+    .fetch_one(pool)
+    .await
+    .expect("the purchase has one line")
+    .to_string()
+}
+
+#[sqlx::test]
+async fn v4_s6b_a_return_may_not_exceed_what_the_payable_still_owes(pool: sqlx::PgPool) {
+    // The combined ceiling on the inherited path. A return lowers a debt; it cannot lower it past
+    // zero, and 0026's equivalent on the customer side answered 500 until the handler pre-checked
+    // it (`R1-004`/`R4-001`). This must be a 409 with nothing written.
+    //
+    // **Which layer answers, measured.** Two layers can: the handler's pre-check, and the
+    // `P0001` → `409` mapping around the insert (which is what turns `0023`'s deferred ceiling into
+    // a status the caller can act on instead of a 500). Neutering the pre-check alone leaves this
+    // green; neutering **both** turns it into `500`. So what this test pins is the property — no
+    // server fault on an ordinary over-return — and the two layers are deliberately redundant for
+    // the reason `v4-settlement.md` V9c gives: only the handler's is reachable over HTTP, only the
+    // trigger's over `psql`.
+    let client = common::client(pool.clone());
+    // **Two units of 100.00, and only ONE of them comes back.** The first version used a single
+    // unit, which made the whole debt the return's total — so the trigger's own ceiling answered
+    // and neutering the handler's pre-check left this green. Measured, then fixed: with `2` the
+    // return is 100.00 against a settled debt of 200.00, room zero, and the **only** thing that
+    // can answer is the pre-check (a trigger would answer at COMMIT, as a 500).
+    let (purchase_id, _supplier_id) = purchase_on_account(&client, "ret-ceil", "100.00", 2).await;
+    let payable_id = payable_id_of(&pool, &purchase_id).await;
+    let item_id = payable_item_of(&pool, &purchase_id).await;
+
+    // Settle the whole 200.00 debt with money, so there is no room left to lower it.
+    let (_p2, supplier_id) = purchase_on_account(&client, "ret-ceil-2", "100.00", 1).await;
+    let _ = supplier_id;
+    let mut tx = pool.begin().await.expect("begin");
+    sqlx::query(
+        "INSERT INTO payments (id, party_kind, party_id, payment_method_id, total, direction, occurred_at, created_by)
+         SELECT '00000000-0000-0000-0000-0000000000b1', 'supplier', party_id,
+                '00000000-0000-0000-0000-000000000004', 200.00, 'out', NOW(), 'test'
+           FROM payables WHERE id = $1",
+    )
+    .bind(uuid::Uuid::parse_str(&payable_id).expect("uuid"))
+    .execute(&mut *tx)
+    .await
+    .expect("insert the payment");
+    sqlx::query(
+        "INSERT INTO money_entries (account_id, payment_method_id, document_kind, document_id, amount, occurred_at, created_by)
+         VALUES ('00000000-0000-0000-0000-000000000003', '00000000-0000-0000-0000-000000000004',
+                 'payment', '00000000-0000-0000-0000-0000000000b1', -200.00, NOW(), 'test')",
+    )
+    .execute(&mut *tx)
+    .await
+    .expect("the payment entry");
+    sqlx::query(
+        "INSERT INTO payable_settlements (payable_id, payment_id, amount, created_by)
+         VALUES ($1, '00000000-0000-0000-0000-0000000000b1', 200.00, 'test')",
+    )
+    .bind(uuid::Uuid::parse_str(&payable_id).expect("uuid"))
+    .execute(&mut *tx)
+    .await
+    .expect("settle the debt");
+    tx.commit().await.expect("commit");
+
+    let refused = return_of(&client, &purchase_id, &item_id, 1, None).await;
+    assert_eq!(
+        refused.status(),
+        axum::http::StatusCode::CONFLICT,
+        "a return cannot lower a debt that is already settled; body: {}",
+        refused.text
+    );
+    let returns: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM supplier_returns WHERE purchase_id = $1::uuid")
+            .bind(&purchase_id)
+            .fetch_one(&pool)
+            .await
+            .expect("count returns");
+    assert_eq!(returns, 0, "the refused return wrote nothing");
+    assert_eq!(payable_outstanding_of(&pool, &payable_id).await, "0");
+}
+
+#[sqlx::test]
+async fn v4_s6b_a_return_may_name_a_rail_but_only_one_that_paid_for_the_goods(pool: sqlx::PgPool) {
+    // **S9, the override and its guard.** The inheritance is only right for a purchase that was
+    // paid, so an explicit method must be a rail the money actually left through — and earlier
+    // explicit returns spend from that same budget.
+    //
+    // The measured defect this closes is `v3-accounts.md` L107 mirrored: a return naming the till
+    // on a purchase paid from the bank drives the till negative for money it never held.
+    let client = common::client(pool.clone());
+    let cash_account = "00000000-0000-0000-0000-000000000003";
+    let cash_method = "00000000-0000-0000-0000-000000000004";
+
+    // A purchase paid from the BANK.
+    let bank = client
+        .post("/api/accounts", serde_json::json!({ "name": "banco-ret" }))
+        .await;
+    let bank_id = bank.body["id"].as_str().expect("account id").to_string();
+    let bank_method_resp = client
+        .post(
+            "/api/payment-methods",
+            serde_json::json!({ "name": "transf-ret", "account_id": bank_id }),
+        )
+        .await;
+    let bank_method = bank_method_resp.body["id"]
+        .as_str()
+        .expect("method id")
+        .to_string();
+    let (supplier_id, _product_id) = payable_fixture(&client, "ovr", "100.00").await;
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "ovr-prod", "list_price": "100.00" }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("id").to_string();
+    let purchase = client
+        .post(
+            "/api/purchases",
+            serde_json::json!({
+                "supplier_id": supplier_id,
+                "items": [{ "product_id": product_id, "quantity": 2 }],
+                "payment_method_id": bank_method
+            }),
+        )
+        .await;
+    assert_eq!(purchase.status(), axum::http::StatusCode::CREATED);
+    let purchase_id = purchase.body["purchase"]["id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+    let item_id = purchase.body["items"][0]["id"]
+        .as_str()
+        .expect("item")
+        .to_string();
+    assert_eq!(balance_of(&client, &bank_id).await, "-200.00");
+
+    // The debt account is not a rail: naming it is a 400, not a 409. It holds nothing, so money
+    // cannot come back through it — the same refusal a sale and a purchase already make.
+    let debt_method = "00000000-0000-0000-0000-000000000006";
+    let debt = return_of(&client, &purchase_id, &item_id, 1, Some(debt_method)).await;
+    assert_eq!(
+        debt.status(),
+        axum::http::StatusCode::BAD_REQUEST,
+        "the debt account cannot be a refund rail; body: {}",
+        debt.text
+    );
+
+    // A return through the till: refused. The till never paid for these goods.
+    let wrong_rail = return_of(&client, &purchase_id, &item_id, 1, Some(cash_method)).await;
+    assert_eq!(
+        wrong_rail.status(),
+        axum::http::StatusCode::CONFLICT,
+        "a rail that never paid cannot give the money back; body: {}",
+        wrong_rail.text
+    );
+    assert_eq!(balance_of(&client, cash_account).await, "0.00");
+    assert_eq!(balance_of(&client, &bank_id).await, "-200.00");
+
+    // The rail that did pay refunds it.
+    let right_rail = return_of(&client, &purchase_id, &item_id, 1, Some(&bank_method)).await;
+    assert_eq!(
+        right_rail.status(),
+        axum::http::StatusCode::CREATED,
+        "the rail that paid gives the money back; body: {}",
+        right_rail.text
+    );
+    assert_eq!(balance_of(&client, &bank_id).await, "-100.00");
+
+    // **And the budget is spent, not reset.** The first return took 100 back out of the bank, so
+    // only 100 of arrival remains; a second 100 is fine and a third must be refused — the third
+    // unit does not exist, so this asserts the arithmetic through the quantity instead.
+    let second = return_of(&client, &purchase_id, &item_id, 1, Some(&bank_method)).await;
+    assert_eq!(
+        second.status(),
+        axum::http::StatusCode::CREATED,
+        "the remaining unit is still refundable; body: {}",
+        second.text
+    );
+    assert_eq!(balance_of(&client, &bank_id).await, "0.00");
+}
+
+#[sqlx::test]
+async fn v4_s6b_the_database_refuses_a_null_return_on_a_paid_purchase(pool: sqlx::PgPool) {
+    // **`S8`'s rule is unreachable over HTTP, and that is the finding, not a hole.**
+    //
+    // "A return may be NULL only when its purchase is NULL" cannot be violated through the route:
+    // omitting the method *inherits* the purchase's, so a paid purchase's return always carries a
+    // method. The rule is therefore enforced where it is expressible — `0023`'s deferred trigger,
+    // reached by writing the row directly, which is the same surface `0021`'s pair of triggers
+    // governs for a credit note.
+    //
+    // This test goes below the route on purpose. Its first version asserted a `400` from the
+    // handler, and the handler refused a legitimate return instead, which is how the omission —
+    // **omit means inherit, not "move no money"** — was found.
+    let client = common::client(pool.clone());
+    let cash_method = "00000000-0000-0000-0000-000000000004";
+    let (supplier_id, _product_id) = payable_fixture(&client, "nullpaid", "100.00").await;
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "nullpaid-prod", "list_price": "100.00" }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("id").to_string();
+    let purchase = client
+        .post(
+            "/api/purchases",
+            serde_json::json!({
+                "supplier_id": supplier_id,
+                "items": [{ "product_id": product_id, "quantity": 1 }],
+                "payment_method_id": cash_method
+            }),
+        )
+        .await;
+    let purchase_id = purchase.body["purchase"]["id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+    let item_id = purchase.body["items"][0]["id"]
+        .as_str()
+        .expect("item")
+        .to_string();
+
+    // The legitimate return through the route works and moves money.
+    let legit = return_of(&client, &purchase_id, &item_id, 1, None).await;
+    assert_eq!(
+        legit.status(),
+        axum::http::StatusCode::CREATED,
+        "a return on a paid purchase inherits the rail and moves money; body: {}",
+        legit.text
+    );
+    assert_eq!(
+        legit.body["return"]["payment_method_id"], cash_method,
+        "the inherited method is the purchase's"
+    );
+
+    // Now the rule, below the route: a second return claiming it moved no money.
+    let mut tx = pool.begin().await.expect("begin");
+    sqlx::query(
+        "INSERT INTO supplier_returns (id, purchase_id, total, payment_method_id)
+         VALUES ('00000000-0000-0000-0000-0000000000ba', $1, 10.00, NULL)",
+    )
+    .bind(uuid::Uuid::parse_str(&purchase_id).expect("uuid"))
+    .execute(&mut *tx)
+    .await
+    .expect("insert the NULL return");
+    let failed = tx.commit().await;
+    let message = match failed {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("a NULL return on a paid purchase must be refused at COMMIT"),
+    };
+    assert!(
+        message.contains("says it moved no money"),
+        "the refusal must name the claim, got: {message}"
+    );
+    let returns: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM supplier_returns WHERE purchase_id = $1::uuid")
+            .bind(&purchase_id)
+            .fetch_one(&pool)
+            .await
+            .expect("count returns");
+    assert_eq!(returns, 1, "only the legitimate return was recorded");
+}
+
+#[sqlx::test]
+async fn v4_s6b_the_schema_refuses_a_payable_for_a_purchase_that_moved_money(pool: sqlx::PgPool) {
+    // The other half of S2, below the route: a purchase that named a method moved money, so a
+    // payable naming it must be refused. Written where the only guard is the pair of constraint
+    // triggers, because the route cannot express the state — it writes the payable in the branch
+    // that has no method.
+    let supplier: (uuid::Uuid,) = sqlx::query_as("SELECT id FROM suppliers WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(ONE_OFF_SUPPLIER_ID).expect("uuid"))
+        .fetch_one(&pool)
+        .await
+        .expect("the one-off supplier is seeded");
+
+    let mut tx = pool.begin().await.expect("begin");
+    let purchase: (uuid::Uuid, chrono::DateTime<chrono::Utc>) = sqlx::query_as(
+        "INSERT INTO purchases (supplier_id, total, payment_method_id)
+         VALUES ($1, 40.00, '00000000-0000-0000-0000-000000000004')
+         RETURNING id, created_at",
+    )
+    .bind(supplier.0)
+    .fetch_one(&mut *tx)
+    .await
+    .expect("a paid purchase");
+    sqlx::query(
+        "INSERT INTO money_entries
+            (account_id, payment_method_id, document_kind, document_id, amount, occurred_at, created_by)
+         VALUES ('00000000-0000-0000-0000-000000000003', '00000000-0000-0000-0000-000000000004',
+                 'purchase', $1, -40.00, $2, 'test')",
+    )
+    .bind(purchase.0)
+    .bind(purchase.1)
+    .execute(&mut *tx)
+    .await
+    .expect("the purchase entry");
+    sqlx::query(
+        "INSERT INTO payables (source_document_kind, source_document_id, party_kind, party_id,
+                               amount, occurred_at, created_by)
+         VALUES ('purchase', $1, 'supplier', $2, 40.00, $3, 'test')",
+    )
+    .bind(purchase.0)
+    .bind(supplier.0)
+    .bind(purchase.1)
+    .execute(&mut *tx)
+    .await
+    .expect("insert the payable");
+    let failure = tx
+        .commit()
+        .await
+        .expect_err("a payable on a purchase that moved money must be refused");
+    // **Two triggers can refuse this and the pair trigger answers first**, which is correct and
+    // worth naming instead of asserting the message I first expected:
+    // `purchases_payment_method_claimed` is a `CONSTRAINT TRIGGER` on the purchase and reports the
+    // disagreement from the side that knows a payable exists.
+    assert!(
+        failure
+            .to_string()
+            .contains("money moved or debt arose, never both"),
+        "the refusal must name the cause, got: {failure}"
+    );
 }

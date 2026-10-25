@@ -1,10 +1,10 @@
 # v4-settlement — money that moves, money that is owed, and the book that proves it
 
 Design settled in conversation on 2026-10-24. **State: S1, S3, S4 and S5 are merged to
-`main`; S2 is deferred to v5; S6a, S6b and S7 are pending.** This file is the
-specification subagents read; `L1` onwards in the Log is where it came from, including
-the three proposals that were rejected and why, and `V1`–`V9e` under Verification record
-what each delivered slice measured.
+`main`; S2 is deferred to v5; S6a is merged; S6b is in progress in its own document.** This
+file is the specification subagents read; `L1` onwards in the Log is where it came from,
+including the three proposals that were rejected and why, and `V1`–`V9e` under Verification
+record what each delivered slice measured.
 
 | Slice | Delivered | PR | Sealed |
 | --- | --- | --- | --- |
@@ -13,13 +13,14 @@ what each delivered slice measured.
 | **S4** the reversal budget | `0019_reversal_budget.sql` | #84 → `6a0abe9` | `review-c20de858957fc384` |
 | **S5** annulment | `0020_annulments.sql` | #85 → `e081077` | `review-9e0c575936d6e78f` |
 | S2 `created_by` | **deferred to v5** — the field cannot be corrected afterwards (`L24`) | — | — |
-| S6a obligations, collections | pending | — | — |
-| S6b payables, supplier returns | pending | — | — |
+| **S6a** obligations, collections | `0021_obligations.sql`, `0022_payments_settlements.sql`, `payments.rs`, 16 commits | #86 → `2e6f7be` | six lineages, all closed through correction — see `v4-receivables.md` |
+| S6b payables, supplier returns | **in progress** — `odd/tasks/v4-payables.md` | — | — |
 | S7 retire `credit` | pending, and it deletes `0016`'s four triggers | — | — |
 
-The next slice is **S6a**, which closes the hole this document exists for: today a refund
-of a sale nobody paid can still take real money out of the till (`L107` of
-`v3-accounts.md`).
+The next slice is **S6b**, specified in `odd/tasks/v4-payables.md`: it is `L19` closed, and
+the mirror of S6a on the purchase side — a purchase that owes, a supplier payment that settles
+it, and the `supplier_returns` override whose absence means returning goods on an unpaid
+purchase credits a debt that does not exist.
 
 It exists because v3 closed a hole and left a worse one open: **the system cannot tell
 "this sale was paid" apart from "this sale is owed", so it lets a refund of a sale
@@ -93,12 +94,22 @@ S5 **An obligation is a document that links the document that originates it.**
    **It writes no ledger entry.** Neither does the sale that created it. Money appears
    only when it is settled.
 
+   **Annotated, not rewritten (`L25`).** The purchase side does not extend this table:
+   it gets its own `payables`, and `payable_settlements` beside `settlements`. The
+   `party_kind = 'supplier'` member stays declared and unused, because `0021` shipped it
+   and rewriting a closed set is the operation that has already cost this feature twice
+   (`L30` of `v4-receivables.md`). What the decision leaves behind is stated there.
+
 S6 **Settlement is a table, not a column.** `settlements(obligation_id, payment_id,
    amount > 0)` with `SUM(amount) ≤ obligation.amount` per obligation and
    `SUM(amount) ≤ payment.total` per payment. Both guards exist because a payment may
    cover several obligations (*"un cobro puede pagar varias obligaciones"*) and an
    obligation may be paid in parts (*"una venta/compra puede quedar parcialmente
    pagada"*). Partial is not a state: it is `SUM(settlements) < amount`.
+
+   **`settlements` is the customer side only, since `L25`.** A supplier payment settles a
+   `payable_settlements` row against a `payables` document, with the same two ceilings as
+   sums over rows. The rule does not change; the table it is written on does.
 
 S7 **A payment and a collection are one document with a direction.**
    `payments(id, party_kind, party_id, payment_method_id NOT NULL, total, direction ∈
@@ -493,6 +504,40 @@ hole.
 deferred, that literal stays in `main` until v5. It is a literal and not a column with
 meaning, and no production database has rows yet, so v5 can change it without migrating
 data — stated here rather than discovered then.
+
+L25 (owner, decision at the start of S6b): **the purchase side gets its own tables.**
+Asked whether the supplier debt extends `obligations`/`settlements` — which is what `S5` and
+`S6` above say, and what `0021` anticipated in its own comments (*"T7 adds `purchase` by
+`ALTER`, the same way `0018` and `0020` extended their sets"*) — or whether it gets
+`payables`, `payables_adjustments` and `payable_settlements` of its own, the owner chose the
+second, which is also what the T7 row of the Tasks table always named.
+
+**Why it is defensible, in one line:** reaching the supplier side through `obligations` costs
+four edits to shipped surgery — two closed-set `ALTER`s (`obligations_source_known`,
+`obligations_adjustments_kind_known`) and two whole `CREATE OR REPLACE` re-cuts
+(`settlement_within_both_ceilings`, `obligation_adjustments_within_amount`) — and that is
+exactly the class of edit that has already gone wrong twice in this feature: `0022`'s re-cut
+silently dropped a `FOR UPDATE` (`R3-004`), and its `CHECK` rewrite silently dropped
+`annulment`. Scope arrives as a new table instead of as an edit to a table money is already
+flowing through.
+
+**What the decision costs, stated rather than discovered later:**
+
+- **A duplicated ceiling, not a violated rule.** `settlement_within_both_ceilings` stays the
+  customer side's; the payable side gets its own. The rule — `settlements + adjustments ≤
+  amount`, and `settlements ≤ payment.total` — is the same rule written twice, so the two must
+  move together if it ever changes. That is the follow-up this decision buys.
+- **`payments` gains no direction or party of its own**, and `0022`'s
+  `payments_direction_matches_party` already permits exactly the two supplier limbs a payable
+  needs (`out` to a supplier, `out` to a customer). Nothing on `payments` changes.
+- **`obligations.party_kind = 'supplier'` stays declared and unused.** It must not be removed:
+  that is a rewrite of a closed set, which is the operation being avoided. It is a member the
+  customer side never writes, and `obligations_source_known` still refuses `'purchase'` — so a
+  payable can never be an obligation by accident.
+- **`S5` and `S6` above are annotated, not rewritten**, per this repository's append-only rule
+  for ODD logs. The paragraphs that describe the purchase side as an extension of
+  `obligations` are superseded by this entry, and `odd/tasks/v4-payables.md` is the document
+  the S6b work is specified in.
 
 V8 **S5/T5, `4accf82`.** `make test-backend` 102 (was 100), `make test-unit` 50 + 232,
 `make test-e2e` 23, four CI commands clean. The once-only rule proven to bite. A

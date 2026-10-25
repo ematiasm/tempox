@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT p.id, p.supplier_id, p.payment_method_id,\n                pm.name AS \"payment_method_name!\",\n                round(p.total, 2) AS \"total!\", p.created_at\n         FROM purchases p\n         JOIN payment_methods pm ON pm.id = p.payment_method_id\n         WHERE ($1::timestamptz IS NULL OR p.created_at >= $1)\n           AND ($2::timestamptz IS NULL OR p.created_at < $2)\n         ORDER BY p.created_at DESC\n         LIMIT $3 OFFSET $4",
+  "query": "SELECT p.id, p.supplier_id, p.payment_method_id,\n                CASE WHEN p.payment_method_id IS NULL THEN NULL ELSE pm.name END\n                    AS \"payment_method_name\",\n                round(p.total, 2) AS \"total!\", p.created_at\n         FROM purchases p\n         LEFT JOIN payment_methods pm ON pm.id = p.payment_method_id\n         WHERE p.id = $1",
   "describe": {
     "columns": [
       {
@@ -38,14 +38,9 @@
       },
       {
         "ordinal": 3,
-        "name": "payment_method_name!",
+        "name": "payment_method_name",
         "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "payment_methods",
-            "name": "name"
-          }
-        }
+        "origin": "Expression"
       },
       {
         "ordinal": 4,
@@ -67,20 +62,17 @@
     ],
     "parameters": {
       "Left": [
-        "Timestamptz",
-        "Timestamptz",
-        "Int8",
-        "Int8"
+        "Uuid"
       ]
     },
     "nullable": [
       false,
       false,
-      false,
-      false,
+      true,
+      null,
       null,
       false
     ]
   },
-  "hash": "1b04248d83d40fe25361e5418b4cc0c95e7edc728c79d0b83889e197183b6f0e"
+  "hash": "86d2f0a29201805f83f283eb2b6a82abe1b4057401f2acadf1c3a53c0410a169"
 }
