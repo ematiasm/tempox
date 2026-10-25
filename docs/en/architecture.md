@@ -32,7 +32,16 @@ Axum aligns with the tokio + tower ecosystem and has become the de-facto standar
 - **Both directions of money are per locale.** `formatMoney` writes `$ 1.234,56` in es-AR and `$1,234.56` in en, without ever parsing the amount into a float. `parseAmount` reads what the active language types and always returns the wire form; a value it cannot read unambiguously (`1,234.56` under es-AR) is refused rather than guessed, because the value it feeds becomes an immutable sale line. Anything that pre-fills an amount field goes through `amountInput`, so what the form shows can always be parsed back.
 - Fine for starter-scale apps; swap in `svelte-i18n` if you outgrow it.
 
-## API surface (v1 — sales, v1.5 — reversal and locale, v2 — purchases, v2.5 — supplier returns, v3 — accounts and payment methods)
+## API surface (v1 — sales, v1.5 — reversal and locale, v2 — purchases, v2.5 — supplier returns, v3 — accounts and payment methods, v4 — money that is owed)
+
+**Known gap, recorded rather than papered over:** the v4 routes are not in the table below.
+`POST /api/opening-balances`, `POST /api/transfers`, `POST /api/count-adjustments` (S3),
+`POST /api/payments`, `POST /api/settlements` (S6a) and `POST /api/payable-settlements` (S6b)
+are served and tested, and their contracts live in `odd/tasks/v4-settlement.md`,
+`odd/tasks/v4-receivables.md` and `odd/tasks/v4-payables.md`. The table was written for the
+read surfaces the screens call, and v4 is API-only by the owner's decision — so adding it
+here is a documentation task for the slice that gives these documents a screen, not a slice
+that gives them a route.
 
 All routes are under `/api`. Money is sent and stored as a **decimal amount** (`"15.00"` = $15.00) — a string on the wire, `NUMERIC(14,6)` with a whole-cents guard in the database, `rust_decimal::Decimal` in Rust. Quantities are integers in the product's **base unit** (`unit` | `g` | `ml`).
 
@@ -62,13 +71,33 @@ Request decoding is axum's `Json` extractor, so its rejections keep their standa
 
 ### Invariants enforced by the database
 
-- **Every document says where its money moved**: `payment_method_id` is `NOT NULL` on `sales`, `credit_notes`, `purchases` and `supplier_returns`. A payment method belongs to exactly one account, an account has zero or more methods, and an event names the **method** — the method resolves the account. The direction is the requirement: a method shared across accounts would make every per-account balance unreconstructable. A method's `account_id` is immutable once any document names it, because moving it would rewrite yesterday's balance today; renaming is allowed and **corrects** history, since documents store the id and the name is read by join.
+- **Every document says where its money moved — or says it moved none, and a trigger holds
+  that claim**: `payment_method_id` is `NOT NULL` on `credit_notes` while `sales`, `purchases`
+  and `supplier_returns` are nullable since v4, where the null is not a free pass but half of a
+  rule enforced at commit: a null document must be named by exactly one obligation (`sales`) or
+  one payable (`purchases`) and write no ledger entry, while a document that names a method must
+  write at least one entry and acquire no debt. A payment method belongs to exactly one account,
+  an account has zero or more methods, and an event names the **method** — the method resolves the
+  account. The direction is the requirement: a method shared across accounts would make every
+  per-account balance unreconstructable. A method's `account_id` is immutable once any document
+  names it, because moving it would rewrite yesterday's balance today; renaming is allowed and
+  **corrects** history, since documents store the id and the name is read by join.
+- **A debt is a document, not an account**: `credit` is not a wallet. What a customer owes lives
+  in `obligations` (with `obligations_adjustments` when a credit note lowers it and `settlements`
+  when money arrives) and what the shop owes a supplier lives in `payables` (with
+  `payables_adjustments` and `payable_settlements`). Both are append-only, both write no ledger
+  entry of their own, and the two ceilings on each side are sums over rows — a debt may be paid
+  in parts, a payment may cover several debts, and a debt may not be resolved twice, once by a
+  document and once by money. The supplier side was given its own tables rather than extending
+  `obligations`, so no migration has to `ALTER` a closed set or `CREATE OR REPLACE` a ceiling
+  that already guards money (`odd/tasks/v4-settlement.md` L25, `odd/tasks/v4-payables.md`).
 - **Balances are derived from one view**: `money_movements` is a `VIEW`, one row per **effect** on an account, with the sign declared once (positive is money entering). A sale adds, a credit note subtracts, a purchase subtracts, a supplier return adds. It stores nothing, cannot drift from the documents, and needs no backfill; a view rather than a `SUM` per call site because four consumers exist and credit will make seven or eight, and a hand-written `UNION` that forgets a branch returns a plausible wrong number instead of an error — the defect `0011` killed for stock. An account balance is `SUM` over this view, **never a column**.
 - **The default account is configuration with two consumers**: the `/sales` footer and the sale picker's default. The partial unique index guarantees at most one true; a `DEFERRABLE INITIALLY DEFERRED` constraint trigger guarantees exactly one **at commit**, so moving the till is two statements in one transaction rather than the ordering puzzle a `BEFORE` trigger would impose. A new account is never born the default: it has no methods, so it is created, given a method, and promoted.
 - **Money is exact**: a decimal currency amount with two decimals, guarded by *value* (`v = round(v, 2)`) in a column that declares scale 6, so an over-precise value is refused instead of silently rounded. `line_total = quantity × unit_price` and `sales.total = Σ line_total` are computed by unit-tested pure functions before any write. Amounts are never negative; a price of `0` is allowed, which is how a bonus line (regalo) is recorded.
 - **Stock is a ledger**: append-only movements; balances are always derived (`SUM`), never stored. The ledger rejects `UPDATE`, `DELETE` and `TRUNCATE`, and every reason is one of the values the schema knows (`initial`, `sale`, `credit_note`, `purchase`, `supplier_return`), so a balance change always has a nameable cause. A movement for a sale or a credit note must name the document that caused it, a `credit_note` movement must name its note, and a `purchase` movement must name its purchase **and be positive** — stock comes in on a purchase, and the ledger accepts negative quantities in general, so without that rule a purchase could silently remove stock while its document says the goods arrived. A `supplier_return` movement is the mirror: it must name **both** the purchase it corrects and the return, and it must be **negative**, because stock leaves.
 - **Events are immutable**: `sale_items`, `credit_notes`, `credit_note_items`, `purchases`, `purchase_items`, `supplier_returns` and `supplier_return_items` reject `UPDATE`, `DELETE` and `TRUNCATE`. A sale's and a note's economics — `total`, `customer_id`/`sale_id`, and `payment_method_id` — are locked by `guard_sale_economics`, which compares them with `IS DISTINCT FROM` rather than `<>`: `NULL <> value` is `NULL`, and an `IF` whose condition is `NULL` does not fire, so the stricter spelling is what keeps the guard guarding if a column is ever relaxed. Every document has **no permitted edit at all** beyond that — a purchase and a supplier return have no status and therefore no transition either.
 - **A return is a second document**: a wrong purchase is never edited or deleted, because its guards make that impossible and deleting it would erase a real movement of money and stock. Returning goods appends a `supplier_returns` document that names the purchase it corrects. Whether a purchase is fully returned is **derived** from its returns, never written onto it — the purchase keeps its own `total` and reads as a purchase either way.
+- **A return either returns money or lowers a debt, and never both**: a `supplier_return` that names a method brings money back through that rail — and may only name a rail the purchase actually paid, less what its earlier returns already took back, or it is `409`. A return that inherits a purchase on account inherits its `NULL` method: it writes no ledger entry and lowers the payable through a `payables_adjustments` row. The override and its guard arrived together, deliberately: `supplier_returns` had no override and therefore **no hole** until v4 gave it both, and the hole it closes is `v3-accounts.md` L107 mirrored — a return through the till on a purchase paid from the bank drives the till negative for money it never held.
 - **A purchase is a fact, not an intention**: `purchases` carries no `status` column, so "the row exists" and "it counts" are the same statement in stock, in cash and in every derived number. A purchase *order* is a different document, still deferred (the owner's decision of 2026-10-18 put supplier returns in v2.5 and left orders for a later slice), and adding it later is a nullable `ALTER TABLE` with no backfill — which is why no reserved column anticipates it.
 - **Corrections are compensating rows** (a reversal), never edits. Reversing a sale emits a **credit note** — a second document that returns stock and money — and leaves the sale byte-for-byte as recorded. A partial refund is not an annulment; a sale reads as annulled when its lines are fully refunded, which the client derives from the notes and from nothing else. `sales` carries no lifecycle column at all: v1 reserved `status` and `reversed_at` for a draft/confirmed/cancel/done flow that never happened, nothing but the default ever wrote either, and v3 dropped both. "The row exists" and "it counts" are one statement, exactly as they already were for a purchase.
 
