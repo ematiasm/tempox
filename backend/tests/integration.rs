@@ -3476,18 +3476,25 @@ async fn v2_purchase_tables_refuse_truncate_and_keep_their_state(pool: sqlx::PgP
 /// than executed.
 #[test]
 fn v2_the_coherence_pre_check_runs_before_the_constraints_it_protects() {
-    let sql = include_str!("../migrations/0009_purchases.sql");
+    let sql = include_str!("../migrations/0001_schema.sql");
     let pre_check = sql
         .find("contradict the v2 coherence rule")
-        .expect("0009 must keep its v2 coherence pre-check");
+        .expect("the schema must keep its v2 coherence pre-check");
+    // **The search starts at the pre-check, not at the top of the file.** The schema is now
+    // one migration instead of twenty-two, so a constraint name appears more than once: `0010`
+    // re-cuts all three of these after `0009` wrote them, and the first occurrence in the file
+    // belongs to the section *before* this pre-check. Anchoring on `pre_check` is what keeps
+    // the assertion about the same statement it was always about — the one that follows the
+    // check — instead of comparing against an earlier re-cut and failing for the wrong reason.
     for constraint in [
         "ADD CONSTRAINT stock_movements_document_coherent",
         "ADD CONSTRAINT stock_movements_purchase_coherent",
         "ADD CONSTRAINT stock_movements_purchase_is_incoming",
     ] {
-        let added = sql
+        let added = sql[pre_check..]
             .find(constraint)
-            .unwrap_or_else(|| panic!("0009 must add {constraint}"));
+            .map(|offset| pre_check + offset)
+            .unwrap_or_else(|| panic!("the schema must add {constraint} after the pre-check"));
         assert!(
             pre_check < added,
             "the defensive pre-check must run BEFORE {constraint}; placed after \
@@ -3744,18 +3751,22 @@ async fn v2_5_the_return_tables_are_immutable(pool: sqlx::PgPool) {
 /// `0009` and that `46e93ca` fixed.
 #[test]
 fn v2_5_the_pre_check_runs_before_the_constraints_it_protects() {
-    let sql = include_str!("../migrations/0010_supplier_returns.sql");
+    let sql = include_str!("../migrations/0001_schema.sql");
     let pre_check = sql
         .find("contradict the v2.5 coherence rule")
-        .expect("0010 must keep its v2.5 coherence pre-check");
+        .expect("the schema must keep its v2.5 coherence pre-check");
+    // Anchored on the pre-check for the reason the `v2` mirror records: in one file each
+    // constraint name occurs once per re-cut, and only the occurrence after this check is the
+    // statement the assertion is about.
     for constraint in [
         "ADD CONSTRAINT stock_movements_document_coherent",
         "ADD CONSTRAINT stock_movements_supplier_return_coherent",
         "ADD CONSTRAINT stock_movements_supplier_return_is_outgoing",
     ] {
-        let added = sql
+        let added = sql[pre_check..]
             .find(constraint)
-            .unwrap_or_else(|| panic!("0010 must add {constraint}"));
+            .map(|offset| pre_check + offset)
+            .unwrap_or_else(|| panic!("the schema must add {constraint} after the pre-check"));
         assert!(
             pre_check < added,
             "the defensive pre-check must run BEFORE {constraint}; placed after \
@@ -8646,63 +8657,31 @@ async fn v4_s6a_returning_goods_on_a_settled_debt_is_a_conflict_not_a_500(pool: 
 }
 
 #[sqlx::test(migrations = false)]
-async fn v4_the_chain_migrates_an_empty_database_cleanly_and_refuses_a_foreign_destination(
+async fn v4_the_chain_migrates_an_empty_database_and_refuses_a_foreign_destination(
     pool: sqlx::PgPool,
 ) {
-    // **What survives of the BLOCKER test, and why the rest could not survive.**
+    // **What is left of the BLOCKER test after the squash, and why two claims had to go.**
     //
-    // `0021` first carried a backfill for pre-existing credit sales; it was broken twice and
-    // only visible on a database that had one. The owner's decision was that no database worth
-    // carrying exists, so the fix became a refusal. `S7` then removed the `credit` account
-    // from the initial schema entirely, which means **the legacy state this test used to build
-    // cannot be built any more**: those rows name a method and an account that no longer exist.
+    // `0021` originally carried a backfill for pre-existing credit sales; it was broken twice and
+    // only visible on a database that had one, so the fix became a migration-time refusal with a
+    // remedy. `S7` then removed the `credit` account from the initial schema, and the squash
+    // collapsed twenty-two migrations into `0001_schema.sql`. Between them, the rewind this test
+    // used to perform — drop the v4 tables, restore four `NOT NULL`s, forget three migration rows
+    // — no longer describes anything: there is no pre-slice state to return to.
     //
-    // Two claims are still worth pinning, and they are the two halves this test now makes:
-    // the chain migrates an empty database cleanly (the fresh-install case, which is every CI
-    // run), and `0021`'s legacy refusal still fires for the shape it was written for — a ledger
-    // row whose method resolves to no account.
+    // Two claims survive, and they are the two halves below.
     let migrator = sqlx::migrate!("./migrations");
+
+    // 1. The schema installs from nothing. This is the fresh-install case every CI run takes,
+    //    and it is the whole upgrade path now.
     migrator
         .run(&pool)
         .await
         .expect("a fresh database must migrate cleanly");
 
-    // Rewind to the pre-slice state so the second pass is a real upgrade, then plant the row
-    // the refusal exists for: a book entry pointing at a destination that is not there.
-    for sql in [
-        "DROP TRIGGER IF EXISTS money_entries_name_a_real_account ON money_entries",
-        "DROP TRIGGER IF EXISTS credit_notes_claim_their_effect ON credit_notes",
-        "DROP TRIGGER IF EXISTS sales_payment_method_claimed ON sales",
-        "DROP TRIGGER IF EXISTS payments_claim_their_entry ON payments",
-        "DROP TRIGGER IF EXISTS purchases_payment_method_claimed ON purchases",
-        "DROP TRIGGER IF EXISTS supplier_returns_claim_their_effect ON supplier_returns",
-        "DROP TABLE IF EXISTS payable_settlements",
-        "DROP TABLE IF EXISTS payables_adjustments",
-        "DROP TABLE IF EXISTS payables",
-        "DROP TABLE IF EXISTS settlements",
-        "DROP TABLE IF EXISTS payments",
-        "DROP TABLE IF EXISTS obligations_adjustments",
-        "DROP TABLE IF EXISTS obligations",
-        "ALTER TABLE supplier_returns ALTER COLUMN payment_method_id SET NOT NULL",
-        "ALTER TABLE purchases ALTER COLUMN payment_method_id SET NOT NULL",
-        "ALTER TABLE credit_notes ALTER COLUMN payment_method_id SET NOT NULL",
-        "ALTER TABLE sales ALTER COLUMN payment_method_id SET NOT NULL",
-        "DELETE FROM _sqlx_migrations WHERE description LIKE '%payables%'",
-        "DELETE FROM _sqlx_migrations WHERE description LIKE '%obligations%'",
-    ] {
-        sqlx::query(sql)
-            .execute(&pool)
-            .await
-            .unwrap_or_else(|e| panic!("rewinding to the pre-slice state failed on {sql}: {e}"));
-    }
-
-    // **The refusal, measured at the layer that can still reach it.** A book row naming a
-    // method that does not exist is refused by `0017`'s `money_entry_resolves_account` at
-    // INSERT, which is *stronger* than the migration-time check the old test exercised: the
-    // state cannot be created at all, so the migration never has to clean it up. The
-    // migration-time refusal remains for a database written before `0017` existed, and that
-    // shape is not constructible by a test running the current chain — stated rather than
-    // faked.
+    // 2. `0017` refuses a book row naming a method that does not exist — the state `0021`'s
+    //    migration-time check existed to clean up after. It is refused at INSERT, before
+    //    `0021` ever runs its own check, which is *stronger*: the bad row cannot be created.
     sqlx::query(
         "INSERT INTO customers (id, name)
          VALUES ('00000000-0000-0000-0000-0000000000aa', 'legacy-fixture')",
@@ -8710,39 +8689,81 @@ async fn v4_the_chain_migrates_an_empty_database_cleanly_and_refuses_a_foreign_d
     .execute(&pool)
     .await
     .expect("legacy customer");
-    let sale: uuid::Uuid = sqlx::query_scalar(
+    // **The sale has to write its own entry, because `0021` now refuses one that does not** —
+    // measured: the naive version of this fixture answered *"names payment method … but wrote
+    // no ledger entry"*. That refusal is itself the guarantee the removed rewind used to
+    // establish by hand, so the fixture goes through the door the schema leaves open.
+    // **One transaction, because the trigger is DEFERRED.** Inserting the header alone commits a
+    // statement whose pending check fires immediately, and it answers *"names payment method …
+    // but wrote no ledger entry"* — measured, and it is the guard doing its job. The pair has to
+    // travel together, which is exactly what the route does.
+    let mut tx = pool.begin().await.expect("begin");
+    let paid: (uuid::Uuid, chrono::DateTime<chrono::Utc>) = sqlx::query_as(
         "INSERT INTO sales (customer_id, total, payment_method_id)
          VALUES ('00000000-0000-0000-0000-0000000000aa', 100.00,
-                 '00000000-0000-0000-0000-000000000004') RETURNING id",
+                 '00000000-0000-0000-0000-000000000004') RETURNING id, created_at",
     )
-    .fetch_one(&pool)
+    .fetch_one(&mut *tx)
     .await
-    .expect("legacy sale");
+    .expect("the sale header");
+    sqlx::query(
+        "INSERT INTO money_entries
+            (account_id, payment_method_id, document_kind, document_id, amount,
+             occurred_at, created_by)
+         VALUES ('00000000-0000-0000-0000-000000000003',
+                 '00000000-0000-0000-0000-000000000004', 'sale', $1, 100.00, $2, 'legacy')",
+    )
+    .bind(paid.0)
+    .bind(paid.1)
+    .execute(&mut *tx)
+    .await
+    .expect("the sale's own entry, on a real rail");
+    tx.commit().await.expect("a coherent pair commits");
 
+    // The foreign destination: a method that does not exist.
     let refused = sqlx::query(
         "INSERT INTO money_entries
             (account_id, payment_method_id, document_kind, document_id, amount,
              occurred_at, created_by)
-         VALUES ('00000000-0000-0000-0000-000000000005',
+         VALUES ('00000000-0000-0000-0000-000000000003',
                  '00000000-0000-0000-0000-000000000006', 'sale', $1, 100.00, NOW(), 'legacy')",
     )
-    .bind(sale)
+    .bind(paid.0)
     .execute(&pool)
     .await;
     let message = match refused {
         Err(e) => e.to_string(),
         Ok(_) => panic!("a ledger row naming an unknown method must be refused"),
     };
+    // **The message comes from `0021`'s generalised guard, not from `0017`'s.** A method that
+    // resolves to nothing has no account `kind`, and `money_entry_names_a_real_account` refuses
+    // it with the kind named. That is the guard `S7` left in place when it removed the `credit`
+    // row — and this assertion is what proves it still fires after the row is gone.
     assert!(
-        message.contains("which does not exist"),
-        "the refusal must name the missing method, got: {message}"
+        message.contains("not a wallet"),
+        "the refusal must name the kind of account, got: {message}"
     );
 
-    // **No re-run assertion here, deliberately.** Re-running the chain over a database holding
-    // a hand-written sale with no ledger entry trips `0021`'s two-state check — correctly, and
-    // for a reason unrelated to what this test covers. Idempotence over a *clean* database is
-    // already asserted by the first `migrator.run` call above, which is the fresh-install case
-    // every CI run takes.
+    // 3. **And the same transaction that wrote a sale with no ledger entry is refused by
+    //    `0021`**, which is the rule the removed rewind used to prove by hand: a sale that names
+    //    a method must have written one. Asserted at COMMIT, where the deferred trigger fires.
+    let mut tx = pool.begin().await.expect("begin");
+    sqlx::query(
+        "INSERT INTO sales (customer_id, total, payment_method_id)
+         VALUES ('00000000-0000-0000-0000-0000000000aa', 50.00,
+                 '00000000-0000-0000-0000-000000000004')",
+    )
+    .execute(&mut *tx)
+    .await
+    .expect("the header is accepted; the claim is checked at COMMIT");
+    let failure = tx
+        .commit()
+        .await
+        .expect_err("a sale naming a method with no ledger entry must be refused at COMMIT");
+    assert!(
+        failure.to_string().contains("wrote no ledger entry"),
+        "the refusal must name the missing entry, got: {failure}"
+    );
 }
 
 #[sqlx::test]

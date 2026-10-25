@@ -711,3 +711,42 @@ than the one it replaced, since now the bad state cannot be created at all.
 Verification: `make test` green — 52 unit + 232 frontend + **139** backend (was 146; seven of the
 difference were the deleted credit-only tests) + 23 e2e. `make lint` clean, `make sqlx-check` in
 sync. On a fresh database: `accounts: cash`, `methods: cash`, `credit rows: 0`.
+
+L27 (owner, verbatim): "si aplastas las 23 migraciones en una sola" — **the chain is now one
+file**: `backend/migrations/0001_schema.sql`, and the twenty-two originals are deleted.
+
+**Concatenation in the original order, not a hand-merge — and the reason is measured.** The chain
+was highly incremental: 46 `CREATE OR REPLACE`, 79 `DROP`, 87 `ALTER` across the files, with later
+migrations re-cutting functions and columns earlier ones wrote. Hand-merging that is precisely the
+operation that has failed twice here — `0022` re-cut `obligation_adjustments_within_amount` and
+silently dropped a `FOR UPDATE`, and its `CHECK` rewrite silently lost `'annulment'`. Concatenating
+preserves every re-cut and every ordering that made those defects visible, because it *is* the same
+statements in the same order.
+
+**The equivalence was proven, not assumed.** A database was migrated with the 22-file chain and its
+`pg_dump --schema-only` captured; another was built from the squashed file alone; the two dumps were
+normalised (comments and `SET` stripped, sorted) and diffed. The result: **identical** — 27 tables
+(the 28th was `_sqlx_migrations`), 1 view, 38 indexes, 7 unique indexes, 40 functions, 59 triggers,
+76 constraints, all matching. The only differences in the raw dumps were the bookkeeping table and
+pg_dump's random `\restrict` token.
+
+**Three tests had to change, and each change is a real consequence rather than an accommodation:**
+- The two `v2`/`v2.5` pre-check tests read their migration by name (`include_str!`). They now read
+  the one file, and their `find` had to anchor on the pre-check: in a single file a constraint name
+  appears once per re-cut, and the first occurrence belongs to the section *before* the check. The
+  assertion is about the statement after it, and now says so.
+- `v4_the_chain_migrates_an_empty_database_cleanly_and_refuses_a_foreign_destination` lost its
+  rewind: with one migration there is no pre-slice state to return to. **Two of its claims were
+  removed because they no longer describe anything**, and two that matter were added — the fixture
+  can no longer insert a sale without its ledger entry (`0021` refuses it at COMMIT, measured
+  twice while writing the test), and the refusal of a book row naming an unknown method now comes
+  from `0021`'s generalised guard with `kind <NULL>, which is not a wallet`, which is *stronger*
+  than the `0017` message it used to assert.
+
+**What is lost, and it is real:** the per-migration commentary explaining why each rule exists.
+The reasoning lives in `odd/tasks/`, which is where a reader should look; every `-- ── section ──`
+heading was kept, because that is the schema's table of contents.
+
+Verification: `make test` green on databases created from scratch — 52 unit + 232 frontend + 139
+backend + 23 e2e. `make lint` clean, `make sqlx-check` in sync. Fresh database: `migrations:
+1/schema`, 29 tables, `accounts: cash`.
