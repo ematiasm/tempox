@@ -1,7 +1,6 @@
 # v5-customer-account — a client's account, and a supplier's, read from one panel
 
-Slice 1 of three for "cobros y pagos". **State: T1 and T2 reviewed natively and approved; T3 implemented (246 frontend + 28 e2e tests);
-T4 ahead.** The product
+Slice 1 of three for "cobros y pagos". **State: T1, T2 and T3 reviewed natively and approved; T4 (the closing e2e and docs) ahead.** The product
 shape was settled by the owner in conversation, and this file is the specification a later
 session reads.
 
@@ -310,3 +309,24 @@ V5d **A flake avoided rather than discovered.** The fetch guards its replies wit
 without it a slow reply for the first party can land after the second and paint the wrong account
 under the right name. That is a race no test in this suite would find, so it is stated in the
 code instead of left implicit.
+
+V6 **T3 reviewed natively — approved**, lineage `review-899bd50b10d8b419`, lenses `risk` +
+`reliability`, 868 lines. Authority burned. Five findings, all `informational`, two real and fixed
+in `45ee30b`.
+
+V6b **`R3-001` was the serious one and it is the deep link's own failure mode.** The page read
+`?c=` once on mount and never listened for `popstate`, so the moment the browser moved — a link
+pasted into the address bar, Back leaving the page and Forward returning — the URL and the panel
+disagreed. A panel showing one party while the link names another is the single failure a
+deep-linkable panel must not have, and the deep link exists to prevent it. Both pages sync on
+`popstate` now, with teardown. Proven to bite: removing the listener fails the new spec.
+
+V6c **`R3-002`: a heading that promised content it did not have.** The not-found panel's title fell
+back to "reading the account…", which is a spinner that never resolves for a party that does not
+exist. Same class as the two lies the T2 review found — a string describing intent instead of fact.
+
+V6d **What this task produced that outlives it**: the SQL bug (V5b) and the missing listener (V6b)
+were both found by running the thing end to end, and neither could have been found by any unit
+test in the suite. Four backend tests over the endpoint checked that fields were present and
+correct-looking; none checked that two fields meaning different things were different. That is the
+argument for one e2e that exercises the whole path, stated with evidence rather than principle.
