@@ -246,3 +246,59 @@ test('the panel follows the URL when the browser navigates back to it', async ({
   await page.evaluate(() => window.history.back());
   await expect(page.locator('aside.sheet h2')).toHaveText(firstName);
 });
+
+/**
+ * The supplier panel — the mirror, exercised rather than assumed.
+ *
+ * `v5-customer-account.md` S1 calls proveedores "the mirror of clientes", and a mirror
+ * that is only asserted on its list is not a mirror: the labels differ (`Le debemos`
+ * versus `Debe`), the direction of the figures is inverted, and the documents are
+ * purchases. This spec drives the same three boxes on the other side.
+ *
+ * **The figures are deliberately opposite to the client case**: we owe 40 and hold
+ * nothing, so the second figure must be absent — the exact inverse of the client spec,
+ * where the first was zero and the second non-zero.
+ */
+test('a supplier panel shows what we owe, with its own labels', async ({ page }) => {
+  const supplier = await page.request.post('/api/suppliers', {
+    data: { name: `e2e-supp-panel-${Date.now().toString(36)}` }
+  });
+  expect(supplier.ok()).toBeTruthy();
+  const { id: supplierId, name: supplierName } = (await supplier.json()) as {
+    id: string;
+    name: string;
+  };
+
+  const product = await page.request.post('/api/products', {
+    data: { name: `e2e-supp-prod-${Date.now().toString(36)}`, list_price: '40.00' }
+  });
+  const { id: productId } = (await product.json()) as { id: string };
+
+  const purchase = await page.request.post('/api/purchases', {
+    data: {
+      supplier_id: supplierId,
+      items: [{ product_id: productId, quantity: 1 }],
+      payment_method_id: 'on_account'
+    }
+  });
+  expect(purchase.status()).toBe(201);
+  const { purchase: created } = (await purchase.json()) as { purchase: { id: string } };
+
+  await page.goto(`/proveedores?c=${supplierId}`);
+  const panel = page.locator('aside.sheet');
+  await expect(panel).toBeVisible();
+  await expect(panel.locator('h2')).toHaveText(supplierName);
+
+  // **The supplier label, not the customer one**: `Le debemos`, and the figure is what
+  // the shop owes.
+  await expect(panel).toContainText('Le debemos');
+  await expect(panel.locator('dd.amount').first()).toHaveText(money('40,00'));
+
+  // A second figure only appears when it is non-zero; nothing is in our favour here.
+  await expect(panel.locator('dd.amount')).toHaveCount(1);
+
+  // Box 3 lists the purchase that still owes, by identity.
+  await expect(panel.locator('li.doc')).toHaveCount(1);
+  await expect(panel).toContainText(created.id.slice(0, 8));
+  await expect(panel).toContainText('compras impagas');
+});

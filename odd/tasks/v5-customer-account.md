@@ -1,6 +1,7 @@
 # v5-customer-account — a client's account, and a supplier's, read from one panel
 
-Slice 1 of three for "cobros y pagos". **State: T1, T2 and T3 reviewed natively and approved; T4 (the closing e2e and docs) ahead.** The product
+Slice 1 of three for "cobros y pagos". **State: slice 1 complete — T1, T2, T3 reviewed natively and approved; T4 implemented. Slice 2
+(the payment button and the endpoint that applies one payment to several debts) is next.** The product
 shape was settled by the owner in conversation, and this file is the specification a later
 session reads.
 
@@ -337,3 +338,31 @@ are 26 → 28 (the two panel specs) → 29 (the `popstate` spec), and the messag
 existed. Nothing else in it is affected, the numbers in this document are the measured ones, and it
 is noted here because an unverified figure in a commit message is the same defect as an unverified
 figure in a report — the reader has no way to tell which of the two is which.
+
+V7 **T4, the close.** `make test-e2e` **30** (was 29; +1), `make test-frontend` 246, backend 144,
+`make lint` clean.
+
+V7b **The closing e2e found the same class of defect a third time, and on the render side.**
+The panel displayed `doc.id` — the **obligation's** id — where a cashier can only look up the
+**sale or purchase**. T3 fixed the server so the two columns differ; that fix made the render
+budget-visible, and the supplier spec is what showed it: the panel printed `#481629cd` for a
+purchase whose id the test knew. `AccountLike.unpaid` now carries `sourceDocumentId` separately
+and the panel renders that one, with the reason stated where it renders.
+
+**Three findings, one shape, in three places** — `R3-002` of T1's review (a count that also passes
+for a different row), V5b (two columns selected from the same value), and this (the wrong id shown
+to the user). All three are "two things that must differ, treated as one". That is worth carrying
+forward as a question to ask of any new payload: *which of these fields are allowed to be equal?*
+
+V7c **The supplier side is now exercised, not assumed.** S1 calls proveedores "the mirror", and a
+mirror asserted only on its list is not one: the labels differ (`Le debemos` versus `Debe`), the
+direction of the figures is inverted, and the documents are purchases. The new spec asserts the
+label, that exactly **one** figure renders when nothing is in our favour (the exact inverse of the
+client spec), and that the third box names the purchase. Proven to bite by renaming the label.
+
+V7d **Documentation, and the v4 gap it closes on one side.** `architecture.md` now carries both
+account routes with their full contract, and its "known gap" note was rewritten to name the v4
+write routes as a **documented boundary** rather than an omission — they are served and tested but
+have no screen yet, which is the owner's API-only decision for that slice. The invariants section
+gained the two rules this slice establishes: one snapshot per account, and two figures never
+netted.

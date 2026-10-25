@@ -96,7 +96,12 @@
             name: result.name,
             owed: result.owed,
             inFavour: result.in_favour,
-            unpaid: result.unpaid_sales
+            unpaid: result.unpaid_sales.map((d) => ({
+              id: d.id,
+              sourceDocumentId: d.source_document_id,
+              total: d.total,
+              outstanding: d.outstanding
+            }))
           };
       })
       .catch(() => {

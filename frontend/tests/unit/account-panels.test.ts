@@ -18,7 +18,7 @@ const client = (over: Partial<AccountLike> = {}): AccountLike => ({
   name: 'Almacén Sur',
   owed: '1000.00',
   inFavour: '500.00',
-  unpaid: [{ id: 's-1', total: '1000.00', outstanding: '1000.00' }],
+  unpaid: [{ id: 'o-1', sourceDocumentId: 's-1', total: '1000.00', outstanding: '1000.00' }],
   ...over
 });
 
@@ -45,8 +45,8 @@ describe('the account panel boxes', () => {
     const boxes = accountBoxes(
       client({
         unpaid: [
-          { id: 's-1', total: '10.00', outstanding: '10.00' },
-          { id: 's-2', total: '20.00', outstanding: '5.00' }
+          { id: 'o-1', sourceDocumentId: 's-1', total: '10.00', outstanding: '10.00' },
+          { id: 'o-2', sourceDocumentId: 's-2', total: '20.00', outstanding: '5.00' }
         ]
       })
     );
