@@ -11099,3 +11099,967 @@ async fn v5_the_account_is_read_under_one_snapshot_so_the_boxes_cannot_contradic
     );
     assert_eq!(account["unpaid_sales"][0]["outstanding"], "100.00");
 }
+// ── v5 slice 2: a collection, allocated by the owner's hybrid rule ──────────
+//
+// `odd/tasks/v5-payments.md` S1-S8. Slice 1 taught the shop to read a party's account; this
+// is the write that closes documents. **A collection is one document that moves money once
+// and answers as many debts as it can**, and the rule that decides which debts is the
+// owner's (`L2`): the cashier allocates freely to the debts they name, and the remainder goes
+// to the oldest ones.
+//
+// Two things these tests refuse to do. They never assert a count of documents, because the
+// database is shared and a count also passes when a different row is present (`R3-002` of
+// `review-437f7e5652c641fd`). And they never re-derive `outstanding` from the response they
+// are judging — the figures come from `outstanding_of` and `payable_outstanding_of`, which are
+// the same subtraction the account reports.
+//
+// **"Oldest" is the order the documents were recorded, and the fixture proves it rather than
+// assuming it.** `sales` and `purchases` are immutable by trigger — a `created_at` backdate is
+// refused with `P0001` — so a test cannot manufacture a date. What it can do is *read* which
+// document the database considers oldest and name the other one by hand, which is exactly the
+// assertion that matters: the manual line went where the cashier said, the remainder went to
+// the older document.
+
+/// One applied row, found by the debt it answered. `None` when the debt was not touched —
+/// a different statement from `Some("0.00")`, and the tests rely on the difference.
+fn applied_row<'a>(applied: &'a serde_json::Value, debt_id: &str) -> Option<&'a serde_json::Value> {
+    applied
+        .as_array()
+        .expect("applied array")
+        .iter()
+        .find(|row| row["debt_id"] == debt_id)
+}
+
+/// The amount a collection applied to one debt, as the wire spells it.
+fn applied_amount<'a>(applied: &'a serde_json::Value, debt_id: &str) -> Option<&'a str> {
+    applied_row(applied, debt_id).map(|row| row["amount"].as_str().expect("amount string"))
+}
+
+/// `manual` when the cashier named this debt, `oldest` when the rule added it.
+fn applied_source<'a>(applied: &'a serde_json::Value, debt_id: &str) -> Option<&'a str> {
+    applied_row(applied, debt_id).map(|row| row["source"].as_str().expect("source string"))
+}
+
+/// The date a sale or purchase carries, as the database recorded it.
+///
+/// The allocation rule orders by this, so a test that says "the remainder goes to the older
+/// document" has to read it — not infer it from call order.
+async fn recorded_at(pool: &sqlx::PgPool, table: &str, id: &str) -> chrono::DateTime<chrono::Utc> {
+    let query = match table {
+        "sales" => "SELECT created_at FROM sales WHERE id = $1",
+        "purchases" => "SELECT created_at FROM purchases WHERE id = $1",
+        other => panic!("recorded_at does not know the table {other}"),
+    };
+    sqlx::query_scalar(query)
+        .bind(uuid::Uuid::parse_str(id).expect("uuid"))
+        .fetch_one(pool)
+        .await
+        .expect("read the document date")
+}
+
+#[sqlx::test]
+async fn v5_s2_a_collection_moves_money_once_and_answers_every_debt_it_can(pool: sqlx::PgPool) {
+    // **The endpoint's whole job, positive first.** A client owes 200 across three sales; 250
+    // arrives; the cashier names the **newest** sale for its full 40 and the rule takes the
+    // rest. Four facts have to hold afterwards, and each is a different mistake if it does not:
+    // the manual line went where the cashier said rather than where the date said, the
+    // remainder went oldest-first, the extra 50 is the client's credit and not a fourth
+    // settlement, and the till moved **250 and not 200** — once, not once per settlement.
+    let client = common::client(pool.clone());
+    let cash_method = "00000000-0000-0000-0000-000000000004";
+    let cash_account = "00000000-0000-0000-0000-000000000003";
+    let till_before =
+        rust_decimal::Decimal::from_str_exact(&balance_of(&client, cash_account).await)
+            .expect("till");
+
+    // Three sales of **different sizes** — 100, 60, 40 — recorded in this order, because equal
+    // sizes would make the figures unable to say which one received what (`V1b` of
+    // `v5-customer-account.md`: a guard is only proven by a fixture where it changes the
+    // answer). The database's dates are the fixture's order and the test reads them rather than
+    // assuming them.
+    let (first_sale, customer_id) = sale_on_account(&client, "alloc-one", "100.00", 1).await;
+    let second_sale = sale_on_account_for(&client, &customer_id, "alloc-two", "60.00", 1).await;
+    let third_sale = sale_on_account_for(&client, &customer_id, "alloc-three", "40.00", 1).await;
+    let first = obligation_id_of(&pool, &first_sale).await;
+    let second = obligation_id_of(&pool, &second_sale).await;
+    let third = obligation_id_of(&pool, &third_sale).await;
+
+    // **The fixture's own premise, measured.** If the three documents shared a date the
+    // tie-break by id would decide, and the assertion "the remainder went to the older one"
+    // would be testing a different rule than the one the owner chose.
+    let first_date = recorded_at(&pool, "sales", &first_sale).await;
+    let second_date = recorded_at(&pool, "sales", &second_sale).await;
+    let third_date = recorded_at(&pool, "sales", &third_sale).await;
+    assert!(
+        first_date < second_date && second_date < third_date,
+        "the three sales must be recorded in the order this test names them: \
+         {first_date} / {second_date} / {third_date}"
+    );
+    assert_ne!(first, second);
+    assert_ne!(second, third);
+
+    let collected = client
+        .post(
+            &format!("/api/customers/{customer_id}/collections"),
+            serde_json::json!({
+                "payment_method_id": cash_method,
+                "total": "250.00",
+                "manual": [{ "debt_id": third, "amount": "40.00" }]
+            }),
+        )
+        .await;
+    assert_eq!(
+        collected.status(),
+        axum::http::StatusCode::CREATED,
+        "a collection must be accepted; body: {}",
+        collected.text
+    );
+
+    // Every debt closed, each figure read from the database rather than from the response
+    // this test is judging.
+    assert_eq!(outstanding_of(&pool, &first_sale).await, "0");
+    assert_eq!(outstanding_of(&pool, &second_sale).await, "0");
+    assert_eq!(outstanding_of(&pool, &third_sale).await, "0");
+
+    // **The `source` is the rule made visible**, and it is the only thing that distinguishes
+    // "the cashier named the newest sale" from "the newest sale happened to be reached last".
+    // Each figure is the debt's own size, so a rule that spent the money in the other order
+    // would produce different numbers — which is what makes this an assertion rather than a
+    // shape check.
+    let applied = &collected.body["applied"];
+    // **Every row carries both ids, and they must differ.** The fourth time this feature asks
+    // "which of these fields are allowed to be equal?": a receipt that printed the debt's id
+    // where a cashier needs the sale's is the same defect slice 1 found on the read side.
+    for row in applied.as_array().expect("applied array") {
+        assert_ne!(
+            row["debt_id"], row["source_document_id"],
+            "the debt and the document are different rows: {}",
+            collected.text
+        );
+    }
+    assert_eq!(applied_amount(applied, &third), Some("40.00"));
+    assert_eq!(applied_source(applied, &third), Some("manual"));
+    assert_eq!(
+        applied_amount(applied, &first),
+        Some("100.00"),
+        "the remainder goes to the oldest first; body: {}",
+        collected.text
+    );
+    assert_eq!(applied_source(applied, &first), Some("oldest"));
+    assert_eq!(
+        applied_amount(applied, &second),
+        Some("60.00"),
+        "and then to the next oldest; body: {}",
+        collected.text
+    );
+    assert_eq!(applied_source(applied, &second), Some("oldest"));
+
+    // **The till moved once, for 250 — not once per settlement.** A settlement that wrote a
+    // ledger entry would count the same coin again, which is the sentence `routes::payments`
+    // exists to keep.
+    assert_eq!(
+        rust_decimal::Decimal::from_str_exact(&balance_of(&client, cash_account).await)
+            .expect("till after"),
+        till_before + rust_decimal::Decimal::from_str_exact("250.00").expect("250"),
+        "one collection, one ledger entry"
+    );
+
+    // **The 50 no debt needed is the client's credit**, derived rather than stored: money that
+    // arrived and is not spoken for. The response carries the account, read in the same
+    // transaction, so the panel never needs a second instant.
+    assert_eq!(
+        collected.body["account"]["in_favour"], "50.00",
+        "250 collected against 200 of debt; body: {}",
+        collected.text
+    );
+    assert_eq!(collected.body["account"]["owed"], "0.00");
+    assert_eq!(
+        collected.body["account"]["id"], customer_id,
+        "the account in the response is this party's, not a generic one"
+    );
+
+    // And it agrees with the endpoint that reads the same thing — slice 1's one-snapshot
+    // property, asserted here from the write side.
+    let read_back = customer_account(&client, &customer_id).await;
+    assert_eq!(
+        read_back["in_favour"], collected.body["account"]["in_favour"],
+        "the collection returns the account the GET would have returned"
+    );
+    assert_eq!(read_back["owed"], collected.body["account"]["owed"]);
+    assert_eq!(
+        read_back["unpaid_sales"].as_array().map(Vec::len),
+        Some(0),
+        "nothing owes; the third box is empty and its emptiness is the state: {read_back}"
+    );
+}
+
+#[sqlx::test]
+async fn v5_s3_a_named_debt_is_not_walked_again_and_the_rest_goes_to_the_next_oldest(
+    pool: sqlx::PgPool,
+) {
+    // **`L8`, and it is the case the rule most easily gets wrong.** The schema allows one
+    // settlement row per `(debt, payment)` pair and a row carries one `source`, so a debt the
+    // cashier named cannot also be reached by the walk. This test states what that costs, in
+    // the open: name the **oldest** debt for part of what it owes, and the remainder goes to
+    // the next oldest rather than back into the named one.
+    let client = common::client(pool.clone());
+    let cash_method = "00000000-0000-0000-0000-000000000004";
+
+    // Distinct sizes, and the total below is chosen so the money **runs out** in the middle of
+    // the walk. That is the only shape in which the direction of the walk changes a figure: if
+    // every debt closed, walking the list either way would answer the same amounts and the
+    // assertion would be about the array's order, not about the rule.
+    let (oldest_sale, customer_id) = sale_on_account(&client, "l8-old", "100.00", 1).await;
+    let second_sale = sale_on_account_for(&client, &customer_id, "l8-second", "60.00", 1).await;
+    let third_sale = sale_on_account_for(&client, &customer_id, "l8-third", "40.00", 1).await;
+    let oldest = obligation_id_of(&pool, &oldest_sale).await;
+    let second = obligation_id_of(&pool, &second_sale).await;
+    let third = obligation_id_of(&pool, &third_sale).await;
+
+    // 130 arrives. The cashier names the OLDEST for 40 — a partial payment on purpose — which
+    // leaves 90 to be walked.
+    let collected = client
+        .post(
+            &format!("/api/customers/{customer_id}/collections"),
+            serde_json::json!({
+                "payment_method_id": cash_method,
+                "total": "130.00",
+                "manual": [{ "debt_id": oldest, "amount": "40.00" }]
+            }),
+        )
+        .await;
+    assert_eq!(
+        collected.status(),
+        axum::http::StatusCode::CREATED,
+        "body: {}",
+        collected.text
+    );
+
+    let applied = &collected.body["applied"];
+    assert_eq!(
+        applied_amount(applied, &oldest),
+        Some("40.00"),
+        "the manual amount, and only it"
+    );
+    assert_eq!(applied_source(applied, &oldest), Some("manual"));
+    // The remaining 90 goes to the debts the cashier did **not** name, oldest first: the second
+    // takes its full 60, the third takes the last 30 of its 40 and keeps 10. **Not back into the
+    // oldest**, which is the whole point of `L8` — and the two figures below (third owes 10,
+    // second owes 0) are exactly what a walk in the other order would invert.
+    assert_eq!(applied_amount(applied, &second), Some("60.00"));
+    assert_eq!(applied_source(applied, &second), Some("oldest"));
+    assert_eq!(applied_amount(applied, &third), Some("30.00"));
+    assert_eq!(applied_source(applied, &third), Some("oldest"));
+
+    assert_eq!(outstanding_of(&pool, &oldest_sale).await, "60");
+    assert_eq!(outstanding_of(&pool, &second_sale).await, "0");
+    assert_eq!(
+        outstanding_of(&pool, &third_sale).await,
+        "10",
+        "the money ran out on the newest debt, which is what the order decides"
+    );
+    assert_eq!(
+        collected.body["account"]["in_favour"], "0.00",
+        "40 + 60 + 30 of 130, all applied; body: {}",
+        collected.text
+    );
+}
+
+#[sqlx::test]
+async fn v5_s4_each_refusal_is_its_own_status_and_never_writes(pool: sqlx::PgPool) {
+    // **The ceilings, one case each, and every one followed by proof that nothing was
+    // written.** A refusal that leaves a payment behind is worse than an acceptance: the till
+    // has moved for money the operator believes was rejected, and the ledger is append-only,
+    // so it cannot be taken back.
+    //
+    // The cases are different *kinds* of refusal on purpose, because a single "everything
+    // invalid is 400" would leave a caller unable to tell a malformed request from money that
+    // does not exist.
+    let client = common::client(pool.clone());
+    let cash_method = "00000000-0000-0000-0000-000000000004";
+    let cash_account = "00000000-0000-0000-0000-000000000003";
+    let till_before =
+        rust_decimal::Decimal::from_str_exact(&balance_of(&client, cash_account).await)
+            .expect("till");
+
+    let (sale_id, customer_id) = sale_on_account(&client, "ceil-a", "100.00", 1).await;
+    let other_sale = sale_on_account_for(&client, &customer_id, "ceil-b", "50.00", 1).await;
+    let debt = obligation_id_of(&pool, &sale_id).await;
+    let other_debt = obligation_id_of(&pool, &other_sale).await;
+    assert_ne!(debt, other_debt);
+
+    // A debt belonging to a **different** client, for the 400 below.
+    let (foreign_sale, _foreign_customer) =
+        sale_on_account(&client, "ceil-foreign", "10.00", 1).await;
+    let foreign_debt = obligation_id_of(&pool, &foreign_sale).await;
+
+    let cases: Vec<(&str, serde_json::Value, axum::http::StatusCode)> = vec![
+        (
+            "a manual line above what the debt owes",
+            serde_json::json!({
+                "payment_method_id": cash_method,
+                "total": "150.00",
+                "manual": [{ "debt_id": debt, "amount": "150.00" }]
+            }),
+            axum::http::StatusCode::CONFLICT,
+        ),
+        (
+            "manual lines adding up to more than the money that arrived",
+            serde_json::json!({
+                "payment_method_id": cash_method,
+                "total": "100.00",
+                "manual": [
+                    { "debt_id": debt, "amount": "100.00" },
+                    { "debt_id": other_debt, "amount": "50.00" }
+                ]
+            }),
+            axum::http::StatusCode::CONFLICT,
+        ),
+        (
+            "the same debt named twice in one request",
+            serde_json::json!({
+                "payment_method_id": cash_method,
+                "total": "100.00",
+                "manual": [
+                    { "debt_id": debt, "amount": "40.00" },
+                    { "debt_id": debt, "amount": "60.00" }
+                ]
+            }),
+            axum::http::StatusCode::BAD_REQUEST,
+        ),
+        (
+            "another client's debt",
+            serde_json::json!({
+                "payment_method_id": cash_method,
+                "total": "10.00",
+                "manual": [{ "debt_id": foreign_debt, "amount": "10.00" }]
+            }),
+            axum::http::StatusCode::BAD_REQUEST,
+        ),
+        (
+            "an amount that is not whole cents",
+            serde_json::json!({
+                "payment_method_id": cash_method,
+                "total": "10.00",
+                "manual": [{ "debt_id": debt, "amount": "10.005" }]
+            }),
+            axum::http::StatusCode::BAD_REQUEST,
+        ),
+        (
+            "no money at all",
+            serde_json::json!({
+                "payment_method_id": cash_method,
+                "total": "0.00",
+                "manual": []
+            }),
+            axum::http::StatusCode::BAD_REQUEST,
+        ),
+        (
+            "a method that does not exist",
+            serde_json::json!({
+                "payment_method_id": "00000000-0000-0000-0000-0000000000ff",
+                "total": "10.00",
+                "manual": []
+            }),
+            axum::http::StatusCode::NOT_FOUND,
+        ),
+    ];
+
+    for (what, body, expected) in cases {
+        let response = client
+            .post(&format!("/api/customers/{customer_id}/collections"), body)
+            .await;
+        assert_eq!(
+            response.status(),
+            expected,
+            "{what}: expected {expected}; body: {}",
+            response.text
+        );
+    }
+
+    // **Nothing was written by any of the seven**, and the facts that would show it: the three
+    // debts still owe what they owed, no payment row exists for this client, and the till has
+    // not moved by a cent.
+    assert_eq!(outstanding_of(&pool, &sale_id).await, "100");
+    assert_eq!(outstanding_of(&pool, &other_sale).await, "50");
+    assert_eq!(outstanding_of(&pool, &foreign_sale).await, "10");
+    let payments: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM payments WHERE party_id = $1 AND party_kind = 'customer'",
+    )
+    .bind(uuid::Uuid::parse_str(&customer_id).expect("uuid"))
+    .fetch_one(&pool)
+    .await
+    .expect("payment count");
+    assert_eq!(payments, 0, "a refused collection records no money");
+    assert_eq!(
+        rust_decimal::Decimal::from_str_exact(&balance_of(&client, cash_account).await)
+            .expect("till"),
+        till_before,
+        "and the till did not move either"
+    );
+
+    // The endpoint still works afterwards, so the refusals did not leave the client unusable.
+    let accepted = client
+        .post(
+            &format!("/api/customers/{customer_id}/collections"),
+            serde_json::json!({
+                "payment_method_id": cash_method,
+                "total": "100.00",
+                "manual": [{ "debt_id": debt, "amount": "100.00" }]
+            }),
+        )
+        .await;
+    assert_eq!(
+        accepted.status(),
+        axum::http::StatusCode::CREATED,
+        "body: {}",
+        accepted.text
+    );
+    assert_eq!(outstanding_of(&pool, &sale_id).await, "0");
+    // The 50 sale was not named and the money was fully allocated by hand, so the rule had
+    // nothing to add: a fully manual collection leaves the other debts alone.
+    assert_eq!(
+        outstanding_of(&pool, &other_sale).await,
+        "50",
+        "a fully manual collection leaves the other debts alone"
+    );
+}
+
+#[sqlx::test]
+async fn v5_s1_the_supplier_mirror_pays_out_with_the_same_rule(pool: sqlx::PgPool) {
+    // **The mirror is a write path, and an untested mirror is an assumption.** The figures
+    // invert (`owed_to_them`, `in_our_favour`), the money leaves (direction `out`), the debts
+    // are payables and the settlements are `payable_settlements` — four differences, and a
+    // shared implementation that got any one of them wrong would still look right on the
+    // customer side.
+    let client = common::client(pool.clone());
+    let cash_method = "00000000-0000-0000-0000-000000000004";
+    let cash_account = "00000000-0000-0000-0000-000000000003";
+    let till_before =
+        rust_decimal::Decimal::from_str_exact(&balance_of(&client, cash_account).await)
+            .expect("till");
+
+    let (old_purchase, supplier_id) = purchase_on_account(&client, "pay-old", "80.00", 1).await;
+    let new_purchase = purchase_on_account_for(&client, &supplier_id, "pay-new", "80.00", 1).await;
+    let old_payable = payable_id_of(&pool, &old_purchase).await;
+    let new_payable = payable_id_of(&pool, &new_purchase).await;
+    assert_ne!(old_payable, new_payable);
+    // The dates carry the order the rule reads, so the fixture proves it rather than
+    // assuming it — the argument the sales fixture makes, repeated on the side that cannot be
+    // backdated at all.
+    let old_date = recorded_at(&pool, "purchases", &old_purchase).await;
+    let new_date = recorded_at(&pool, "purchases", &new_purchase).await;
+    assert!(
+        old_date < new_date,
+        "the two purchases must be recorded in the order this test names them"
+    );
+
+    // **120, not 100, and the difference is what makes this test able to see the order.** With
+    // 100 the remainder (50) and the named amount (50) are equal, so both payables would take 50
+    // and the dates would decide nothing. 120 leaves 70: the older payable takes 70 of its 80 and
+    // the named newer one keeps 30 — two different figures, produced by the date.
+    let paid = client
+        .post(
+            &format!("/api/suppliers/{supplier_id}/payments"),
+            serde_json::json!({
+                "payment_method_id": cash_method,
+                "total": "120.00",
+                "manual": [{ "debt_id": new_payable, "amount": "50.00" }]
+            }),
+        )
+        .await;
+    assert_eq!(
+        paid.status(),
+        axum::http::StatusCode::CREATED,
+        "paying a supplier must be accepted; body: {}",
+        paid.text
+    );
+
+    let applied = &paid.body["applied"];
+    // The cashier named the **newer** payable for 50, and the rule took the older one for the
+    // 70 that was left — not for its full 80, because the money ran out.
+    assert_eq!(applied_amount(applied, &new_payable), Some("50.00"));
+    assert_eq!(applied_source(applied, &new_payable), Some("manual"));
+    assert_eq!(applied_amount(applied, &old_payable), Some("70.00"));
+    assert_eq!(applied_source(applied, &old_payable), Some("oldest"));
+
+    assert_eq!(payable_outstanding_of(&pool, &old_payable).await, "10");
+    assert_eq!(
+        payable_outstanding_of(&pool, &new_payable).await,
+        "30",
+        "80 less the 50 the cashier named"
+    );
+
+    // **The money left the till, once, and it left as 100.**
+    assert_eq!(
+        rust_decimal::Decimal::from_str_exact(&balance_of(&client, cash_account).await)
+            .expect("till after"),
+        till_before - rust_decimal::Decimal::from_str_exact("120.00").expect("120"),
+        "one payment out, one ledger entry"
+    );
+
+    // The mirror's own figures, in the mirror's own names: 120 sent and all 120 answered a
+    // debt, so nothing of ours is held by them; 10 + 30 of the two purchases still owe.
+    assert_eq!(
+        paid.body["account"]["in_our_favour"], "0.00",
+        "body: {}",
+        paid.text
+    );
+    assert_eq!(paid.body["account"]["owed_to_them"], "40.00");
+
+    // **And the supplier side refuses a customer's debt.** The party is in the path, and a
+    // supplier payment must not close a client's sale — the schema's trigger would refuse it
+    // too, which is why the handler answers a status the caller can act on instead.
+    let (customer_sale, customer_id) = sale_on_account(&client, "l9-cross", "10.00", 1).await;
+    let customer_debt = obligation_id_of(&pool, &customer_sale).await;
+    let crossed = client
+        .post(
+            &format!("/api/suppliers/{supplier_id}/payments"),
+            serde_json::json!({
+                "payment_method_id": cash_method,
+                "total": "10.00",
+                "manual": [{ "debt_id": customer_debt, "amount": "10.00" }]
+            }),
+        )
+        .await;
+    assert_eq!(
+        crossed.status(),
+        axum::http::StatusCode::BAD_REQUEST,
+        "a client's sale is not a payable; body: {}",
+        crossed.text
+    );
+    // And that refusal wrote nothing: the client's debt is untouched and their payment history
+    // is still empty.
+    assert_eq!(outstanding_of(&pool, &customer_sale).await, "10");
+    let customer_payments: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM payments WHERE party_id = $1 AND party_kind = 'customer'",
+    )
+    .bind(uuid::Uuid::parse_str(&customer_id).expect("uuid"))
+    .fetch_one(&pool)
+    .await
+    .expect("count");
+    assert_eq!(customer_payments, 0);
+}
+
+#[sqlx::test]
+async fn v5_s6_the_response_is_the_account_and_the_panel_needs_no_second_read(pool: sqlx::PgPool) {
+    // **`S6`, from the side that matters to the panel.** The response's `account` must be the
+    // document `GET /api/customers/{id}/account` answers — same fields, same figures — because
+    // the panel replaces its state with it instead of asking again. A second request is a
+    // second instant, and slice 1 paid for a panel that contradicted itself.
+    let client = common::client(pool.clone());
+    let cash_method = "00000000-0000-0000-0000-000000000004";
+    let (sale_id, customer_id) = sale_on_account(&client, "resp", "100.00", 1).await;
+    let debt = obligation_id_of(&pool, &sale_id).await;
+
+    let collected = client
+        .post(
+            &format!("/api/customers/{customer_id}/collections"),
+            serde_json::json!({
+                "payment_method_id": cash_method,
+                "total": "40.00",
+                "manual": []
+            }),
+        )
+        .await;
+    assert_eq!(
+        collected.status(),
+        axum::http::StatusCode::CREATED,
+        "an empty `manual` is a legitimate collection: the rule allocates it all; body: {}",
+        collected.text
+    );
+    assert_eq!(
+        applied_source(&collected.body["applied"], &debt),
+        Some("oldest"),
+        "nothing was named, so the rule decided; body: {}",
+        collected.text
+    );
+
+    let in_response = &collected.body["account"];
+    let read_back = customer_account(&client, &customer_id).await;
+
+    // A partial payment leaves the sale owing 60, and both payloads must say so with the same
+    // fields. **The ids are what make this a comparison of documents** rather than of numbers
+    // that happen to agree: `id` is the obligation, `source_document_id` is the sale, and
+    // slice 1 shipped a bug where they were equal.
+    assert_eq!(in_response["owed"], read_back["owed"]);
+    assert_eq!(in_response["in_favour"], read_back["in_favour"]);
+    assert_eq!(in_response["name"], read_back["name"]);
+    let from_write = in_response["unpaid_sales"]
+        .as_array()
+        .expect("unpaid_sales")
+        .iter()
+        .find(|d| d["source_document_id"] == sale_id.as_str())
+        .expect("the sale is still unpaid and listed by the write's own account");
+    let from_read = read_back["unpaid_sales"]
+        .as_array()
+        .expect("unpaid_sales")
+        .iter()
+        .find(|d| d["source_document_id"] == sale_id.as_str())
+        .expect("listed by the read endpoint too");
+    assert_eq!(from_write["id"], from_read["id"]);
+    assert_eq!(from_write["outstanding"], "60.00");
+    assert_eq!(from_write["outstanding"], from_read["outstanding"]);
+    assert_ne!(
+        from_write["id"], from_write["source_document_id"],
+        "the obligation and the sale are different rows"
+    );
+}
+
+#[sqlx::test]
+async fn v5_s8_two_racing_collections_cannot_settle_one_debt_twice(pool: sqlx::PgPool) {
+    // **`S8`, stated as what is actually true, because the first version of this test claimed
+    // more than the code does** (`V6`). It drove two collections over the same single debt and
+    // asserted one wins — and it passed **with the route's `lock_debts` removed entirely**, and
+    // again with the lock order inverted. The reason is that the guarantee does not come from
+    // the route: `0022`'s `settlement_within_both_ceilings` takes `FOR UPDATE` on the payment
+    // and then on the debt, so the *trigger* serialises the pair and refuses the second.
+    //
+    // That is the honest property, and it is worth a test precisely because it is the one that
+    // holds: whatever the route does, the ledger cannot be made to settle a debt past its
+    // amount. The route's own `lock_debts` is an ordering discipline — it makes the plan's read
+    // consistent with the writes and keeps every writer in the order `aa95665` established —
+    // and claiming it prevents this race would be a comment the code does not back.
+    //
+    // Measured before writing it: two concurrent collections of 100 against one debt of 100
+    // answer `201` / `409` on three runs out of three, and the settlements sum to 100.
+    let client = common::client(pool.clone());
+    let cash_method = "00000000-0000-0000-0000-000000000004";
+    let (sale_id, customer_id) = sale_on_account(&client, "race", "100.00", 1).await;
+    let debt = obligation_id_of(&pool, &sale_id).await;
+
+    // The URI and body are bound to locals: a `format!` inline creates a temporary the future
+    // borrows, and `tokio::join!` keeps both futures alive past the end of that statement.
+    let uri = format!("/api/customers/{customer_id}/collections");
+    let body = serde_json::json!({
+        "payment_method_id": cash_method,
+        "total": "100.00",
+        "manual": [{ "debt_id": debt, "amount": "100.00" }]
+    });
+    let (first, second) = tokio::join!(
+        client.post(&uri, body.clone()),
+        client.post(&uri, body.clone())
+    );
+
+    let created = [&first, &second]
+        .iter()
+        .filter(|r| r.status() == axum::http::StatusCode::CREATED)
+        .count();
+    let refused = [&first, &second]
+        .iter()
+        .filter(|r| r.status() == axum::http::StatusCode::CONFLICT)
+        .count();
+    // **At most one may succeed, and if the two did not actually overlap, exactly one did.**
+    // The assertion is "never two", because whether the race materialises is the runtime's
+    // business and a test that demanded it would be flaky in the other direction.
+    assert!(
+        created <= 1,
+        "two collections cannot both settle the same debt; bodies: {} | {}",
+        first.text,
+        second.text
+    );
+    assert_eq!(
+        created + refused,
+        2,
+        "a losing collection is a `409`, not a `500`; bodies: {} | {}",
+        first.text,
+        second.text
+    );
+
+    assert_eq!(outstanding_of(&pool, &sale_id).await, "0");
+    let settled: rust_decimal::Decimal = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(s.amount), 0) FROM settlements s
+           JOIN obligations o ON o.id = s.obligation_id
+          WHERE o.source_document_id = $1",
+    )
+    .bind(uuid::Uuid::parse_str(&sale_id).expect("uuid"))
+    .fetch_one(&pool)
+    .await
+    .expect("settled sum");
+    assert_eq!(
+        settled.normalize().to_string(),
+        "100",
+        "the settlements sum to the debt and not past it"
+    );
+}
+
+#[sqlx::test]
+async fn v5_s4_a_debt_already_resolved_is_a_conflict_and_writes_nothing(pool: sqlx::PgPool) {
+    // **The refusal that had no test** (the independent verification's advisory 3): a debt with
+    // nothing left on it answers `409`, not `400` and not a `500`. It is the case a cashier
+    // meets most often in practice — a colleague collected the same document a moment earlier —
+    // and the first `v5_s4` never produced it, so the branch was implemented and unmeasured.
+    let client = common::client(pool.clone());
+    let cash_method = "00000000-0000-0000-0000-000000000004";
+    let (sale_id, customer_id) = sale_on_account(&client, "resolved", "100.00", 1).await;
+    let debt = obligation_id_of(&pool, &sale_id).await;
+
+    let first = client
+        .post(
+            &format!("/api/customers/{customer_id}/collections"),
+            serde_json::json!({
+                "payment_method_id": cash_method,
+                "total": "100.00",
+                "manual": [{ "debt_id": debt, "amount": "100.00" }]
+            }),
+        )
+        .await;
+    assert_eq!(first.status(), axum::http::StatusCode::CREATED);
+    let payments_before: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM payments WHERE party_id = $1")
+            .bind(uuid::Uuid::parse_str(&customer_id).expect("uuid"))
+            .fetch_one(&pool)
+            .await
+            .expect("count");
+    assert_eq!(payments_before, 1);
+
+    // Named again, now with nothing left on it.
+    let again = client
+        .post(
+            &format!("/api/customers/{customer_id}/collections"),
+            serde_json::json!({
+                "payment_method_id": cash_method,
+                "total": "10.00",
+                "manual": [{ "debt_id": debt, "amount": "10.00" }]
+            }),
+        )
+        .await;
+    assert_eq!(
+        again.status(),
+        axum::http::StatusCode::CONFLICT,
+        "a resolved debt is a conflict, not a bad request; body: {}",
+        again.text
+    );
+
+    // And the refusal wrote nothing.
+    let payments_after: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM payments WHERE party_id = $1")
+            .bind(uuid::Uuid::parse_str(&customer_id).expect("uuid"))
+            .fetch_one(&pool)
+            .await
+            .expect("count");
+    assert_eq!(
+        payments_after, payments_before,
+        "the refusal recorded no money"
+    );
+}
+
+#[sqlx::test]
+async fn v5_s2_one_payment_writes_one_ledger_entry_and_n_settlements(pool: sqlx::PgPool) {
+    // **`S2` measured directly rather than through balances** (the independent verification's
+    // advisory on `S2`): one collection over two debts must produce exactly **one** ledger
+    // entry and **two** settlements. The balance assertions elsewhere prove the effect; this
+    // proves the shape, and it is the shape that would break if someone "fixed" the missing
+    // per-settlement entry.
+    let client = common::client(pool.clone());
+    let cash_method = "00000000-0000-0000-0000-000000000004";
+    let (first_sale, customer_id) = sale_on_account(&client, "entry-a", "100.00", 1).await;
+    let second_sale = sale_on_account_for(&client, &customer_id, "entry-b", "60.00", 1).await;
+    let first = obligation_id_of(&pool, &first_sale).await;
+    let _second = obligation_id_of(&pool, &second_sale).await;
+
+    let collected = client
+        .post(
+            &format!("/api/customers/{customer_id}/collections"),
+            serde_json::json!({
+                "payment_method_id": cash_method,
+                "total": "160.00",
+                "manual": [{ "debt_id": first, "amount": "10.00" }]
+            }),
+        )
+        .await;
+    assert_eq!(
+        collected.status(),
+        axum::http::StatusCode::CREATED,
+        "body: {}",
+        collected.text
+    );
+    let payment_id = uuid::Uuid::parse_str(
+        collected.body["payment_id"]
+            .as_str()
+            .expect("payment id in the response"),
+    )
+    .expect("uuid");
+
+    let entries: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM money_entries WHERE document_kind = 'payment' AND document_id = $1",
+    )
+    .bind(payment_id)
+    .fetch_one(&pool)
+    .await
+    .expect("entry count");
+    assert_eq!(entries, 1, "the money moved once, not once per settlement");
+
+    let settlements: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM settlements WHERE payment_id = $1")
+            .bind(payment_id)
+            .fetch_one(&pool)
+            .await
+            .expect("settlement count");
+    assert_eq!(
+        settlements, 2,
+        "two debts answered by one payment, and no second ledger entry"
+    );
+}
+
+#[sqlx::test]
+async fn v5_s9_an_unreadable_amount_is_refused_rather_than_dropped(pool: sqlx::PgPool) {
+    // **The server side of `R3-001`.** The client's parser is what the review found broken, and
+    // its unit tests cover the fix — but this endpoint is also a public surface, and the rule
+    // that must hold on both sides is that an amount that is not money is a `400`, never a
+    // silently smaller allocation.
+    //
+    // Measured before the fix: `"cuarenta"` reached `serde` as a decimal and came back `400`,
+    // which is right — the defect was the client dropping the line *before* sending. This test
+    // pins the server half so a future client cannot lean on it doing otherwise.
+    let client = common::client(pool.clone());
+    let cash_method = "00000000-0000-0000-0000-000000000004";
+    let (sale_id, customer_id) = sale_on_account(&client, "unreadable", "100.00", 1).await;
+    let debt = obligation_id_of(&pool, &sale_id).await;
+
+    // The body has to be built by hand: `serde_json` cannot express "a decimal field holding
+    // text", which is the point — the server refuses it at the decoder.
+    let response = client
+        .post(
+            &format!("/api/customers/{customer_id}/collections"),
+            serde_json::json!({
+                "payment_method_id": cash_method,
+                "total": "100.00",
+                "manual": [{ "debt_id": debt, "amount": "cuarenta" }]
+            }),
+        )
+        .await;
+    assert!(
+        response.status().is_client_error(),
+        "an amount that is not money must be refused, not accepted; got {}",
+        response.status()
+    );
+    // And nothing was written: the debt still owes, and there is no payment.
+    assert_eq!(outstanding_of(&pool, &sale_id).await, "100");
+    let payments: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM payments WHERE party_id = $1 AND party_kind = 'customer'",
+    )
+    .bind(uuid::Uuid::parse_str(&customer_id).expect("uuid"))
+    .fetch_one(&pool)
+    .await
+    .expect("count");
+    assert_eq!(payments, 0, "a refused body records no money");
+}
+
+#[sqlx::test]
+async fn v5_s4_a_collection_racing_a_committed_settlement_reads_the_current_state(
+    pool: sqlx::PgPool,
+) {
+    // **The defect `REPEATABLE READ` caused, forced deterministically** (`V8`, findings
+    // `R3-001` / `R4-1` of review `review-9cff43c50976184c`).
+    //
+    // The endpoint's ceiling is judged twice: in the plan and in `0022`'s
+    // `settlement_within_both_ceilings`. Both read `SUM(settlements)`, so **both must see the
+    // latest committed state**. A snapshot taken before the row locks breaks that: the loser
+    // blocks in `lock_debts`, the winner commits, and the loser resumes still evaluating both
+    // ceilings against a state that no longer exists.
+    //
+    // Measured before the fix, with this exact interleaving: a debt of 100.00 was settled
+    // **twice for 100.00 each — 200 in total** — and the loser answered `201` claiming
+    // `debt_outstanding: 0.00`. With the transaction at the default level it answers `409` and
+    // the settlements sum to 100.
+    //
+    // The interleaving is forced rather than hoped for: the competitor holds the debt row, the
+    // request takes its snapshot and blocks, and only then does the competitor commit.
+    let client = common::client(pool.clone());
+    let cash_method = "00000000-0000-0000-0000-000000000004";
+    let cash_account = "00000000-0000-0000-0000-000000000003";
+    let (sale_id, customer_id) = sale_on_account(&client, "over-settle", "100.00", 1).await;
+    let debt = obligation_id_of(&pool, &sale_id).await;
+
+    // The blocker takes the debt row and keeps it.
+    let mut blocker = pool.begin().await.expect("begin the competitor");
+    sqlx::query("SELECT id FROM obligations WHERE id = $1 FOR UPDATE")
+        .bind(uuid::Uuid::parse_str(&debt).expect("uuid"))
+        .fetch_one(&mut *blocker)
+        .await
+        .expect("the competitor takes the debt row");
+
+    let uri = format!("/api/customers/{customer_id}/collections");
+    let body = serde_json::json!({
+        "payment_method_id": cash_method,
+        "total": "100.00",
+        "manual": [{ "debt_id": debt, "amount": "100.00" }]
+    });
+
+    // The competitor settles the debt **in full** and commits, once the request is in flight.
+    // Its own payment and ledger entry go in this transaction too: `0022`'s
+    // `payments_claim_their_entry` asserts the pair at COMMIT.
+    let debt_for_competitor = debt.clone();
+    let customer_for_competitor = customer_id.clone();
+    let competitor = async move {
+        let debt = debt_for_competitor;
+        let customer_id = customer_for_competitor;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let other_payment: (uuid::Uuid,) = sqlx::query_as(
+            "INSERT INTO payments
+                (party_kind, party_id, payment_method_id, total, direction, occurred_at,
+                 created_by)
+             VALUES ('customer', $1, $2, 100.00, 'in', NOW(), 'test') RETURNING id",
+        )
+        .bind(uuid::Uuid::parse_str(&customer_id).expect("uuid"))
+        .bind(uuid::Uuid::parse_str(cash_method).expect("uuid"))
+        .fetch_one(&mut *blocker)
+        .await
+        .expect("the competitor's payment");
+        sqlx::query(
+            "INSERT INTO money_entries
+                (account_id, payment_method_id, document_kind, document_id, amount, occurred_at,
+                 created_by)
+             VALUES ($1, $2, 'payment', $3, 100.00, NOW(), 'test')",
+        )
+        .bind(uuid::Uuid::parse_str(cash_account).expect("uuid"))
+        .bind(uuid::Uuid::parse_str(cash_method).expect("uuid"))
+        .bind(other_payment.0)
+        .execute(&mut *blocker)
+        .await
+        .expect("the competitor's ledger entry");
+        sqlx::query(
+            "INSERT INTO settlements (obligation_id, payment_id, amount, created_by)
+             VALUES ($1, $2, 100.00, 'test')",
+        )
+        .bind(uuid::Uuid::parse_str(&debt).expect("uuid"))
+        .bind(other_payment.0)
+        .execute(&mut *blocker)
+        .await
+        .expect("the competitor's settlement");
+        blocker.commit().await.expect("commit the competitor");
+    };
+
+    let (racing, ()) = tokio::join!(client.post(&uri, body), competitor);
+
+    // **The loser is refused.** A `201` here is a debt settled twice, and the figure below is
+    // what proves it rather than the status alone.
+    assert_eq!(
+        racing.status(),
+        axum::http::StatusCode::CONFLICT,
+        "the collection must be judged against the state the competitor committed; body: {}",
+        racing.text
+    );
+
+    let settled: rust_decimal::Decimal = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(amount), 0) FROM settlements WHERE obligation_id = $1",
+    )
+    .bind(uuid::Uuid::parse_str(&debt).expect("uuid"))
+    .fetch_one(&pool)
+    .await
+    .expect("settled sum");
+    assert_eq!(
+        settled.normalize().to_string(),
+        "100",
+        "a 100.00 debt may not be settled for 200"
+    );
+
+    // And the over-payment is not silently a credit balance either: the refused collection
+    // wrote no payment, so nothing is in their favour.
+    let account = customer_account(&client, &customer_id).await;
+    assert_eq!(
+        account["in_favour"], "0.00",
+        "the refused collection recorded no money: {account}"
+    );
+}

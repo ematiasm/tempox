@@ -72,6 +72,16 @@ pub struct UnpaidDocument {
     pub occurred_at: DateTime<Utc>,
 }
 
+/// The account payload, as a serializable value the two handlers and the collection route all
+/// share. The handlers build it; [`collections`](super::collections) returns it from a write, so
+/// a panel never has to ask twice.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum AccountPayload {
+    Customer(CustomerAccount),
+    Supplier(SupplierAccount),
+}
+
 /// The difference between the two mirrors, and it is only the field names: a customer's
 /// `owed` is money we are owed, a supplier's `owed_to_them` is money we owe. One struct per
 /// direction keeps the wire honest — a client reading `owed` on a supplier would be reading
@@ -111,14 +121,14 @@ pub struct SupplierAccount {
 /// and in the direction of the payment, and a typo in a string would become a query against
 /// the wrong table rather than a compile error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Party {
+pub(crate) enum Party {
     Customer,
     Supplier,
 }
 
 impl Party {
     /// The party kind as the `party_kind` columns spell it.
-    fn kind(self) -> &'static str {
+    pub(crate) fn kind(self) -> &'static str {
         match self {
             Party::Customer => "customer",
             Party::Supplier => "supplier",
@@ -131,7 +141,7 @@ impl Party {
 /// Returned as `None` when the party does not exist, which the handlers turn into a `404`: an
 /// unknown party must not produce zeros, because "owes nothing" and "is not there" are
 /// different statements and the panel renders them differently (`S2`).
-async fn account_of(
+pub(crate) async fn account_of(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     party: Party,
     id: Uuid,
