@@ -535,3 +535,20 @@ before it can be observed, and the `Command aborted` that produced was mine, not
 and the clean attempt probed **`/api/health`, which does not exist** — the route is `/health`
 at the root router, so a healthy server was reported dead by a wrong path. The last one is the
 one worth keeping: the measurement was wrong, not the thing measured.
+
+V11 **Merged.** `main` is `1c3558e`, three merge commits in order (#94 → #95 → #96), CI on
+`main` **4/4 success** (`Backend`, `End to end`, `Frontend`, `Frontend image`), and `make test`
+on `main` green: 52 unit + 261 frontend + 154 integration + 31 e2e.
+
+**The chain's code is byte-for-byte the reviewed tree.** `git diff ba4972b origin/main` shows
+one file — this document, gaining `V10` — and `git diff … -- backend/** frontend/src/**
+frontend/tests/** docs/**` is empty. The review approved a tree; `main` carries that tree plus
+its own delivery record.
+
+`GitHub did not retarget #95 and #96 automatically`, because `--delete-branch=false` left the
+base branches alive. Both were retargeted by hand, and each was checked to carry only its own
+files before merging (11 for #95, 2 for #96) rather than a polluted diff built on a stale base.
+
+The three chain branches and the work-unit branch are deleted, locally and remotely; the
+repository holds `main` and `origin/main`. The work-unit history survives in the merge commits'
+ancestry.
