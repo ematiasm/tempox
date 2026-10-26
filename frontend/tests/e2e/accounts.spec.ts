@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page, type Response } from '@playwright/test';
 
 /**
  * How many times the accounts screen asks the server for the list.
@@ -26,17 +26,34 @@ import { expect, test } from '@playwright/test';
  * Svelte component (jsdom is configured and unused, `odd/tasks/jsdom-unused-environment.md`),
  * and every e2e assertion in this directory is about what renders — which is
  * identical after one read and after six hundred. So the observable effect of the
- * rule is counted here, over a fixed window, rather than inferred from timing.
+ * rule is counted here, rather than inferred from what the page shows.
+ *
+ * **Every count below is anchored to a response, never to a wall clock.** The first
+ * version of the second test took its baseline after `waitForTimeout(500)` and
+ * subtracted, which reads a clock to answer a question the network already answers:
+ * a mount read that arrived late would have been counted as part of the write. The
+ * only `waitForTimeout` left is the one that asserts *nothing happens*, which is a
+ * claim no event can make for you.
  */
 
-/** Counts the list reads the page makes, from the moment it is installed. */
-function countListReads(page: import('@playwright/test').Page): string[] {
+/** The list read, as a path and a method: `/api/accounts/:id` does not exist today,
+ * and if it ever does it is a different read with a different cost. The method is
+ * part of the predicate because the write path posts to the same path — measured:
+ * without it, `waitForResponse` resolved on the `POST` that created the account and
+ * the assertion below compared a `201` against a `200`. */
+function isListRead(response: Response): boolean {
+  return (
+    response.request().method() === 'GET' && new URL(response.url()).pathname === '/api/accounts'
+  );
+}
+
+/** Counts the list reads the page issues, from the moment it is installed. */
+function countListReads(page: Page): string[] {
   const reads: string[] = [];
   page.on('request', (request) => {
-    const url = new URL(request.url());
-    // The path, not a prefix of the URL: `/api/accounts/:id` does not exist today,
-    // and if it ever does, it is a different read with a different cost.
-    if (request.method() === 'GET' && url.pathname === '/api/accounts') reads.push(request.url());
+    if (request.method() === 'GET' && new URL(request.url()).pathname === '/api/accounts') {
+      reads.push(request.url());
+    }
   });
   return reads;
 }
@@ -46,19 +63,20 @@ test('the accounts screen reads the list once on mount, not in a loop', async ({
 
   // The first response, not a rendered row: readiness here must not depend on what
   // the seeded database happens to hold.
-  const firstRead = page.waitForResponse(
-    (response) => new URL(response.url()).pathname === '/api/accounts' && response.status() === 200
-  );
+  const firstRead = page.waitForResponse(isListRead);
   await page.goto('/accounts');
-  await firstRead;
-
-  // A window after the screen is current. Under the loop this held hundreds of
-  // requests — the defect was not a burst that settles, it was unbounded.
-  await page.waitForTimeout(1000);
+  expect((await firstRead).status()).toBe(200);
 
   // Exactly one. `toBeLessThanOrEqual(2)` would pass while the screen still read
   // twice, which is the shape of the bug rather than its absence: the write after
   // the fetch is what re-ran the effect.
+  expect(reads).toHaveLength(1);
+
+  // The settle window, and the one place a clock belongs: the defect was not a
+  // burst that finished, it was unbounded, so proving its absence means proving
+  // that nothing else arrives after the screen is current. Measured, this held
+  // hundreds of requests.
+  await page.waitForTimeout(1000);
   expect(reads).toHaveLength(1);
 });
 
@@ -70,17 +88,28 @@ test('a write still re-reads the list, exactly once', async ({ page }) => {
   const name = `e2e-once-${Date.now().toString(36)}`;
   const reads = countListReads(page);
 
+  // Both baselines are responses. The mount read is awaited before the count is
+  // read, so a late one can never be attributed to the write.
+  const mountRead = page.waitForResponse(isListRead);
   await page.goto('/accounts');
+  expect((await mountRead).status()).toBe(200);
   const newAccount = page.locator('form.new input');
   await expect(newAccount).toBeVisible();
-  await page.waitForTimeout(500);
+  expect(reads).toHaveLength(1);
 
-  const beforeWrite = reads.length;
-
+  const writeRead = page.waitForResponse(isListRead);
   await newAccount.fill(name);
   await page.getByRole('button', { name: 'Nueva cuenta' }).click();
+  expect((await writeRead).status()).toBe(200);
   await expect(page.locator('li.row', { hasText: name })).toBeVisible();
-  await page.waitForTimeout(500);
 
-  expect(reads.length - beforeWrite).toBe(1);
+  // One read before the write, one after it. Stated as an absolute because the
+  // baseline was an event: a delta would hide a wrong baseline, which is exactly
+  // what the clock-based version did.
+  expect(reads).toHaveLength(2);
+
+  // And the write path does not loop either: it closes the same way the mount read
+  // did, because it calls the same `reload()`.
+  await page.waitForTimeout(500);
+  expect(reads).toHaveLength(2);
 });
