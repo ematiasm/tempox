@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { lang } from '#lib/i18n/index.svelte.js';
   import { formatMoney } from '#lib/money.js';
   import {
@@ -83,7 +84,20 @@
 
   // One read on mount. No polling: nothing on this screen changes except by an action
   // taken here, and every action reloads.
-  $effect(() => {
+  //
+  // **`onMount`, not `$effect`, and the difference is a request loop.** `reload()`
+  // reads `accounts` synchronously (`if (accounts === null) reading = true`) before
+  // its first `await`, so inside an effect that read registered `accounts` as a
+  // dependency of the effect — and the assignment after the fetch invalidated the
+  // effect that had issued it. The screen then read the list forever: measured
+  // through the e2e level at 585 requests in 2.5 s. The same loop closed through the
+  // failure path, where `accounts = null` also retriggers. `tests/e2e/accounts.spec.ts`
+  // counts the reads, because no assertion about what renders can see this.
+  //
+  // This is what the sentence above always claimed and never implemented: a mount
+  // read is a lifecycle event, not a derived value. `reload()` itself is unchanged
+  // and keeps working for the writes, which call it deliberately.
+  onMount(() => {
     void reload();
   });
 
