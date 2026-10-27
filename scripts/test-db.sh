@@ -178,6 +178,31 @@ SQL
 
 echo "recreated $TESTDB"
 
+# A floor on the role, so the test databases are not unbounded.
+#
+# `#[sqlx::test]` creates one database per test and applies migrations in parallel.
+# Its pool is built by the macro, already connected, before any of our code sees it,
+# so `src/limits.rs` cannot reach it — measured, that pool reported
+# `statement_timeout=0`, which is PostgreSQL's "no limit at all".
+#
+# **This cannot be a migration.** `ALTER ROLE` writes to `pg_authid`, a catalog shared
+# by every database in the cluster, and six tests applying it concurrently abort with
+# "tuple concurrently updated" (XX000, heapam.c:4711). Measured: the same SQL passes
+# with `--test-threads=1` and fails in parallel. So the floor is set here, once, where
+# exactly one process touches the catalog.
+#
+# **30s, not 5s.** The backend's own 5s (`src/limits.rs`) is stricter and applies after
+# this, so production keeps 5s. This only bounds what nobody configured, and giving the
+# tests the same 5s would forbid a wider default later for no benefit.
+#
+# **The role is left configured, deliberately.** A `RESET` here would only make the
+# next test run start unbounded again, which is the state this line exists to prevent;
+# the setting is a statement about the test cluster, not a temporary one. It is checked
+# by `tests/limits.rs::the_role_sets_a_floor_that_other_connections_inherit`.
+psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$TESTDB" -q -c \
+  "ALTER ROLE CURRENT_USER SET statement_timeout = '30s';" >/dev/null
+echo "role floor: statement_timeout = 30s for every connection the harness opens"
+
 # Leftovers from `#[sqlx::test]`. Each converted test creates its own database,
 # named `_sqlx_test_<sha512 of the test path>`, and drops it when it finishes. A
 # run that is killed mid-test leaves it behind, and the name is stable per test, so

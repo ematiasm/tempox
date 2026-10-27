@@ -120,3 +120,35 @@ async fn the_option_name_is_not_silently_ignored(pool: sqlx::PgPool) {
     // And the server agrees, which is the assertion above; kept here so a reader of
     // this file sees why the string check alone is not the proof.
 }
+
+/// S9: the role's floor reaches connections this file does not build.
+///
+/// `limited()` imposes `5s` on every pool the backend makes, but it cannot reach
+/// connections the backend does not make: `#[sqlx::test]`'s own pool, a migration
+/// script, a future job. `scripts/test-db.sh` sets a `statement_timeout` on the role so
+/// those inherit one, and this test is what keeps that from rotting silently. It cannot
+/// be a migration: `ALTER ROLE` writes a cluster-shared catalog, and `#[sqlx::test]`
+/// applies migrations in parallel — measured, "tuple concurrently updated".
+///
+/// **It asserts "not zero", not a specific value, and the difference matters.** The
+/// floor is deliberately more generous than the backend's own limit — it exists to
+/// bound what nobody configured, not to be the backend's policy — so pinning `5s`
+/// here would either forbid the floor from being looser or force it to be redundant.
+/// What must never come back is `0`, which in PostgreSQL means *no limit at all*.
+///
+/// If this fails, `make test-db` did not run against this database, or someone reset
+/// the role. Either way, connections outside `limited()` are unbounded.
+#[sqlx::test]
+async fn the_role_sets_a_floor_that_other_connections_inherit(pool: sqlx::PgPool) {
+    let (value,): (String,) = sqlx::query_as("SHOW statement_timeout")
+        .fetch_one(&pool)
+        .await
+        .expect("SHOW statement_timeout");
+
+    assert_ne!(
+        value, "0",
+        "the role must carry a statement_timeout floor, otherwise every connection \
+         the backend does not build itself is unbounded. Got {value:?}, which is \
+         PostgreSQL's 'no limit'. It is set by `scripts/test-db.sh`; run `make test-db`."
+    );
+}
