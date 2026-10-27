@@ -9,17 +9,29 @@ S1. `GET /health` **no debe ejecutar SQL**. Debe responder desde el estado en
 memoria del pool de conexiones, para poder contestar justo cuando la base es el
 problema.
 
-S2. `GET /health` responde `200` con `{"status":"ok"}` cuando el pool tiene al
-menos una conexión libre, y `503` cuando no puede atender. El cuerpo conserva la
-clave `status`, porque es el contrato que ya existe.
+S2. `GET /health` responde `200` con `{"status":"ok"}` cuando el pool **puede
+servir**, y `503` cuando no puede. El cuerpo conserva la clave `status`, porque
+es el contrato que ya existe.
 
-S3. Con **todas** las conexiones del pool en uso, `GET /health` responde `503` y
-lo hace **sin bloquearse** — no puede quedar esperando una conexión, porque eso
-lo dejaría dueño del deadlock que intenta reportar.
+S3. La condición de `503` es **saturación, no vaciedad**: el pool está en su
+máximo **y** no queda ninguna conexión libre. Un pool vacío (lazy antes del
+primer request, o con las conexiones reapeadas tras reiniciar la base) **puede
+servir** y responde `200`, igual que un pool con una conexión tomada y nueve
+libres. `min_connections` queda en su default de cero, que es justo por lo que un
+pool vacío tiene que poder estar sano.
 
-S4. Con la base de datos inalcanzable, `GET /health` responde `503` en menos de
-un segundo. La prueba de que no intenta conectarse es que no espera el timeout
-de conexión.
+S3-bis. Con **todas** las conexiones del pool en uso, `GET /health` responde
+`503` y lo hace **sin bloquearse** — no puede quedar esperando una conexión,
+porque eso lo dejaría dueño del deadlock que intenta reportar.
+
+S4. `GET /health` **no ejecuta SQL ni toma una conexión** en ningún caso, ni
+siquiera con el pool vacío. Responde desde contadores en memoria.
+
+S4-bis. (Límite explícito) `GET /health` **no afirma que la base sea
+alcanzable**. Un pool que no puede conectar reporta `ok` hasta que el primer
+request falla. Probarlo exigiría bloquearse sobre el recurso sospechoso, que es
+el error que S3 evita; la alcanzabilidad la dicen los propios requests, y
+`docs/en/architecture.md` deja la observabilidad real fuera de alcance.
 
 S5. Toda conexión del backend ejecuta con `statement_timeout = 5s`. Una consulta
 que exceda ese límite **falla** en lugar de colgar la conexión para siempre.
@@ -85,3 +97,16 @@ tomada, y el comando quedó colgado porque `cargo run` sirve para siempre y
 `tail` no imprime hasta que su entrada se cierra. El dueño tuvo que frenarme. La
 regla que se deriva: un chequeo aplicable se corre **una vez**, y un servidor no
 se levanta dentro de un pipe que espera EOF.
+
+L9 (revisión nativa `review-10890a3ae8f692e5`, `correction_required`): dos
+hallazgos CRÍTICOS contra la primera versión de `/health`, y los dos correctos.
+`R3-001` (reliability) y `R4-empty-pool-reports-unavailable` (resilience): el
+predicado `size() == 0 || num_idle() == 0` confundía «no tengo una conexión libre
+ahora» con «no puedo servir». Reportaba `503` con una conexión tomada de diez, y
+con el pool vacío por reinicio de la base o por reaping — es decir, **removía un
+backend sano bajo carga liviana o en reposo**, causando la caída que decía
+reportar. S2/S3/S4 se reescribieron (S3 ahora nombra saturación, S4 prohíbe SQL,
+S4-bis declara el límite de alcanzabilidad) y el predicado pasó a
+`idle == 0 && size >= max`. Los dos casos nuevos se observaron en rojo primero
+(`left: 503, right: 200`), y neutralizar el `503` hace fallar sólo el de
+saturación, así que cada test cubre su rama.

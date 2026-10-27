@@ -78,34 +78,72 @@ async fn health_reports_exhausted_pool_without_waiting_for_a_connection(pool: sq
     drop(held_connections);
 }
 
-#[tokio::test]
-async fn health_reports_lazy_unreachable_pool_without_connecting() {
-    let unreachable_pool = sqlx::postgres::PgPoolOptions::new()
+/// S2, retaken after review finding `R4-empty-pool-reports-unavailable`.
+///
+/// **A pool holding no connection is not a pool that cannot serve.** It is the
+/// normal state of a lazy pool before its first request, and of a pool whose idle
+/// connections were reaped or dropped by a database restart while the process sat
+/// quiet. The first version of this handler answered `503` for that state, which
+/// would have had a supervisor remove a backend whose next request is served
+/// immediately — the baseline behaviour it replaced.
+///
+/// The database here is reachable on purpose. The point is that "empty" is not a
+/// verdict, and only the maximum being reached is.
+#[sqlx::test]
+async fn health_reports_ok_when_the_pool_is_empty_but_the_database_is_reachable(
+    pool: sqlx::PgPool,
+) {
+    // Same connect options, no connection yet: the pool is lazily populated.
+    let options = pool.connect_options().as_ref().clone();
+    let lazy = sqlx::postgres::PgPoolOptions::new()
         .max_connections(10)
-        .acquire_timeout(std::time::Duration::from_secs(30))
-        .connect_lazy("postgres://u:p@127.0.0.1:1/none")
-        .expect("create lazy pool for unreachable database");
-    assert_eq!(unreachable_pool.size(), 0, "lazy pool has not connected");
+        .connect_lazy_with(options);
+    assert_eq!(lazy.size(), 0, "the pool must start with no connection");
 
-    let client = common::client(unreachable_pool.clone());
-    let response =
-        tokio::time::timeout(std::time::Duration::from_millis(500), client.get("/health"))
-            .await
-            .expect("health must not attempt a connection to the unreachable database");
+    let client = common::client(lazy.clone());
+    let response = client.get("/health").await;
 
     assert_eq!(
         response.status(),
-        axum::http::StatusCode::SERVICE_UNAVAILABLE
+        axum::http::StatusCode::OK,
+        "an empty pool over a reachable database can serve; 503 would have the \
+         supervisor remove a healthy backend"
     );
+    assert_eq!(response.json(), &serde_json::json!({ "status": "ok" }));
     assert_eq!(
-        response.json(),
-        &serde_json::json!({ "status": "unavailable" })
-    );
-    assert_eq!(
-        unreachable_pool.size(),
+        lazy.size(),
         0,
-        "health must leave the pool untouched"
+        "health must not open a connection to decide; it answers from counters"
     );
+}
+
+/// S3, and the half the first version got wrong in the other direction.
+///
+/// One connection checked out is **not** saturation: the pool can open another.
+/// The finding `R3-001` named exactly this — a healthy pool with a free slot was
+/// reported unavailable, which under light load is a backend removing itself.
+#[sqlx::test]
+async fn health_reports_ok_while_the_pool_still_has_room(pool: sqlx::PgPool) {
+    let held = pool.acquire().await.expect("hold one connection");
+    assert_eq!(
+        pool.num_idle(),
+        0,
+        "the held connection is out of the idle set"
+    );
+    assert!(
+        pool.size() < pool.options().get_max_connections(),
+        "the pool must still have a free slot for this case to mean anything"
+    );
+
+    let client = common::client(pool.clone());
+    let response = client.get("/health").await;
+
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::OK,
+        "a pool with a free slot can serve, even with nothing currently idle"
+    );
+    drop(held);
 }
 
 // A full write round trip over the real socket. Everything the test asserts is
