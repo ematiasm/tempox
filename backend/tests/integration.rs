@@ -47,9 +47,65 @@ async fn health_endpoint_returns_ok(pool: sqlx::PgPool) {
     let resp = reqwest::get(format!("{}/health", backend.base_url()))
         .await
         .expect("request spawned backend");
-    assert!(resp.status().is_success());
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
     let json: serde_json::Value = resp.json().await.expect("json");
-    assert_eq!(json["status"], "ok");
+    assert_eq!(json, serde_json::json!({ "status": "ok" }));
+}
+
+#[sqlx::test]
+async fn health_reports_exhausted_pool_without_waiting_for_a_connection(pool: sqlx::PgPool) {
+    let max_connections = pool.options().get_max_connections();
+    eprintln!("#[sqlx::test] pool max_connections: {max_connections}");
+    let mut held_connections = Vec::with_capacity(max_connections as usize);
+    for _ in 0..max_connections {
+        held_connections.push(pool.acquire().await.expect("acquire pool connection"));
+    }
+    assert_eq!(pool.num_idle(), 0, "the pool must be exhausted");
+
+    let client = common::client(pool);
+    let response = tokio::time::timeout(std::time::Duration::from_secs(2), client.get("/health"))
+        .await
+        .expect("health must not wait for an exhausted pool connection");
+
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        response.json(),
+        &serde_json::json!({ "status": "unavailable" })
+    );
+    drop(held_connections);
+}
+
+#[tokio::test]
+async fn health_reports_lazy_unreachable_pool_without_connecting() {
+    let unreachable_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(10)
+        .acquire_timeout(std::time::Duration::from_secs(30))
+        .connect_lazy("postgres://u:p@127.0.0.1:1/none")
+        .expect("create lazy pool for unreachable database");
+    assert_eq!(unreachable_pool.size(), 0, "lazy pool has not connected");
+
+    let client = common::client(unreachable_pool.clone());
+    let response =
+        tokio::time::timeout(std::time::Duration::from_millis(500), client.get("/health"))
+            .await
+            .expect("health must not attempt a connection to the unreachable database");
+
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        response.json(),
+        &serde_json::json!({ "status": "unavailable" })
+    );
+    assert_eq!(
+        unreachable_pool.size(),
+        0,
+        "health must leave the pool untouched"
+    );
 }
 
 // A full write round trip over the real socket. Everything the test asserts is
