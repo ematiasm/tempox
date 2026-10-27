@@ -69,3 +69,19 @@ de mantener, volvamos a la opcion de 5s». El diseño por clase (`Read`/`Write`/
 5 s, y el costo de esa simplicidad se acepta y se documenta en el código.
 
 L7 (decisión del dueño): los slices 1 y 2 se hacen; el slice 3 se deja fuera.
+
+L8 (cierre, 2026-10-27): los dos slices están commiteados y medidos. `13333f4`
+(T1) y `6f01a46` (T2), 428 líneas autoradas en total, así que el documento
+declara el límite de slice acá. Verificación en vivo sobre el binario real: con
+un lock sobre `accounts`, `GET /api/accounts` falla con **500 a los 5007 ms**
+(antes colgaba >35 s), y con 12 requests todavía bloqueados `GET /api/products`
+responde **200 en 4,8 ms** (antes colgaba 30 s). Suites sobre el árbol
+commiteado: 57 unit, 156 integración, 5 en `tests/limits.rs`, clippy
+`-D warnings`, `cargo fmt --check` y `make lint` limpios.
+
+L8-bis (error de método propio, registrado porque costó tiempo): volví a arrancar
+`cargo run` para "ver `/health` andando" cuando la evidencia en vivo ya estaba
+tomada, y el comando quedó colgado porque `cargo run` sirve para siempre y
+`tail` no imprime hasta que su entrada se cierra. El dueño tuvo que frenarme. La
+regla que se deriva: un chequeo aplicable se corre **una vez**, y un servidor no
+se levanta dentro de un pipe que espera EOF.
