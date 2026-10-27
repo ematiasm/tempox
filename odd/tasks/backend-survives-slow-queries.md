@@ -177,3 +177,42 @@ Medido de punta a punta, con el binario real y `DATABASE_URL` llevando `options`
 El test nuevo (`an_unreadable_options_string_without_a_limit_is_accepted`) se
 observó en rojo primero: `Unrepresentable("-x -c geqo=off")` donde se esperaba
 éxito.
+
+L12 (avisos de `review-cf2d7a5a603d3b13`, el linaje de #101). Otra vez llegaron
+sin texto, así que se reconstruyeron midiendo. Uno es real y grave.
+
+`R3-001` (`limits.rs:199-202`), el real. `mentions_limit()` sólo entendía las
+formas con `-c`, pero **libpq también acepta `--name=value` sin `-c`**. Medido
+contra un servidor vivo:
+
+| `options` del caller | baseline sin nosotros | con el bug |
+|---|---|---|
+| `--statement_timeout=30s` | servidor reporta **30s** | append nuestro gana, servidor reporta **5s** |
+| `-c statement_timeout=30s` | 30s | rechazado, correcto |
+| `-cstatement_timeout=30s` | 30s | rechazado, correcto |
+| `--geqo=off` | n/a | aceptado, correcto |
+
+O sea: un caller que pedía treinta segundos recibía cinco, **en silencio**. Y peor
+que el bug: **mi propio comentario afirmaba que un spelling no modelado "would
+still apply the last `-c`"** — falso, porque `--name=value` no es un `-c`. Una
+razón incorrecta es peor que ninguna, porque hace que un hueco sin analizar
+parezca analizado. Esto es exactamente lo que el aviso señalaba.
+
+Arreglo: `mentions_limit()` maneja las cuatro formas, y se midió cuáles son:
+`-c name=value`, `-cname=value`, `--name=value` las aplica PostgreSQL;
+`--name value` separado por espacio las **rechaza** ("`--statement_timeout`
+requires a value"), así que no necesita manejo y un test lo fija para que no se
+pudra.
+
+Al arreglarlo quedaron dos cosas muertas que borré en vez de dejar: la variante
+`LimitError::Unrepresentable` (su caso ahora devuelve `AlreadySet`, que es el
+veredicto correcto — el operador tiene que sacar el límite, no adivinar cuál de
+los dos tokens es el problema) y la función `option_pairs`, que existía sólo para
+ese camino. Un test afirma ahora que un límite junto a un token inparseable
+reporta el límite, no el token.
+
+`R4-001` (`main.rs:37`), sin cambios de código: el operador ve una línea que
+nombra la opción y el valor aplicado, y el proceso sale con código 1.
+
+Verificado: 65 unit (13 en `limits`), 157 integración, 5 `tests/limits.rs`,
+clippy `-D warnings`, `fmt --check`.
