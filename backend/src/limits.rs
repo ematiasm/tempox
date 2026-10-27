@@ -167,6 +167,9 @@ pub(crate) fn mentions_limit(existing: &str) -> bool {
 
     while index < tokens.len() {
         let token = &tokens[index];
+        // A fully quoted token (`'-c'`, `"-c"`) is unwrapped before the prefix check so
+        // the two-token form survives quoting.
+        let token = token.trim_matches(|c: char| c == '\'' || c == '"');
         let (name_token, consumed) = match token.strip_prefix("--") {
             // `--name=value`: the whole option is in this token.
             Some(rest) => (rest, 1),
@@ -197,10 +200,18 @@ pub(crate) fn mentions_limit(existing: &str) -> bool {
 }
 
 /// Whether one `name=value` token names `wanted`.
+///
+/// Quotes around the name are stripped before comparing. libpq does not accept a
+/// quoted `-c 'name=value'` (measured: "unrecognized configuration parameter
+/// \"'statement_timeout\""), so this cannot be hiding a working limit — but the scan
+/// is the only thing standing between a caller's intent and a silent override, and
+/// "the string is malformed anyway" is not a fact it should have to lean on. A human
+/// reading the string sees the name; the scanner should agree.
 fn option_names(token: &str, wanted: &str) -> bool {
+    let token = token.trim_matches(|c: char| c == '\'' || c == '"');
     token
         .split_once('=')
-        .is_some_and(|(name, _)| name == wanted)
+        .is_some_and(|(name, _)| name.trim_matches(|c: char| c == '\'' || c == '"') == wanted)
 }
 
 /// One libpq `options` string as tokens, with backslash escapes resolved.
@@ -506,6 +517,43 @@ mod tests {
             rendered.contains("statement_timeout=5s"),
             "the limit must be added, got: {rendered}"
         );
+    }
+
+    /// A quoted token must not hide the limit from the scan.
+    ///
+    /// Measured: PostgreSQL rejects `-c 'statement_timeout=30s'` ("unrecognized
+    /// configuration parameter \"'statement_timeout\"") — the quoting is not a valid
+    /// spelling, so this cannot hide a working limit. It is still a false negative
+    /// worth closing, because the scan is the only thing standing between a caller's
+    /// intent and a silent override, and "the string is malformed" is not a fact this
+    /// scanner should have to rely on. Treating quotes as token syntax makes the scan
+    /// agree with what a human reading the string would see.
+    #[test]
+    fn a_quoted_pair_does_not_hide_the_limit() {
+        for spelling in [
+            "-c 'statement_timeout=30s'",
+            "'-c' 'statement_timeout=30s'",
+            "-c \"statement_timeout=30s\"",
+        ] {
+            let options: PgConnectOptions = format!(
+                "postgres://u@h:5432/d?options={}",
+                spelling
+                    .replace(' ', "%20")
+                    .replace('=', "%3D")
+                    .replace('\'', "%27")
+                    .replace('"', "%22")
+            )
+            .parse()
+            .expect("sqlx parses the `options` query parameter");
+
+            match limited(options) {
+                Err(LimitError::AlreadySet) => {}
+                Ok(limited) => panic!(
+                    "`{spelling}` names a limit and must not be silently overridden; got {:?}",
+                    limited.get_options()
+                ),
+            }
+        }
     }
 
     /// The constant is the five seconds the owner chose, and it is not `ZERO`,

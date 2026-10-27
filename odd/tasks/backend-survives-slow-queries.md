@@ -216,3 +216,36 @@ nombra la opción y el valor aplicado, y el proceso sale con código 1.
 
 Verificado: 65 unit (13 en `limits`), 157 integración, 5 `tests/limits.rs`,
 clippy `-D warnings`, `fmt --check`.
+
+L13 (avisos de `review-9cf429d4fd484f7e`, el linaje de `998f308`). Cinco avisos,
+otra vez sin texto recuperable: el store se consumió al quemar la autoridad, y el
+único payload preservado está truncado a 3201 bytes con un solo finding legible.
+Así que se reconstruyeron midiendo, y se dice acá.
+
+El único leído completo (del payload truncado, `limits.rs:118` WARNING) no es un
+defecto sino una **decisión de producto**: fail-closed al arrancar cuando la
+config trae un `statement_timeout` propio. Es cierto que una config que el
+baseline aceptaba ahora no arranca; es exactamente el intercambio que el dueño
+eligió al preferir rechazo sobre sobrescritura silenciosa, y está documentado en
+el código y en el cuerpo del PR. No se cambia.
+
+De los otros cuatro, uno resultó un hueco real al medirlo:
+
+**Comillas ocultando el límite.** `-c 'statement_timeout=30s'` — con comillas
+alrededor de todo el par — hacía que `mentions_limit()` dijera "no hay límite", y
+nuestro append sobrescribía. Medido que PostgreSQL **rechaza** esa forma
+("unrecognized configuration parameter \"'statement_timeout\""), así que no podía
+esconder un límite que funcionara: era un falso negativo del escáner, no una
+pérdida real. Se cierra igual, porque el escáner es lo único que separa la
+intención del caller de una sobrescritura silenciosa, y "la cadena ya es inválida"
+no es un hecho del que deba depender. Ahora las comillas se pelan al comparar
+nombres, y un valor con comillas que no es límite se sigue aceptando (medido).
+
+Los tres restantes no produjeron cambio de comportamiento tras medirlos: el
+parser respeta el escape con backslash (`-c application_name=has\ space` se
+acepta y se preserva), los valores con `=` adentro se parten bien
+(`split_once` toma el primero), y `main.rs:37` es la propagación del `?` que el
+aviso anterior ya había cubierto.
+
+Verificado: 66 unit (14 en `limits`), 157 integración, 5 `tests/limits.rs`,
+clippy `-D warnings`, `fmt --check`.
