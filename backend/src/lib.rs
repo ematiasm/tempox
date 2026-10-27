@@ -16,6 +16,7 @@ use tower_http::trace::TraceLayer;
 
 pub mod day;
 pub mod db;
+pub mod limits;
 pub mod models;
 pub mod money;
 pub mod routes;

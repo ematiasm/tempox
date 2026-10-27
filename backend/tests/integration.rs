@@ -47,9 +47,103 @@ async fn health_endpoint_returns_ok(pool: sqlx::PgPool) {
     let resp = reqwest::get(format!("{}/health", backend.base_url()))
         .await
         .expect("request spawned backend");
-    assert!(resp.status().is_success());
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
     let json: serde_json::Value = resp.json().await.expect("json");
-    assert_eq!(json["status"], "ok");
+    assert_eq!(json, serde_json::json!({ "status": "ok" }));
+}
+
+#[sqlx::test]
+async fn health_reports_exhausted_pool_without_waiting_for_a_connection(pool: sqlx::PgPool) {
+    let max_connections = pool.options().get_max_connections();
+    eprintln!("#[sqlx::test] pool max_connections: {max_connections}");
+    let mut held_connections = Vec::with_capacity(max_connections as usize);
+    for _ in 0..max_connections {
+        held_connections.push(pool.acquire().await.expect("acquire pool connection"));
+    }
+    assert_eq!(pool.num_idle(), 0, "the pool must be exhausted");
+
+    let client = common::client(pool);
+    let response = tokio::time::timeout(std::time::Duration::from_secs(2), client.get("/health"))
+        .await
+        .expect("health must not wait for an exhausted pool connection");
+
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        response.json(),
+        &serde_json::json!({ "status": "unavailable" })
+    );
+    drop(held_connections);
+}
+
+/// S2, retaken after review finding `R4-empty-pool-reports-unavailable`.
+///
+/// **A pool holding no connection is not a pool that cannot serve.** It is the
+/// normal state of a lazy pool before its first request, and of a pool whose idle
+/// connections were reaped or dropped by a database restart while the process sat
+/// quiet. The first version of this handler answered `503` for that state, which
+/// would have had a supervisor remove a backend whose next request is served
+/// immediately — the baseline behaviour it replaced.
+///
+/// The database here is reachable on purpose. The point is that "empty" is not a
+/// verdict, and only the maximum being reached is.
+#[sqlx::test]
+async fn health_reports_ok_when_the_pool_is_empty_but_the_database_is_reachable(
+    pool: sqlx::PgPool,
+) {
+    // Same connect options, no connection yet: the pool is lazily populated.
+    let options = pool.connect_options().as_ref().clone();
+    let lazy = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(10)
+        .connect_lazy_with(options);
+    assert_eq!(lazy.size(), 0, "the pool must start with no connection");
+
+    let client = common::client(lazy.clone());
+    let response = client.get("/health").await;
+
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::OK,
+        "an empty pool over a reachable database can serve; 503 would have the \
+         supervisor remove a healthy backend"
+    );
+    assert_eq!(response.json(), &serde_json::json!({ "status": "ok" }));
+    assert_eq!(
+        lazy.size(),
+        0,
+        "health must not open a connection to decide; it answers from counters"
+    );
+}
+
+/// S3, and the half the first version got wrong in the other direction.
+///
+/// One connection checked out is **not** saturation: the pool can open another.
+/// The finding `R3-001` named exactly this — a healthy pool with a free slot was
+/// reported unavailable, which under light load is a backend removing itself.
+#[sqlx::test]
+async fn health_reports_ok_while_the_pool_still_has_room(pool: sqlx::PgPool) {
+    let held = pool.acquire().await.expect("hold one connection");
+    assert_eq!(
+        pool.num_idle(),
+        0,
+        "the held connection is out of the idle set"
+    );
+    assert!(
+        pool.size() < pool.options().get_max_connections(),
+        "the pool must still have a free slot for this case to mean anything"
+    );
+
+    let client = common::client(pool.clone());
+    let response = client.get("/health").await;
+
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::OK,
+        "a pool with a free slot can serve, even with nothing currently idle"
+    );
+    drop(held);
 }
 
 // A full write round trip over the real socket. Everything the test asserts is

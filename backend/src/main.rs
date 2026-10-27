@@ -5,7 +5,7 @@
 //! library, so it can be constructed and driven by a test without binding a
 //! socket.
 
-use sqlx::postgres::PgPoolOptions;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use tempox::{AppState, Config, build_app};
 use tracing_subscriber::EnvFilter;
 
@@ -20,9 +20,25 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Config::from_env()?;
 
+    // Every connection is opened with a statement limit, so a query that hangs
+    // fails instead of holding its connection forever. See `tempox::limits` for the
+    // measured defect, the number, and why it is not a request timeout.
+    //
+    // Applied here, at the one place a pool is built, rather than as a `SET` after
+    // connecting: the option travels with the handshake, so it covers the lazy
+    // connections a busy minute opens as well as the first one.
+    let connect_options = tempox::limits::limited(
+        config
+            .database_url
+            .parse::<PgConnectOptions>()
+            .map_err(|e| {
+                anyhow::anyhow!("DATABASE_URL is not a valid postgres connection string: {e}")
+            })?,
+    );
+
     let db = PgPoolOptions::new()
         .max_connections(10)
-        .connect(&config.database_url)
+        .connect_with(connect_options)
         .await?;
 
     sqlx::migrate!("./migrations").run(&db).await?;
