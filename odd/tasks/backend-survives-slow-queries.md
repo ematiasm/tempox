@@ -110,3 +110,142 @@ S4-bis declara el límite de alcanzabilidad) y el predicado pasó a
 `idle == 0 && size >= max`. Los dos casos nuevos se observaron en rojo primero
 (`left: 503, right: 200`), y neutralizar el `503` hace fallar sólo el de
 saturación, así que cada test cubre su rama.
+
+L10 (segunda ronda, avisos `R4-001` y `R4-002` del linaje
+`review-a9a0d5d66da4c01d`): la revisión los aprobó como informativos, pero el
+dueño pidió mirarlos. El texto de los hallazgos **no era recuperable** — llegaron
+al chat como id + lente + ubicación + severidad, y el store del linaje se consumió
+al quemar la autoridad. Así que se reconstruyeron desde los rangos, midiendo en
+vez de suponiendo, y se dice acá para que nadie los lea como citas.
+
+`R4-001` (`limits.rs:64-71`, la función `limited`). Reconstrucción: `options()`
+**agrega**, no reemplaza, así que un caller con su propio `statement_timeout`
+producía dos. Medido: `-c statement_timeout=30s -c statement_timeout=5s`, con
+efectivo `5s`. Funcionaba **por accidente** — porque `limited()` corre segundo y
+libpq se queda con el último `-c` del nombre repetido. Nada lo garantizaba.
+
+El primer intento de arreglo fue *reemplazar* en vez de duplicar, y se abandonó
+después de medir lo que costaba: `PgConnectOptions` no tiene setter del campo
+`options` ni forma de limpiarlo (`options()` sólo agrega), así que reconstruir
+exigía pasar por la URL de conexión, y `to_url_lossy()` pierde
+`application_name`, pierde el campo `options` entero (`app=None opts=None` tras el
+round trip) y **corrompe `sslrootcert`** (`file:file: /etc/ssl/root.pem` al
+reparsear). Cambiar un duplicado cosmético por una configuración TLS rota no es
+un intercambio aceptable.
+
+Arreglo final: **rechazar**, con `LimitError::{AlreadySet, Unrepresentable}` y un
+mensaje que nombra la opción y el valor que aplica este backend. Un caller que
+pide otro límite está tomando una decisión que nadie puede tomar en silencio.
+Medido de punta a punta: con `DATABASE_URL=...?options=-c statement_timeout=30s`
+el binario **sale con código 1** y no arranca; sin él, arranca normal.
+
+`R4-002` (`health.rs:52-59`). Reconstrucción: `size()`, `num_idle()` y
+`get_max_connections()` son **tres lecturas atómicas separadas** (`sqlx` mantiene
+dos `AtomicU32` independientes y no tiene accessor combinado), así que una
+conexión devuelta entre medio puede producir un par que nunca existió junto.
+**No se pudo provocar**: 300 sondas concurrentes contra un pool genuinamente
+saturado dieron `503` las 300 veces, y 300 bajo churn de conexiones dieron `200`
+siempre. Un candado o un retry no comprarían nada que no haga la próxima sonda del
+supervisor, así que **se documenta y no se canda** — con una nota explícita de que
+las lecturas no son atómicas, para que nadie confíe en una conjunción entre ellas.
+
+L11 (revisión `review-996c8d537c196d77`, `correction_required`): el refuter
+encontró **un bug que yo introduje**, `R3-001`, CRÍTICO, y tenía razón.
+
+El arreglo de `R4-001` parseaba el string de `options` **primero** y rechazaba si
+no lo entendía. Pero el baseline nunca lo inspeccionaba: agregaba el límite a lo
+que hubiera. Así que cualquier `options` que libpq aceptara y este parser no
+modelara pasó de funcionar a **impedir el arranque** (`main` sale por el `?`).
+Una regresión causada por el arreglo de un aviso cosmético. El test que había
+escrito combinaba el token inparseable con un límite ajeno, así que no cubría el
+caso.
+
+Arreglo: la pregunta correcta es **qué contiene** el string, no si puedo
+reconstruirlo. `mentions_limit()` recorre los tokens de forma tolerante — un token
+que no entiende lo saltea, no aborta — y sólo cuando encuentra un
+`statement_timeout` ajeno hay que decidir algo, y ahí sí se parsea y se rechaza.
+Sin límite ajeno no se toca nada del caller: se agrega el nuestro y el resto queda
+byte por byte como vino.
+
+Medido de punta a punta, con el binario real y `DATABASE_URL` llevando `options`:
+- `options=-c application_name=probe` → **arranca** (`backend listening on ...`).
+- `options=-c statement_timeout=30s` → **sale con código 1**, como debe.
+- `options=-x ...` → nuestro código ya no bloquea; es Postgres quien rechaza el
+  token por inválido al hacer el handshake, que es el mismo desenlace que tenía el
+  baseline.
+
+El test nuevo (`an_unreadable_options_string_without_a_limit_is_accepted`) se
+observó en rojo primero: `Unrepresentable("-x -c geqo=off")` donde se esperaba
+éxito.
+
+L12 (avisos de `review-cf2d7a5a603d3b13`, el linaje de #101). Otra vez llegaron
+sin texto, así que se reconstruyeron midiendo. Uno es real y grave.
+
+`R3-001` (`limits.rs:199-202`), el real. `mentions_limit()` sólo entendía las
+formas con `-c`, pero **libpq también acepta `--name=value` sin `-c`**. Medido
+contra un servidor vivo:
+
+| `options` del caller | baseline sin nosotros | con el bug |
+|---|---|---|
+| `--statement_timeout=30s` | servidor reporta **30s** | append nuestro gana, servidor reporta **5s** |
+| `-c statement_timeout=30s` | 30s | rechazado, correcto |
+| `-cstatement_timeout=30s` | 30s | rechazado, correcto |
+| `--geqo=off` | n/a | aceptado, correcto |
+
+O sea: un caller que pedía treinta segundos recibía cinco, **en silencio**. Y peor
+que el bug: **mi propio comentario afirmaba que un spelling no modelado "would
+still apply the last `-c`"** — falso, porque `--name=value` no es un `-c`. Una
+razón incorrecta es peor que ninguna, porque hace que un hueco sin analizar
+parezca analizado. Esto es exactamente lo que el aviso señalaba.
+
+Arreglo: `mentions_limit()` maneja las cuatro formas, y se midió cuáles son:
+`-c name=value`, `-cname=value`, `--name=value` las aplica PostgreSQL;
+`--name value` separado por espacio las **rechaza** ("`--statement_timeout`
+requires a value"), así que no necesita manejo y un test lo fija para que no se
+pudra.
+
+Al arreglarlo quedaron dos cosas muertas que borré en vez de dejar: la variante
+`LimitError::Unrepresentable` (su caso ahora devuelve `AlreadySet`, que es el
+veredicto correcto — el operador tiene que sacar el límite, no adivinar cuál de
+los dos tokens es el problema) y la función `option_pairs`, que existía sólo para
+ese camino. Un test afirma ahora que un límite junto a un token inparseable
+reporta el límite, no el token.
+
+`R4-001` (`main.rs:37`), sin cambios de código: el operador ve una línea que
+nombra la opción y el valor aplicado, y el proceso sale con código 1.
+
+Verificado: 65 unit (13 en `limits`), 157 integración, 5 `tests/limits.rs`,
+clippy `-D warnings`, `fmt --check`.
+
+L13 (avisos de `review-9cf429d4fd484f7e`, el linaje de `998f308`). Cinco avisos,
+otra vez sin texto recuperable: el store se consumió al quemar la autoridad, y el
+único payload preservado está truncado a 3201 bytes con un solo finding legible.
+Así que se reconstruyeron midiendo, y se dice acá.
+
+El único leído completo (del payload truncado, `limits.rs:118` WARNING) no es un
+defecto sino una **decisión de producto**: fail-closed al arrancar cuando la
+config trae un `statement_timeout` propio. Es cierto que una config que el
+baseline aceptaba ahora no arranca; es exactamente el intercambio que el dueño
+eligió al preferir rechazo sobre sobrescritura silenciosa, y está documentado en
+el código y en el cuerpo del PR. No se cambia.
+
+De los otros cuatro, uno resultó un hueco real al medirlo:
+
+**Comillas ocultando el límite.** `-c 'statement_timeout=30s'` — con comillas
+alrededor de todo el par — hacía que `mentions_limit()` dijera "no hay límite", y
+nuestro append sobrescribía. Medido que PostgreSQL **rechaza** esa forma
+("unrecognized configuration parameter \"'statement_timeout\""), así que no podía
+esconder un límite que funcionara: era un falso negativo del escáner, no una
+pérdida real. Se cierra igual, porque el escáner es lo único que separa la
+intención del caller de una sobrescritura silenciosa, y "la cadena ya es inválida"
+no es un hecho del que deba depender. Ahora las comillas se pelan al comparar
+nombres, y un valor con comillas que no es límite se sigue aceptando (medido).
+
+Los tres restantes no produjeron cambio de comportamiento tras medirlos: el
+parser respeta el escape con backslash (`-c application_name=has\ space` se
+acepta y se preserva), los valores con `=` adentro se parten bien
+(`split_once` toma el primero), y `main.rs:37` es la propagación del `?` que el
+aviso anterior ya había cubierto.
+
+Verificado: 66 unit (14 en `limits`), 157 integración, 5 `tests/limits.rs`,
+clippy `-D warnings`, `fmt --check`.

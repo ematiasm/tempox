@@ -34,7 +34,7 @@ async fn main() -> anyhow::Result<()> {
             .map_err(|e| {
                 anyhow::anyhow!("DATABASE_URL is not a valid postgres connection string: {e}")
             })?,
-    );
+    )?;
 
     let db = PgPoolOptions::new()
         .max_connections(10)
