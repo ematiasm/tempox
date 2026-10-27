@@ -148,3 +148,32 @@ saturado dieron `503` las 300 veces, y 300 bajo churn de conexiones dieron `200`
 siempre. Un candado o un retry no comprarían nada que no haga la próxima sonda del
 supervisor, así que **se documenta y no se canda** — con una nota explícita de que
 las lecturas no son atómicas, para que nadie confíe en una conjunción entre ellas.
+
+L11 (revisión `review-996c8d537c196d77`, `correction_required`): el refuter
+encontró **un bug que yo introduje**, `R3-001`, CRÍTICO, y tenía razón.
+
+El arreglo de `R4-001` parseaba el string de `options` **primero** y rechazaba si
+no lo entendía. Pero el baseline nunca lo inspeccionaba: agregaba el límite a lo
+que hubiera. Así que cualquier `options` que libpq aceptara y este parser no
+modelara pasó de funcionar a **impedir el arranque** (`main` sale por el `?`).
+Una regresión causada por el arreglo de un aviso cosmético. El test que había
+escrito combinaba el token inparseable con un límite ajeno, así que no cubría el
+caso.
+
+Arreglo: la pregunta correcta es **qué contiene** el string, no si puedo
+reconstruirlo. `mentions_limit()` recorre los tokens de forma tolerante — un token
+que no entiende lo saltea, no aborta — y sólo cuando encuentra un
+`statement_timeout` ajeno hay que decidir algo, y ahí sí se parsea y se rechaza.
+Sin límite ajeno no se toca nada del caller: se agrega el nuestro y el resto queda
+byte por byte como vino.
+
+Medido de punta a punta, con el binario real y `DATABASE_URL` llevando `options`:
+- `options=-c application_name=probe` → **arranca** (`backend listening on ...`).
+- `options=-c statement_timeout=30s` → **sale con código 1**, como debe.
+- `options=-x ...` → nuestro código ya no bloquea; es Postgres quien rechaza el
+  token por inválido al hacer el handshake, que es el mismo desenlace que tenía el
+  baseline.
+
+El test nuevo (`an_unreadable_options_string_without_a_limit_is_accepted`) se
+observó en rojo primero: `Unrepresentable("-x -c geqo=off")` donde se esperaba
+éxito.

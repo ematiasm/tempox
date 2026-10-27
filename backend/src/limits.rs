@@ -134,17 +134,72 @@ pub fn limited(options: PgConnectOptions) -> Result<PgConnectOptions, LimitError
         return Ok(options.options([STATEMENT_TIMEOUT_OPTION]));
     };
 
-    let pairs =
-        option_pairs(existing).ok_or_else(|| LimitError::Unrepresentable(existing.to_owned()))?;
-
-    if pairs
-        .iter()
-        .any(|(name, _)| name == STATEMENT_TIMEOUT_OPTION.0)
-    {
-        return Err(LimitError::AlreadySet);
+    // **The caller's string is inspected, never required to be parseable.**
+    // `R3-001` from the refuter: an earlier version parsed first and refused when it
+    // could not, which turned a connection configuration the baseline accepted into
+    // a process that exits at boot. There is nothing to reconcile unless the caller
+    // set a limit, and that question needs a scan, not a reconstruction.
+    if !mentions_limit(existing) {
+        // Nothing of the caller's is touched and no parsing is attempted, so a token
+        // this module does not model survives exactly as it was written.
+        return Ok(options.options([STATEMENT_TIMEOUT_OPTION]));
     }
 
-    Ok(options.options([STATEMENT_TIMEOUT_OPTION]))
+    // The caller did set a limit, so a decision is unavoidable. If the rest of their
+    // string is not the shape `PgConnectOptions::options` emits, it cannot be
+    // rebuilt without dropping something, and refusing is the only honest answer.
+    option_pairs(existing).ok_or_else(|| LimitError::Unrepresentable(existing.to_owned()))?;
+
+    Err(LimitError::AlreadySet)
+}
+
+/// Whether an `options` string names `statement_timeout` anywhere in it.
+///
+/// Deliberately tolerant: it walks libpq tokens and looks at the option name, which
+/// is what distinguishes "the caller set a limit" (must refuse) from "the caller set
+/// something else" (append, never inspect). Returning `false` for a string this
+/// module cannot fully model is the behaviour-preserving answer, and the README of
+/// the risk is that a limit spelled in some shape not modelled here would slip
+/// through to the append — where libpq still applies the last `-c`, which is the
+/// baseline behaviour, not a corruption.
+///
+/// Both spellings libpq accepts are handled: `-c name=value` and `-cname=value`.
+pub(crate) fn mentions_limit(existing: &str) -> bool {
+    let tokens = split_libpq_options(existing);
+    let mut index = 0;
+
+    while index < tokens.len() {
+        let token = &tokens[index];
+        match token.strip_prefix("-c") {
+            // `-c name=value`: inspect the following token, if there is one.
+            Some("") => {
+                if let Some(next) = tokens.get(index + 1)
+                    && option_names(next, STATEMENT_TIMEOUT_OPTION.0)
+                {
+                    return true;
+                }
+                index += 2;
+            }
+            Some(rest) => {
+                if option_names(rest, STATEMENT_TIMEOUT_OPTION.0) {
+                    return true;
+                }
+                index += 1;
+            }
+            // Not a `-c` token; skip it. This is the tolerant path, and it is why an
+            // unreadable token cannot stop the boot.
+            None => index += 1,
+        }
+    }
+
+    false
+}
+
+/// Whether one `name=value` token names `wanted`.
+fn option_names(token: &str, wanted: &str) -> bool {
+    token
+        .split_once('=')
+        .is_some_and(|(name, _)| name == wanted)
 }
 
 /// Splits a libpq `options` string into `(name, value)` pairs.
@@ -359,6 +414,42 @@ mod tests {
         assert!(
             rendered.contains("statement_timeout=5s"),
             "and the limit must still be added, got: {rendered}"
+        );
+    }
+
+    /// `R3-001` from the refuter, and a regression this change introduced: a string
+    /// this parser cannot read, with **no** caller-set limit, must not stop the boot.
+    ///
+    /// The baseline appended the limit to whatever was there and never inspected it,
+    /// so any `options` string libpq accepts was fine. The first version of the
+    /// refusal changed that by parsing first: an unreadable token returned
+    /// `Unrepresentable` unconditionally, which turned a connection configuration
+    /// that used to work into a process that exits at `?` in `main`.
+    ///
+    /// The distinction is what the caller's string *contains*, not whether this
+    /// module can rebuild it: there is nothing to rebuild when the caller set no
+    /// limit, so the plain append is both safe and behaviour-preserving.
+    #[test]
+    fn an_unreadable_options_string_without_a_limit_is_accepted() {
+        let options: PgConnectOptions = "postgres://u@h:5432/d?options=-x%20-c%20geqo%3Doff"
+            .parse()
+            .expect("sqlx parses the `options` query parameter");
+
+        let limited = limited(options)
+            .expect("no caller-set limit means nothing to reconcile, so the boot must continue");
+
+        let rendered = limited.get_options().expect("options are set");
+        assert!(
+            rendered.contains("-x"),
+            "the token this parser cannot read must be preserved, got: {rendered}"
+        );
+        assert!(
+            rendered.contains("geqo=off"),
+            "the readable option beside it must be preserved, got: {rendered}"
+        );
+        assert!(
+            rendered.contains("statement_timeout=5s"),
+            "the limit must still be applied, got: {rendered}"
         );
     }
 
