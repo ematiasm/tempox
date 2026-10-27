@@ -110,3 +110,41 @@ S4-bis declara el límite de alcanzabilidad) y el predicado pasó a
 `idle == 0 && size >= max`. Los dos casos nuevos se observaron en rojo primero
 (`left: 503, right: 200`), y neutralizar el `503` hace fallar sólo el de
 saturación, así que cada test cubre su rama.
+
+L10 (segunda ronda, avisos `R4-001` y `R4-002` del linaje
+`review-a9a0d5d66da4c01d`): la revisión los aprobó como informativos, pero el
+dueño pidió mirarlos. El texto de los hallazgos **no era recuperable** — llegaron
+al chat como id + lente + ubicación + severidad, y el store del linaje se consumió
+al quemar la autoridad. Así que se reconstruyeron desde los rangos, midiendo en
+vez de suponiendo, y se dice acá para que nadie los lea como citas.
+
+`R4-001` (`limits.rs:64-71`, la función `limited`). Reconstrucción: `options()`
+**agrega**, no reemplaza, así que un caller con su propio `statement_timeout`
+producía dos. Medido: `-c statement_timeout=30s -c statement_timeout=5s`, con
+efectivo `5s`. Funcionaba **por accidente** — porque `limited()` corre segundo y
+libpq se queda con el último `-c` del nombre repetido. Nada lo garantizaba.
+
+El primer intento de arreglo fue *reemplazar* en vez de duplicar, y se abandonó
+después de medir lo que costaba: `PgConnectOptions` no tiene setter del campo
+`options` ni forma de limpiarlo (`options()` sólo agrega), así que reconstruir
+exigía pasar por la URL de conexión, y `to_url_lossy()` pierde
+`application_name`, pierde el campo `options` entero (`app=None opts=None` tras el
+round trip) y **corrompe `sslrootcert`** (`file:file: /etc/ssl/root.pem` al
+reparsear). Cambiar un duplicado cosmético por una configuración TLS rota no es
+un intercambio aceptable.
+
+Arreglo final: **rechazar**, con `LimitError::{AlreadySet, Unrepresentable}` y un
+mensaje que nombra la opción y el valor que aplica este backend. Un caller que
+pide otro límite está tomando una decisión que nadie puede tomar en silencio.
+Medido de punta a punta: con `DATABASE_URL=...?options=-c statement_timeout=30s`
+el binario **sale con código 1** y no arranca; sin él, arranca normal.
+
+`R4-002` (`health.rs:52-59`). Reconstrucción: `size()`, `num_idle()` y
+`get_max_connections()` son **tres lecturas atómicas separadas** (`sqlx` mantiene
+dos `AtomicU32` independientes y no tiene accessor combinado), así que una
+conexión devuelta entre medio puede producir un par que nunca existió junto.
+**No se pudo provocar**: 300 sondas concurrentes contra un pool genuinamente
+saturado dieron `503` las 300 veces, y 300 bajo churn de conexiones dieron `200`
+siempre. Un candado o un retry no comprarían nada que no haga la próxima sonda del
+supervisor, así que **se documenta y no se canda** — con una nota explícita de que
+las lecturas no son atómicas, para que nadie confíe en una conjunción entre ellas.

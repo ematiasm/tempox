@@ -17,7 +17,7 @@ async fn limited_pool(pool: &sqlx::PgPool) -> sqlx::PgPool {
     let options = pool.connect_options().as_ref().clone();
     sqlx::postgres::PgPoolOptions::new()
         .max_connections(2)
-        .connect_with(tempox::limits::limited(options))
+        .connect_with(tempox::limits::limited(options).expect("the test pool sets no limit"))
         .await
         .expect("connect with the statement limit")
 }
@@ -112,6 +112,7 @@ async fn the_server_reports_the_limit(pool: sqlx::PgPool) {
 async fn the_option_name_is_not_silently_ignored(pool: sqlx::PgPool) {
     let options = pool.connect_options().as_ref().clone();
     let rendered = tempox::limits::limited(options)
+        .expect("the test pool sets no limit")
         .get_options()
         .expect("the limit is set")
         .to_string();

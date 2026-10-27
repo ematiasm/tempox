@@ -50,6 +50,21 @@ pub fn routes() -> Router<AppState> {
 /// the business of the requests themselves, and `docs/en/architecture.md` keeps
 /// real observability out of scope for this starter.
 async fn health(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
+    // **These three reads are not a snapshot, and that is accepted.** `size()`,
+    // `num_idle()` and `get_max_connections()` are separate atomic loads
+    // (`sqlx` keeps two independent `AtomicU32` counters and has no combined
+    // accessor), so a connection handed back between the reads can yield a pair that
+    // never existed together. Review advisory `R4-002` named it.
+    //
+    // The window is a few instructions and the cost of being wrong is one polling
+    // cycle: a spurious `503` retried on the next probe, or a `200` granted a moment
+    // before saturation began. Measured, it could not be provoked: 300 concurrent
+    // probes against a genuinely saturated pool returned `503` exactly 300 times, and
+    // 300 probes under connection churn returned `200` every time. A lock or a
+    // retry loop would buy nothing that a supervisor's next probe does not.
+    //
+    // What would be wrong is making the reads *look* atomic. They are not, and a
+    // future reader should know before trusting a conjunction across them.
     let size = state.db.size();
     let idle = state.db.num_idle();
     let max = state.db.options().get_max_connections();

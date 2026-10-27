@@ -60,14 +60,147 @@ pub const STATEMENT_TIMEOUT: Duration = Duration::from_secs(5);
 /// brake every query in the shop.
 pub const STATEMENT_TIMEOUT_OPTION: (&str, &str) = ("statement_timeout", "5s");
 
+/// Why [`limited`] refused to build connect options.
+///
+/// Both variants describe a caller that tried to own something this module owns.
+/// They are errors rather than silent overrides because the failure mode of the
+/// silent version is exactly what review advisory `R4-001` named: a duplicate
+/// `statement_timeout` in the string where the correct one survives only because
+/// libpq keeps the *last* `-c` of a repeated name, which depends on the order this
+/// module happens to apply things in.
+#[derive(Debug, PartialEq, Eq)]
+pub enum LimitError {
+    /// The caller already set `statement_timeout` on these options.
+    ///
+    /// Measured before this refusal existed: `options()` appends, so a caller
+    /// passing `30s` produced `-c statement_timeout=30s -c statement_timeout=5s`.
+    /// The effective value was `5s` — because `limited()` ran second and libpq
+    /// keeps the last value, not because anything here guaranteed it. Refusing
+    /// removes the dependence on that order and the dead value along with it.
+    AlreadySet,
+    /// The caller's `options` string holds a token this module cannot represent,
+    /// so it cannot be rebuilt without silently dropping the caller's setting.
+    ///
+    /// Only reachable when the caller set `statement_timeout` *and* something
+    /// else in a shape this parser does not understand; without the caller's limit
+    /// there is nothing to rebuild and the plain append is used instead.
+    Unrepresentable(String),
+}
+
+impl std::fmt::Display for LimitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AlreadySet => write!(
+                f,
+                "the connect options already set statement_timeout; this backend owns \
+                 that limit and will not guess which of the two to keep. Remove the \
+                 caller's statement_timeout and let `limits::limited` apply {}.",
+                STATEMENT_TIMEOUT_OPTION.1
+            ),
+            Self::Unrepresentable(text) => write!(
+                f,
+                "the connect options carry an `options` string this module cannot parse \
+                 without dropping the caller's settings: {text:?}. Only `-c name=value` \
+                 pairs are understood, which is the shape `PgConnectOptions::options` \
+                 itself emits."
+            ),
+        }
+    }
+}
+
+impl std::error::Error for LimitError {}
+
 /// The connect options for every backend connection: the caller's own, with the
-/// statement limit added.
+/// statement limit added — or a refusal if the caller tried to set it too.
 ///
 /// Takes the options rather than building them from a URL so the limit applies
 /// wherever a connection is opened, including the ones `sqlx migrate` and the
 /// pool's lazy first connection create.
-pub fn limited(options: PgConnectOptions) -> PgConnectOptions {
-    options.options([STATEMENT_TIMEOUT_OPTION])
+///
+/// **Why refusal and not replacement.** Replacement was implemented first and
+/// abandoned after measuring what it would cost. `PgConnectOptions` has no setter
+/// for its `options` field and never clears it — `options()` only appends — so
+/// rebuilding meant routing through the connect URL, and `to_url_lossy()` was
+/// measured to lose `application_name`, lose the `options` field entirely
+/// (`app=None opts=None` after a round trip) and **corrupt `sslrootcert`**
+/// (`file:file: /etc/ssl/root.pem` after re-parsing). Replacing a cosmetic
+/// duplicate at the price of a broken TLS configuration is not a trade worth
+/// making. Refusing costs the caller nothing today: no caller sets its own limit.
+///
+/// When the caller set no `statement_timeout` — every call in this repository —
+/// the plain append is used, which leaves exactly one limit in the string.
+pub fn limited(options: PgConnectOptions) -> Result<PgConnectOptions, LimitError> {
+    let Some(existing) = options.get_options() else {
+        return Ok(options.options([STATEMENT_TIMEOUT_OPTION]));
+    };
+
+    let pairs =
+        option_pairs(existing).ok_or_else(|| LimitError::Unrepresentable(existing.to_owned()))?;
+
+    if pairs
+        .iter()
+        .any(|(name, _)| name == STATEMENT_TIMEOUT_OPTION.0)
+    {
+        return Err(LimitError::AlreadySet);
+    }
+
+    Ok(options.options([STATEMENT_TIMEOUT_OPTION]))
+}
+
+/// Splits a libpq `options` string into `(name, value)` pairs.
+///
+/// `None` means a token did not fit the `-c name=value` (or `-cname=value`) shape.
+/// Escaping follows libpq: a backslash escapes the next character, so a value may
+/// contain an escaped space. Splitting on a plain space would cut such a value in
+/// half and hide the caller's real setting.
+fn option_pairs(existing: &str) -> Option<Vec<(String, String)>> {
+    let tokens = split_libpq_options(existing);
+    let mut pairs = Vec::new();
+    let mut index = 0;
+
+    while index < tokens.len() {
+        let token = &tokens[index];
+        let (option, consumed): (&str, usize) = match token.strip_prefix("-c") {
+            // `-c name=value`: the option is the next token, which must exist.
+            Some("") => (tokens.get(index + 1)?.as_str(), 2),
+            // `-cname=value`: libpq's compact spelling.
+            Some(rest) => (rest, 1),
+            // Not an option at all; this module cannot represent it.
+            None => return None,
+        };
+        let (name, value) = option.split_once('=')?;
+        pairs.push((name.to_owned(), value.to_owned()));
+        index += consumed;
+    }
+
+    Some(pairs)
+}
+
+/// One libpq `options` string as tokens, with backslash escapes resolved.
+fn split_libpq_options(text: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut chars = text.chars();
+
+    while let Some(character) = chars.next() {
+        match character {
+            '\\' => {
+                if let Some(escaped) = chars.next() {
+                    current.push(escaped);
+                }
+            }
+            ' ' => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+            }
+            _ => current.push(character),
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
 }
 
 #[cfg(test)]
@@ -103,7 +236,7 @@ mod tests {
     /// said nothing about whether the limit is applied.
     #[test]
     fn the_limit_reaches_the_connection_options() {
-        let options = limited(PgConnectOptions::new());
+        let options = limited(PgConnectOptions::new()).expect("no caller limit");
         let rendered = options
             .get_options()
             .expect("the limit must be set on the options");
@@ -119,7 +252,8 @@ mod tests {
     fn existing_options_are_not_replaced() {
         // `options()` appends to whatever was there. A second call that replaced
         // the string would drop a caller's own libpq option silently.
-        let options = limited(PgConnectOptions::new().options([("application_name", "tempox")]));
+        let options = limited(PgConnectOptions::new().options([("application_name", "tempox")]))
+            .expect("a non-conflicting option is accepted");
         let rendered = options.get_options().expect("options are set");
         assert!(
             rendered.contains("application_name=tempox"),
@@ -128,6 +262,103 @@ mod tests {
         assert!(
             rendered.contains("statement_timeout=5s"),
             "the limit must be added, got: {rendered}"
+        );
+    }
+
+    /// `R4-001`: a caller that already set its own `statement_timeout` is refused,
+    /// not silently duplicated.
+    ///
+    /// **Measured before this refusal existed**: `options()` appends rather than
+    /// replaces, so a caller passing `30s` produced
+    /// `-c statement_timeout=30s -c statement_timeout=5s`. PostgreSQL took the last
+    /// one, so the limit held — by accident of libpq's concatenation order and of
+    /// `limited()` happening to run second. Nothing here guaranteed that, and the
+    /// dead value stayed visible in a field meant to read as configuration.
+    ///
+    /// Refusing is the honest outcome: this module owns the limit, and a caller
+    /// asking for a different one is a decision nobody can make silently.
+    #[test]
+    fn a_callers_own_statement_timeout_is_refused() {
+        let error = limited(PgConnectOptions::new().options([("statement_timeout", "30s")]))
+            .expect_err("a caller-set limit must be refused, not overridden");
+
+        assert_eq!(error, LimitError::AlreadySet);
+        // The message must name the variable and the value this backend applies, so
+        // an operator reading a failed boot knows what to remove and what they get.
+        let message = error.to_string();
+        assert!(
+            message.contains("statement_timeout"),
+            "the error must name the option, got: {message}"
+        );
+        assert!(
+            message.contains("5s"),
+            "the error must say what this backend applies instead, got: {message}"
+        );
+    }
+
+    /// The refusal holds wherever the caller's limit sits among their other options,
+    /// including when it is not the only thing they set.
+    #[test]
+    fn a_callers_limit_is_refused_even_beside_other_options() {
+        let error = limited(
+            PgConnectOptions::new()
+                .options([("application_name", "tempox")])
+                .options([("statement_timeout", "60s")])
+                .options([("geqo", "off")]),
+        )
+        .expect_err("one statement_timeout anywhere in the options is enough to refuse");
+
+        assert_eq!(error, LimitError::AlreadySet);
+    }
+
+    /// A caller option this module cannot represent is also refused, and says what
+    /// it choked on.
+    ///
+    /// Only reachable alongside a caller-set limit, because without one there is
+    /// nothing to rebuild and the plain append is used. The point of the test is
+    /// that the fallback is never "drop what the caller wrote".
+    #[test]
+    fn an_unrepresentable_options_string_is_refused_not_dropped() {
+        // `-x` is a token libpq accepts in principle and this parser does not:
+        // everything `PgConnectOptions::options` emits is `-c name=value`, so a
+        // caller reaching the fallback has assembled the string some other way.
+        // Built by hand because the crate offers no route to an arbitrary token.
+        let options: PgConnectOptions =
+            "postgres://u@h:5432/d?options=-c%20statement_timeout%3D30s%20-x"
+                .parse()
+                .expect("sqlx parses the `options` query parameter");
+
+        let error =
+            limited(options).expect_err("a string this parser cannot reconstruct must be refused");
+
+        match error {
+            LimitError::Unrepresentable(text) => {
+                assert!(
+                    text.contains("statement_timeout"),
+                    "the offending string must be reported, got: {text}"
+                );
+            }
+            other => panic!("expected Unrepresentable, got {other:?}"),
+        }
+    }
+
+    /// A caller naming a different libpq option that merely *starts* with the same
+    /// prefix must not be mistaken for the limit and deleted. `statement_timeout`
+    /// is a prefix of nothing today, so the case is synthetic on purpose: it pins
+    /// that the stripping matches the option name, not a substring.
+    #[test]
+    fn a_longer_option_name_sharing_the_prefix_is_not_stripped() {
+        let options = limited(PgConnectOptions::new().options([("statement_timeouts", "keep-me")]))
+            .expect("a different option name is not the limit");
+        let rendered = options.get_options().expect("options are set");
+
+        assert!(
+            rendered.contains("statement_timeouts=keep-me"),
+            "a different option must not be stripped, got: {rendered}"
+        );
+        assert!(
+            rendered.contains("statement_timeout=5s"),
+            "and the limit must still be added, got: {rendered}"
         );
     }
 
