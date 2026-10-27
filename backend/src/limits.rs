@@ -201,17 +201,22 @@ pub(crate) fn mentions_limit(existing: &str) -> bool {
 
 /// Whether one `name=value` token names `wanted`.
 ///
-/// Quotes around the name are stripped before comparing. libpq does not accept a
-/// quoted `-c 'name=value'` (measured: "unrecognized configuration parameter
-/// \"'statement_timeout\""), so this cannot be hiding a working limit — but the scan
-/// is the only thing standing between a caller's intent and a silent override, and
-/// "the string is malformed anyway" is not a fact it should have to lean on. A human
-/// reading the string sees the name; the scanner should agree.
+/// **Only the name is interrogated.** The value is discarded unread, which is why the
+/// quotes are stripped from the name and not from the token: stripping both made the
+/// function read as though it interpreted the value, and review advisory `R3-001`
+/// (third round) pointed out that a future change trusting that reading would be
+/// wrong. What the function means is narrow and is now what it says.
+///
+/// Quotes around the name are stripped because a fully quoted pair
+/// (`-c 'statement_timeout=30s'`) must not hide the limit. libpq rejects that spelling
+/// (measured: "unrecognized configuration parameter \"'statement_timeout\""), so it
+/// cannot be hiding a limit that works — but the scan is the only thing standing
+/// between a caller's intent and a silent override, and "the string is malformed
+/// anyway" is not a fact it should have to lean on.
 fn option_names(token: &str, wanted: &str) -> bool {
-    let token = token.trim_matches(|c: char| c == '\'' || c == '"');
     token
         .split_once('=')
-        .is_some_and(|(name, _)| name.trim_matches(|c: char| c == '\'' || c == '"') == wanted)
+        .is_some_and(|(name, _value)| name.trim_matches(|c: char| c == '\'' || c == '"') == wanted)
 }
 
 /// One libpq `options` string as tokens, with backslash escapes resolved.
@@ -553,6 +558,45 @@ mod tests {
                     limited.get_options()
                 ),
             }
+        }
+    }
+
+    /// `R3-001` (third round): the name comparison must not rewrite the *value*.
+    ///
+    /// The advisory pointed at exactly this. `option_names` strips quotes from both
+    /// sides of the token, so `application_name='probe'` was compared as if its value
+    /// were `probe` — harmless today, because only the **name** is compared, but the
+    /// code reads as though it interprets the value, and a future change that trusts
+    /// that would be wrong. Stripping the name only is what the function actually
+    /// means: "does this token name the limit?"
+    ///
+    /// The value is never part of the answer, and this pins that: a token whose name
+    /// matches counts whether its value is quoted, bare, or empty.
+    #[test]
+    fn only_the_name_is_interrogated_never_the_value() {
+        for token in [
+            "statement_timeout=30s",
+            "statement_timeout='30s'",
+            "statement_timeout=\"30s\"",
+            "statement_timeout=",
+            "'statement_timeout'=30s",
+        ] {
+            assert!(
+                super::option_names(token, "statement_timeout"),
+                "`{token}` names the limit and must be recognised"
+            );
+        }
+
+        // And a different name never matches, whatever its value looks like.
+        for token in [
+            "statement_timeouts=30s",
+            "application_name=statement_timeout",
+            "application_name='statement_timeout'",
+        ] {
+            assert!(
+                !super::option_names(token, "statement_timeout"),
+                "`{token}` does not name the limit and must not match"
+            );
         }
     }
 
