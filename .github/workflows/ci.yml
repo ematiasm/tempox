@@ -135,29 +135,6 @@ jobs:
       - run: cargo clippy --locked --all-targets -- -D warnings
       # Unit tests plus the full build of the binary used below.
       - run: cargo build --locked --all-features
-      # A floor on the role, before anything connects.
-      #
-      # `#[sqlx::test]` builds its own pool, already connected, before any of our code
-      # sees it — so `src/limits.rs` cannot reach it. Measured locally, that pool
-      # reported `statement_timeout=0`, PostgreSQL's "no limit at all", which is the
-      # hole `tests/limits.rs` now fails on.
-      #
-      # **This is the CI half of the same floor `scripts/test-db.sh` sets locally, and
-      # it is not redundant: that script is only ever run by hand.** Without this step
-      # the floor existed on a developer machine and nowhere the suite actually runs —
-      # measured, PR #103 failed here with `Got "0"` for exactly that reason.
-      #
-      # It cannot be a migration: `ALTER ROLE` writes to `pg_authid`, a catalog shared
-      # by the whole cluster, and `#[sqlx::test]` applies migrations in parallel across
-      # per-test databases — six of them abort with `XX000 "tuple concurrently updated"`.
-      # A step runs once, serially, before the tests exist.
-      #
-      # `CURRENT_USER` rather than the literal name: the service container and a local
-      # compose file both define their own role, and this must apply to whichever ran.
-      - name: Set a statement_timeout floor on the database role
-        run: |
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c \
-            "ALTER ROLE CURRENT_USER SET statement_timeout = '30s';"
       - run: cargo test --locked --all-features
       # No separately started server and no thread limit. Every test creates its own
       # database via `#[sqlx::test]`, and the tests that need a real socket start
