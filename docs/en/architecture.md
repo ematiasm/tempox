@@ -108,8 +108,22 @@ Request decoding is axum's `Json` extractor, so its rejections keep their standa
 
 - Authentication (add your own auth crate, e.g. `axum-login`, JWT, or an external IdP).
 - Observability beyond `tracing` (no Prometheus/OTel here — see `starter-devops`).
+  **A minimal healthcheck is not observability**, and `/health` is one: it reports
+  whether this process can serve *right now*, from the connection pool's own
+  counters (`size()`, `num_idle()`), and answers `503` only when the pool is at its
+  maximum with nothing idle. It deliberately runs no SQL, because a liveness probe
+  that queried the database would block on the very resource it exists to report,
+  and it deliberately does **not** claim the database is reachable — that is what
+  requests are for. Metrics, tracing exporters, dashboards and alerting remain out
+  of scope, as does rate limiting below.
 - Multi-tenancy / RLS.
-- Rate limiting / anti-abuse.
+- Rate limiting / anti-abuse. **Measured before declining it**: three sustained
+  clients looping on `GET /api/accounts` produced 1 772 requests per second for 20 s
+  while a normal request still answered in 2 ms at p95, so the volume this would
+  defend against did not harm the service. Behind the SvelteKit proxy every browser
+  arrives from one address, so an IP-keyed limiter would throttle the whole shop
+  rather than one misbehaving client — a limiter keyed on identity needs an identity
+  this application does not have.
 
 ## Suggested first extensions
 
