@@ -171,6 +171,25 @@ BEGIN
             'expense % has a payment that is not money going out', NEW.id;
     END IF;
 
+    -- **`R3-001` of `review-1abfbd892fed09cb`, CRITICAL, and it was reachable.** The first
+    -- version checked presence, sum and direction but never that the payment names the
+    -- **same rail** the document does. Measured on a migrated database: an expense naming
+    -- the bank with a payment naming the till committed happily, so the document and its
+    -- money disagreed about where it went — the desync `0017` exists to remove, reopened
+    -- one table over.
+    --
+    -- The comparison is the whole rule: the document's method is the claim, and every
+    -- payment answering it must be on that rail, or the claim is false.
+    IF EXISTS (
+        SELECT 1 FROM payments
+         WHERE party_kind = 'expense' AND party_id = NEW.id
+           AND payment_method_id IS DISTINCT FROM NEW.payment_method_id
+    ) THEN
+        RAISE EXCEPTION
+            'expense % says its money moved through method %, but a payment answering it names another rail',
+            NEW.id, NEW.payment_method_id;
+    END IF;
+
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
