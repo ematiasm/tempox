@@ -184,7 +184,12 @@ async fn update_expense_category(
 // ── The expense document ───────────────────────────────────────────────────
 
 pub fn routes_with_expenses() -> Router<AppState> {
-    Router::new().route("/expenses", axum::routing::post(create_expense))
+    Router::new()
+        .route("/expenses", axum::routing::post(create_expense))
+        .route(
+            "/expenses/{id}/advances",
+            axum::routing::post(create_expense_advance),
+        )
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -352,4 +357,170 @@ async fn create_expense(
     })?;
 
     Ok((StatusCode::CREATED, Json(created)))
+}
+
+// ── An advance against an owed expense ─────────────────────────────────────
+
+#[derive(Debug, serde::Deserialize)]
+pub struct NewAdvance {
+    /// A decimal string, not a JSON number: a float would lose the cent.
+    pub amount: rust_decimal::Decimal,
+    /// Same grammar as the document's own destination, read raw so the field's contract
+    /// decides the status code. `"on_account"` is refused here — an advance *is* money
+    /// moving, so there is no third state to name.
+    #[serde(default, deserialize_with = "crate::models::destination::keep_present")]
+    pub payment_method_id: Option<serde_json::Value>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct Advance {
+    pub id: Uuid,
+    pub expense_id: Uuid,
+    #[serde(serialize_with = "crate::money::serialize_amount")]
+    pub amount: rust_decimal::Decimal,
+    pub payment_method_id: Uuid,
+    pub direction: &'static str,
+    pub occurred_at: chrono::DateTime<chrono::Utc>,
+    /// What is still owed after this advance, derived rather than stored.
+    #[serde(serialize_with = "crate::money::serialize_amount")]
+    pub outstanding: rust_decimal::Decimal,
+}
+
+/// One advance: a `payments` row naming the expense, and its ledger entry.
+///
+/// `odd/tasks/v4-expenses.md` S7, and `D3`'s whole reason for existing — an owed salary is
+/// paid in pieces over the month. **No new table**: the advance is a payment, so the
+/// outstanding figure is `expenses.amount − SUM(payments)`, a subtraction of stored rows.
+///
+/// **The ceiling is judged twice, on purpose.** Here it becomes a `409` the caller can act
+/// on; below, `expense_payment_agrees_with_its_document` holds it at COMMIT, because a
+/// ceiling enforced only above the database is a suggestion to everyone who reaches below
+/// it (`v4-payables.md` R3-005).
+async fn create_expense_advance(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<NewAdvance>,
+) -> Result<(StatusCode, Json<Advance>), StatusCode> {
+    // Money before any write: a value that is not positive whole cents is a `400`, asked
+    // here so the database's CHECK becomes a status rather than a 500.
+    if body.amount <= rust_decimal::Decimal::ZERO || body.amount != body.amount.round_dp(2) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // `on_account` is not a destination for an advance: money is moving, so the caller has
+    // to say through which rail. Omitted keeps every client's default — the till.
+    let method = match Destination::from_field(body.payment_method_id)
+        .map_err(|_| StatusCode::BAD_REQUEST)?
+    {
+        Some(Destination::Method(id)) => id,
+        Some(Destination::OnAccount) => return Err(StatusCode::BAD_REQUEST),
+        None => crate::models::account::CASH_PAYMENT_METHOD_ID,
+    };
+
+    let mut tx = state.db.begin().await.map_err(|e| {
+        tracing::error!(?e, "tx begin failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    // **The expense row is locked first, and it is the only lock this route takes.** Two
+    // concurrent advances would otherwise both read the same committed sum and both find
+    // room; the `FOR UPDATE` serialises them. There is no second row to order against, so
+    // the lock-order defect `aa95665` cost is not reachable here.
+    let expense: Option<(rust_decimal::Decimal, Option<Uuid>)> =
+        sqlx::query_as("SELECT amount, payment_method_id FROM expenses WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| {
+                tracing::error!(?e, "expense lookup failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+    let (total, document_method) = expense.ok_or(StatusCode::NOT_FOUND)?;
+
+    // The rail is resolved before the payment, for the reason `create_expense` records: an
+    // unknown method must be a 404 rather than a foreign-key 500 arriving later.
+    let known_method: Option<Uuid> =
+        sqlx::query_scalar("SELECT id FROM payment_methods WHERE id = $1")
+            .bind(method)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| {
+                tracing::error!(?e, "payment method lookup failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+    known_method.ok_or(StatusCode::NOT_FOUND)?;
+
+    // **A paid expense owes nothing**, and that is a `409` rather than a `400`: the request
+    // is well formed and the state is what refuses it.
+    if document_method.is_some() {
+        return Err(StatusCode::CONFLICT);
+    }
+
+    let paid: rust_decimal::Decimal = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(total), 0) FROM payments
+          WHERE party_kind = 'expense' AND party_id = $1",
+    )
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| {
+        tracing::error!(?e, "advance sum failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    if paid + body.amount > total {
+        return Err(StatusCode::CONFLICT);
+    }
+
+    let payment: (Uuid, chrono::DateTime<chrono::Utc>) = sqlx::query_as(
+        "INSERT INTO payments
+            (party_kind, party_id, payment_method_id, total, direction, occurred_at, created_by)
+         VALUES ('expense', $1, $2, $3, 'out', NOW(), 'counter')
+         RETURNING id, occurred_at",
+    )
+    .bind(id)
+    .bind(method)
+    .bind(body.amount)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| {
+        tracing::error!(?e, "advance payment insert failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    // Money out is negative — `0014`'s convention, never re-derived.
+    sqlx::query(
+        "INSERT INTO money_entries
+            (account_id, payment_method_id, document_kind, document_id, amount, occurred_at, created_by)
+         SELECT pm.account_id, $1, 'payment', $2, -$3, $4, 'counter'
+           FROM payment_methods pm WHERE pm.id = $1",
+    )
+    .bind(method)
+    .bind(payment.0)
+    .bind(body.amount)
+    .bind(payment.1)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| {
+        tracing::error!(?e, "advance entry failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    tx.commit().await.map_err(|e| {
+        tracing::error!(?e, "tx commit failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(Advance {
+            id: payment.0,
+            expense_id: id,
+            amount: body.amount,
+            payment_method_id: method,
+            direction: "out",
+            occurred_at: payment.1,
+            outstanding: total - paid - body.amount,
+        }),
+    ))
 }

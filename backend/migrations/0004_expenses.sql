@@ -134,12 +134,17 @@ BEGIN
       FROM payments
      WHERE party_kind = 'expense' AND party_id = NEW.id;
 
+    -- **An expense on account moves no money when it is created, and that is not the same
+    -- as "it never will".** The first version refused any payment naming a null-method
+    -- expense, which made advances — the whole point of `D3`/`E1-T3` — impossible. Measured
+    -- before `E1-T3` was written: a 300 salary on account with a 100 advance was refused at
+    -- COMMIT by this very trigger.
+    --
+    -- The two states the document itself must keep are therefore: a null document owes and
+    -- writes no payment *of its own*, and a document naming a rail must be answered by one.
+    -- Advances against an owed expense are a **later** document's business, judged by
+    -- `expense_payment_agrees_with_its_document` on the payments side.
     IF NEW.payment_method_id IS NULL THEN
-        IF paid <> 0 THEN
-            RAISE EXCEPTION
-                'expense % says it moved no money, but % payment(s) name it',
-                NEW.id, paid;
-        END IF;
         RETURN NEW;
     END IF;
 
@@ -236,13 +241,17 @@ BEGIN
             'payment % names expense %, which does not exist', NEW.id, NEW.party_id;
     END IF;
 
-    IF doc_method IS NULL THEN
-        RAISE EXCEPTION
-            'payment % answers expense %, but that expense says it moved no money',
-            NEW.id, NEW.party_id;
-    END IF;
-
-    IF NEW.payment_method_id IS DISTINCT FROM doc_method THEN
+    -- **A null-method document is the one that CAN take these payments** (`D3`, E1-T3): an
+    -- owed salary is paid in advances, and each advance names its own rail because the
+    -- document never fixed one. This check had the polarity backwards and refused exactly
+    -- the case the slice exists for — measured: a 300 salary on account with a 100 advance
+    -- was rejected by this line.
+    --
+    -- So the rail rule splits: when the document named a rail, every payment must use it;
+    -- when the document deliberately named none, the payment's rail is the only statement
+    -- of where the money went, and there is nothing to disagree with.
+    IF doc_method IS NOT NULL
+       AND NEW.payment_method_id IS DISTINCT FROM doc_method THEN
         RAISE EXCEPTION
             'payment % moved money through method %, but expense % says method %',
             NEW.id, NEW.payment_method_id, NEW.party_id, doc_method;

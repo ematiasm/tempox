@@ -13342,3 +13342,206 @@ async fn v4_expenses_a_second_payment_cannot_bypass_the_documents_claim(pool: sq
         "no refused payment left a row behind"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v4-expenses E1-T3 — advances against an owed expense
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// `odd/tasks/v4-expenses.md` S7. The owner's own words (`L4`): *"anoto el salario de un
+// empleado del mes y este durante el mes puede ir retirando adelantos"*. The first version
+// of the claim trigger made that impossible — it refused any payment naming a null-method
+// expense — which is why this slice exists before the rest of the ledger.
+
+/// The amount paid against an expense, read from the payments side.
+async fn paid_against(pool: &sqlx::PgPool, expense: uuid::Uuid) -> rust_decimal::Decimal {
+    sqlx::query_scalar(
+        "SELECT COALESCE(SUM(total), 0) FROM payments
+          WHERE party_kind = 'expense' AND party_id = $1",
+    )
+    .bind(expense)
+    .fetch_one(pool)
+    .await
+    .expect("the amount paid")
+}
+
+#[sqlx::test]
+async fn v4_expenses_an_owed_expense_takes_advances_up_to_its_amount(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+    let category = category_named(&pool, "Sueldos").await;
+
+    // A salary of 300, owed: nothing left the till when it was recorded.
+    let created = client
+        .post(
+            "/api/expenses",
+            serde_json::json!({
+                "category_id": category,
+                "payee": "Juan Perez",
+                "amount": "300.00",
+                "payment_method_id": "on_account"
+            }),
+        )
+        .await;
+    created.expect_status(axum::http::StatusCode::CREATED);
+    let expense: uuid::Uuid = created.body["id"]
+        .as_str()
+        .expect("an id")
+        .parse()
+        .expect("a uuid");
+
+    // Two advances, the second partial. The positive case first: a refusal on its own
+    // could pass for the wrong reason.
+    for amount in ["100.00", "150.00"] {
+        let advanced = client
+            .post(
+                &format!("/api/expenses/{expense}/advances"),
+                serde_json::json!({ "amount": amount }),
+            )
+            .await;
+        advanced.expect_status(axum::http::StatusCode::CREATED);
+        assert_eq!(advanced.body["amount"], amount);
+        assert_eq!(advanced.body["direction"], "out");
+        assert_eq!(
+            advanced.body["payment_method_id"],
+            serde_json::json!(uuid::Uuid::from_u128(4).to_string()),
+            "an omitted method is the till, the same as every other document"
+        );
+    }
+
+    assert_eq!(
+        paid_against(&pool, expense).await.normalize().to_string(),
+        "250",
+        "both advances were recorded"
+    );
+
+    // The ceiling: a third advance that would pass the amount is refused with 409, and the
+    // refusal writes nothing — which the figure below is what proves.
+    let over = client
+        .post(
+            &format!("/api/expenses/{expense}/advances"),
+            serde_json::json!({ "amount": "50.01" }),
+        )
+        .await;
+    assert_eq!(
+        over.status(),
+        axum::http::StatusCode::CONFLICT,
+        "50.01 against 50 outstanding is not money that exists; body: {}",
+        over.text
+    );
+    assert_eq!(
+        paid_against(&pool, expense).await.normalize().to_string(),
+        "250",
+        "the refused advance wrote no payment"
+    );
+
+    // And exactly what is left is accepted, so the ceiling is `<=` and not a fence short of it.
+    let exact = client
+        .post(
+            &format!("/api/expenses/{expense}/advances"),
+            serde_json::json!({ "amount": "50.00" }),
+        )
+        .await;
+    exact.expect_status(axum::http::StatusCode::CREATED);
+    assert_eq!(
+        paid_against(&pool, expense).await.normalize().to_string(),
+        "300",
+        "a salary of 300 is fully advanced"
+    );
+}
+
+#[sqlx::test]
+async fn v4_expenses_an_advance_is_refused_where_it_would_be_meaningless(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+    let category = category_named(&pool, "Otros").await;
+
+    // A paid expense owes nothing, so there is nothing to advance against. This is a 409
+    // rather than a 400 because the shape is fine and the state is not.
+    let paid = client
+        .post(
+            "/api/expenses",
+            serde_json::json!({
+                "category_id": category,
+                "payee": "Edenor",
+                "amount": "80.00"
+            }),
+        )
+        .await;
+    paid.expect_status(axum::http::StatusCode::CREATED);
+    let paid_id: uuid::Uuid = paid.body["id"].as_str().expect("id").parse().expect("uuid");
+
+    let against_paid = client
+        .post(
+            &format!("/api/expenses/{paid_id}/advances"),
+            serde_json::json!({ "amount": "10.00" }),
+        )
+        .await;
+    assert_eq!(
+        against_paid.status(),
+        axum::http::StatusCode::CONFLICT,
+        "a paid expense owes nothing"
+    );
+
+    // The shape refusals: not positive, finer than a cent, an unknown expense.
+    let owed = client
+        .post(
+            "/api/expenses",
+            serde_json::json!({
+                "category_id": category,
+                "payee": "Alquiler",
+                "amount": "100.00",
+                "payment_method_id": "on_account"
+            }),
+        )
+        .await;
+    let owed_id = owed.body["id"].as_str().expect("id").to_string();
+
+    for (label, amount) in [
+        ("zero", "0.00"),
+        ("negative", "-5.00"),
+        ("sub-cent", "1.005"),
+    ] {
+        let refused = client
+            .post(
+                &format!("/api/expenses/{owed_id}/advances"),
+                serde_json::json!({ "amount": amount }),
+            )
+            .await;
+        assert_eq!(
+            refused.status(),
+            axum::http::StatusCode::BAD_REQUEST,
+            "an advance of {label} is not a document"
+        );
+    }
+
+    let unknown = client
+        .post(
+            "/api/expenses/00000000-0000-0000-0000-0000000000ff/advances",
+            serde_json::json!({ "amount": "10.00" }),
+        )
+        .await;
+    assert_eq!(unknown.status(), axum::http::StatusCode::NOT_FOUND);
+
+    let unknown_method = client
+        .post(
+            &format!("/api/expenses/{owed_id}/advances"),
+            serde_json::json!({
+                "amount": "10.00",
+                "payment_method_id": "00000000-0000-0000-0000-0000000000ee"
+            }),
+        )
+        .await;
+    assert_eq!(
+        unknown_method.status(),
+        axum::http::StatusCode::NOT_FOUND,
+        "an unknown rail is asked before the payment is written, not after"
+    );
+
+    // Every refusal above left nothing behind.
+    assert_eq!(
+        paid_against(&pool, uuid::Uuid::parse_str(&owed_id).expect("uuid"))
+            .await
+            .normalize()
+            .to_string(),
+        "0",
+        "no refused advance wrote a payment"
+    );
+}
