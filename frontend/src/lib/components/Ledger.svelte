@@ -34,6 +34,7 @@
   import { runningBalances } from '#lib/runningBalance.js';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import Stamp from './Stamp.svelte';
+  import DaySlip from './DaySlip.svelte';
 
   interface Props {
     /** Changes whenever a sale is recorded, so the day reloads. */
@@ -171,7 +172,7 @@
       return;
     }
     const viewportBottom = scroller.getBoundingClientRect().bottom;
-    const documents = frameEl.querySelectorAll('tbody > tr.doc');
+    const documents = frameEl.querySelectorAll('[data-doc-row]');
     let below = 0;
     documents.forEach((row) => {
       if (row.getBoundingClientRect().top >= viewportBottom - 1) below += 1;
@@ -637,287 +638,192 @@
          screenshot. -->
     <div class="table-frame" class:has-more={rowsBelowFold > 0} bind:this={frameEl}>
       <div class="table-scroll">
-        <table class="docs">
-          <thead>
-            <tr>
-              <th scope="col" class="balance-col">{lang.t.sales_running_balance}</th>
-              <th scope="col">{lang.t.sales_time}</th>
-              <th scope="col">{lang.t.sales_sale}</th>
-              <th scope="col">{lang.t.sales_customer}</th>
-              <th scope="col">{lang.t.sales_method}</th>
-              <th scope="col">{lang.t.sales_status}</th>
-              <th scope="col" class="num">{lang.t.sales_total}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each rows as row (row.id)}
-              {@const open = expanded.has(row.id)}
-              {@const annulled = isFullyRefunded(row)}
-              <!-- The whole row is the control. The chevron used to be the only
-                 thing that opened a document, which means aiming a mouse at a
-                 12px triangle — on a shop PC, several times an hour. A row is
-                 what a person points at when they want that document.
+        {#each rows as row (row.id)}
+          {@const open = expanded.has(row.id)}
+          {@const annulled = isFullyRefunded(row)}
+          <!-- The a11y-ignore this used to carry lives in `DaySlip.svelte`, where
+               the `<article role="button">` actually is now. Keeping a copy here
+               would silence nothing and eslint rightly reports an unused ignore. -->
+          <DaySlip
+            id={row.id}
+            createdAt={row.created_at}
+            zone={shopZone}
+            total={row.total}
+            {open}
+            void={annulled}
+            balance={balances.get(row.id) ?? row.total}
+            ontoggle={() => toggle(row.id)}
+          >
+            {#snippet who()}
+              <span class="who-name" class:walkin={row.customer_name === 'walk-in'}>
+                {row.customer_name === 'walk-in' ? lang.t.sales_walkin : row.customer_name}
+              </span>
+            {/snippet}
 
-                 No `<button>` wraps the row: a button cannot contain table
-                 cells without breaking the table's semantics, and a screen
-                 reader would lose the column headers. So the row is a
-                 keyboard-reachable element with its own role and state, and the
-                 visible chevron stays as the affordance that tells the eye the
-                 row opens.
-
-                 No `aria-label`, deliberately. An accessible name on a
-                 container *replaces* everything inside it, so labelling the row
-                 "Open the document #abc123" made a screen reader skip the time,
-                 the customer, the state and the amount — the four things the
-                 row exists to say. The document id is already the first cell's
-                 text, and the expanded state is announced by `aria-expanded`. -->
-              <tr
-                class="doc"
-                class:open
-                role="button"
-                tabindex="0"
-                aria-expanded={open}
-                aria-controls="lines-{row.id}"
-                onclick={() => toggle(row.id)}
-                onkeydown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    toggle(row.id);
-                  }
-                }}
+            {#snippet meta()}
+              <span class="method" class:on-account={isOnAccount(row.payment_method_name)}
+                >{methodLabel(row.payment_method_name, {
+                  onAccount: lang.t.method_on_account,
+                  unknown: lang.t.method_unknown
+                })}</span
               >
-                <!-- The running balance, in the margin where a printed statement
-                   puts it. It is the design's signature: a column that reads as
-                   one continuous number down the page. A cancelled document
-                   shows the balance it inherits, struck through with the rest
-                   of its row, because money that never moved cannot appear in
-                   a running total. -->
-                <td class="figures balance" class:void={annulled}>
-                  {formatMoney(balances.get(row.id) ?? row.total)}
-                </td>
-                <td class="figures time">
-                  {formatTime(new Date(row.created_at), shopZone)}
-                </td>
-                <td>
-                  <span class="doc-id">
-                    <svg
-                      class="chev"
-                      class:open
-                      viewBox="0 0 12 12"
-                      aria-hidden="true"
-                      focusable="false"
-                    >
-                      <path
-                        d="M4.5 2.5 8 6l-3.5 3.5"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-width="1.8"
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                      />
-                    </svg>
-                    <span class="figures">#{row.id.slice(0, 8)}</span>
-                  </span>
-                </td>
-                <td class="customer" class:walkin={row.customer_name === 'walk-in'}>
-                  {row.customer_name === 'walk-in' ? lang.t.sales_walkin : row.customer_name}
-                </td>
-                <!-- Where the money went. Since v3 a sale can name a bank transfer,
-                   and a ledger that showed only the amount would make two sales of
-                   the same size indistinguishable while one reached the till and the
-                   other never did. The name is the server's join, not a snapshot, so
-                   a rename corrects old rows instead of freezing a typo. -->
-                <td class="method" class:on-account={isOnAccount(row.payment_method_name)}
-                  >{methodLabel(row.payment_method_name, {
-                    onAccount: lang.t.method_on_account,
-                    unknown: lang.t.method_unknown
-                  })}</td
-                >
-                <td>
-                  {#if isFullyRefunded(row)}
-                    <!-- A sale that came back whole is not an annulment: nothing was
-                       wrong with it, the customer returned the goods. It says so,
-                       because the two need different follow-ups — one is a mistake to
-                       investigate, the other is a normal return. Both contribute
-                       nothing to the day.
-
-                       This branch used to be the SECOND of two, behind
-                       a branch reading `status === 'cancel'`: a state
-                       nothing could ever enter. With the lifecycle dropped (`0015`)
-                       that first branch would have shadowed this one and labelled every
-                       return "Anulada", which is what the e2e caught. -->
-                    <Stamp label={lang.t.sales_refunded_state} tone="annulled" />
-                  {:else}
-                    <Stamp label={lang.t.sales_confirmed} />
-                  {/if}
-                </td>
-                <td class="num">
-                  <span class="total figures" class:void={annulled}>{formatMoney(row.total)}</span>
-                </td>
-              </tr>
-              {#if open}
-                <tr class="lines-row">
-                  <td colspan="6">
-                    <div class="lines" id="lines-{row.id}">
-                      <table>
-                        <caption>{lang.t.sales_lines_of} #{row.id.slice(0, 8)}</caption>
-                        <thead>
-                          <tr>
-                            <th scope="col" class="pick">
-                              <span class="sr-only">{lang.t.sales_refund_include_col}</span>
-                            </th>
-                            <th scope="col">{lang.t.sales_product}</th>
-                            <th scope="col" class="num">{lang.t.sales_qty}</th>
-                            <th scope="col" class="num">{lang.t.sales_unit_price}</th>
-                            <th scope="col" class="num">{lang.t.sales_line}</th>
-                            <th scope="col" class="num">{lang.t.sales_refund_qty}</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {#each row.items as item (item.id)}
-                            {@const refunded = refundedByLine(row)}
-                            {@const remaining = refundableOf(item.id, item.quantity, refunded)}
-                            <tr>
-                              <td class="pick">
-                                {#if remaining > 0}
-                                  <input
-                                    type="checkbox"
-                                    aria-label={lang.t.sales_refund_include(item.product_name)}
-                                    checked={isRefundSelected(row.id, item.id)}
-                                    onchange={(event) =>
-                                      setRefundSelected(
-                                        row.id,
-                                        item.id,
-                                        event.currentTarget.checked
-                                      )}
-                                  />
-                                {/if}
-                              </td>
-                              <td>
-                                {item.product_name}
-                                {#if item.unit_price === '0.00'}
-                                  <span class="gift">— {lang.t.sales_bonus}</span>
-                                {/if}
-                              </td>
-                              <td class="num figures">{formatQuantity(item.quantity, item.unit)}</td
-                              >
-                              <td class="num figures">
-                                {formatMoney(item.unit_price)}<span class="per"
-                                  >/{lang.fmt.unit(item.unit)}</span
-                                >
-                              </td>
-                              <td class="num figures">{formatMoney(item.line_total)}</td>
-                              <td class="num return-cell">
-                                {#if remaining > 0}
-                                  {@const picked = isRefundSelected(row.id, item.id)}
-                                  <input
-                                    type="text"
-                                    inputmode="numeric"
-                                    aria-label={lang.t.sales_return_line(item.product_name)}
-                                    value={refundText(row.id, item.id, remaining)}
-                                    disabled={!picked}
-                                    oninput={(event) =>
-                                      setRefundText(row.id, item.id, event.currentTarget.value)}
-                                  />
-                                {:else}
-                                  <span class="returned">{lang.t.sales_refund_none}</span>
-                                {/if}
-                                <span class="left"
-                                  >{lang.t.sales_refund_left(remaining, item.quantity)}</span
-                                >
-                              </td>
-                            </tr>
-                          {/each}
-                        </tbody>
-                      </table>
-                      {#each row.credit_notes as note (note.id)}
-                        <section
-                          class="note-block"
-                          aria-label="{lang.t.sales_credit_note} NC-#{note.id.slice(0, 8)}"
-                        >
-                          <div class="note-head">
-                            <span>{lang.t.sales_credit_note} NC-#{note.id.slice(0, 8)}</span>
-                            <span class="note-total figures">−{formatMoney(note.total)}</span>
-                            <time>{formatTime(new Date(note.created_at), shopZone)}</time>
-                          </div>
-                          <table>
-                            <thead>
-                              <tr>
-                                <th scope="col">{lang.t.sales_product}</th>
-                                <th scope="col" class="num">{lang.t.sales_qty}</th>
-                                <th scope="col" class="num">{lang.t.sales_unit_price}</th>
-                                <th scope="col" class="num">{lang.t.sales_line}</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {#each note.items as item (item.id)}
-                                <tr>
-                                  <td>{item.product_name}</td>
-                                  <td class="num figures"
-                                    >{formatQuantity(item.quantity, item.unit)}</td
-                                  >
-                                  <td class="num figures"
-                                    >{formatMoney(item.unit_price)}<span class="per"
-                                      >/{lang.fmt.unit(item.unit)}</span
-                                    ></td
-                                  >
-                                  <td class="num figures">{formatMoney(item.line_total)}</td>
-                                </tr>
-                              {/each}
-                            </tbody>
-                          </table>
-                        </section>
-                      {/each}
-                      <div class="refund">
-                        {#if isFullyRefunded(row)}
-                          <p>{lang.t.sales_refund_none}</p>
-                        {:else if confirming === row.id}
-                          <p class="refund-warn">{lang.t.sales_refund_confirm}</p>
-                          <button
-                            type="button"
-                            class="danger"
-                            disabled={refunding === row.id}
-                            onclick={() => submitRefund(row)}
-                          >
-                            {refunding === row.id ? '…' : lang.t.sales_refund_yes}
-                          </button>
-                          <button type="button" onclick={() => (confirming = null)}
-                            >{lang.t.sales_refund_no}</button
-                          >
-                        {:else}
-                          <button
-                            type="button"
-                            class="danger"
-                            onclick={() => {
-                              confirming = row.id;
-                              refundError = null;
-                              // Deliberately NOT forgetting the stale notice here. Arming
-                              // the confirm is not "the cashier dealt with this
-                              // document": they may still cancel, and dropping the
-                              // notice would leave the figures stale with neither a
-                              // warning nor the retry that refreshes them. Only a
-                              // reload that actually succeeds retires it.
-                            }}
-                          >
-                            {lang.t.sales_refund_action}
-                          </button>
-                        {/if}
-                        {#if refundError}
-                          <p role="alert">{lang.t.sales_refund_error}{refundError}</p>
-                        {/if}
-                        {#if refundStale.get(row.id)}
-                          <p class="refund-stale" role="status">
-                            {lang.t.sales_refund_stale}{refundStale.get(row.id)}
-                          </p>
-                        {/if}
-                      </div>
-                    </div>
-                  </td>
-                </tr>
+              ·
+              {#if isFullyRefunded(row)}
+                <Stamp label={lang.t.sales_refunded_state} tone="annulled" />
+              {:else}
+                <Stamp label={lang.t.sales_confirmed} />
               {/if}
-            {/each}
-          </tbody>
-        </table>
+            {/snippet}
+
+            {#snippet detail()}
+              <table>
+                <caption>{lang.t.sales_lines_of} #{row.id.slice(0, 8)}</caption>
+                <thead>
+                  <tr>
+                    <th scope="col" class="pick">
+                      <span class="sr-only">{lang.t.sales_refund_include_col}</span>
+                    </th>
+                    <th scope="col">{lang.t.sales_product}</th>
+                    <th scope="col" class="num">{lang.t.sales_qty}</th>
+                    <th scope="col" class="num">{lang.t.sales_unit_price}</th>
+                    <th scope="col" class="num">{lang.t.sales_line}</th>
+                    <th scope="col" class="num">{lang.t.sales_refund_qty}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each row.items as item (item.id)}
+                    {@const refunded = refundedByLine(row)}
+                    {@const remaining = refundableOf(item.id, item.quantity, refunded)}
+                    <tr>
+                      <td class="pick">
+                        {#if remaining > 0}
+                          <input
+                            type="checkbox"
+                            aria-label={lang.t.sales_refund_include(item.product_name)}
+                            checked={isRefundSelected(row.id, item.id)}
+                            onchange={(event) =>
+                              setRefundSelected(row.id, item.id, event.currentTarget.checked)}
+                          />
+                        {/if}
+                      </td>
+                      <td>
+                        {item.product_name}
+                        {#if item.unit_price === '0.00'}
+                          <span class="gift">— {lang.t.sales_bonus}</span>
+                        {/if}
+                      </td>
+                      <td class="num figures">{formatQuantity(item.quantity, item.unit)}</td>
+                      <td class="num figures">
+                        {formatMoney(item.unit_price)}<span class="per"
+                          >/{lang.fmt.unit(item.unit)}</span
+                        >
+                      </td>
+                      <td class="num figures">{formatMoney(item.line_total)}</td>
+                      <td class="num return-cell">
+                        {#if remaining > 0}
+                          {@const picked = isRefundSelected(row.id, item.id)}
+                          <input
+                            type="text"
+                            inputmode="numeric"
+                            aria-label={lang.t.sales_return_line(item.product_name)}
+                            value={refundText(row.id, item.id, remaining)}
+                            disabled={!picked}
+                            oninput={(event) =>
+                              setRefundText(row.id, item.id, event.currentTarget.value)}
+                          />
+                        {:else}
+                          <span class="returned">{lang.t.sales_refund_none}</span>
+                        {/if}
+                        <span class="left"
+                          >{lang.t.sales_refund_left(remaining, item.quantity)}</span
+                        >
+                      </td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+              {#each row.credit_notes as note (note.id)}
+                <section
+                  class="note-block"
+                  aria-label="{lang.t.sales_credit_note} NC-#{note.id.slice(0, 8)}"
+                >
+                  <div class="note-head">
+                    <span>{lang.t.sales_credit_note} NC-#{note.id.slice(0, 8)}</span>
+                    <span class="note-total figures">−{formatMoney(note.total)}</span>
+                    <time>{formatTime(new Date(note.created_at), shopZone)}</time>
+                  </div>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th scope="col">{lang.t.sales_product}</th>
+                        <th scope="col" class="num">{lang.t.sales_qty}</th>
+                        <th scope="col" class="num">{lang.t.sales_unit_price}</th>
+                        <th scope="col" class="num">{lang.t.sales_line}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {#each note.items as item (item.id)}
+                        <tr>
+                          <td>{item.product_name}</td>
+                          <td class="num figures">{formatQuantity(item.quantity, item.unit)}</td>
+                          <td class="num figures"
+                            >{formatMoney(item.unit_price)}<span class="per"
+                              >/{lang.fmt.unit(item.unit)}</span
+                            ></td
+                          >
+                          <td class="num figures">{formatMoney(item.line_total)}</td>
+                        </tr>
+                      {/each}
+                    </tbody>
+                  </table>
+                </section>
+              {/each}
+              <div class="refund">
+                {#if isFullyRefunded(row)}
+                  <p>{lang.t.sales_refund_none}</p>
+                {:else if confirming === row.id}
+                  <p class="refund-warn">{lang.t.sales_refund_confirm}</p>
+                  <button
+                    type="button"
+                    class="danger"
+                    disabled={refunding === row.id}
+                    onclick={() => submitRefund(row)}
+                  >
+                    {refunding === row.id ? '…' : lang.t.sales_refund_yes}
+                  </button>
+                  <button type="button" onclick={() => (confirming = null)}
+                    >{lang.t.sales_refund_no}</button
+                  >
+                {:else}
+                  <button
+                    type="button"
+                    class="danger"
+                    onclick={() => {
+                      confirming = row.id;
+                      refundError = null;
+                      // Deliberately NOT forgetting the stale notice here. Arming
+                      // the confirm is not "the cashier dealt with this
+                      // document": they may still cancel, and dropping the
+                      // notice would leave the figures stale with neither a
+                      // warning nor the retry that refreshes them. Only a
+                      // reload that actually succeeds retires it.
+                    }}
+                  >
+                    {lang.t.sales_refund_action}
+                  </button>
+                {/if}
+                {#if refundError}
+                  <p role="alert">{lang.t.sales_refund_error}{refundError}</p>
+                {/if}
+                {#if refundStale.get(row.id)}
+                  <p class="refund-stale" role="status">
+                    {lang.t.sales_refund_stale}{refundStale.get(row.id)}
+                  </p>
+                {/if}
+              </div>
+            {/snippet}
+          </DaySlip>
+        {/each}
       </div>
       {#if rowsBelowFold > 0}
         <div class="more-below" aria-hidden="true">
@@ -1108,7 +1014,11 @@
     bottom: 0;
     height: 34px;
     pointer-events: none;
-    background: linear-gradient(to bottom, rgb(255 255 255 / 0), var(--surface));
+    background: linear-gradient(
+      to bottom,
+      color-mix(in srgb, var(--surface) 0%, transparent),
+      var(--surface)
+    );
   }
   /* And a printed count of what is out of view: the one affordance that survives
      a screenshot, which is the only evidence a reviewer can read. */
@@ -1140,10 +1050,11 @@
        table: a grid/flex child defaults to its content's width, so without it
        the table simply spills out of the panel's right edge and the columns
        are clipped rather than scrollable. */
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
     overflow: auto;
     min-width: 0;
-    border-radius: 0 0 4px 4px;
-    /* The table scrolls inside the panel; the panel itself scrolls neither. */
     flex: 1 1 auto;
     min-height: 0;
     /* A visible scroll line, always — not only while hovering.
@@ -1176,166 +1087,40 @@
   .table-scroll::-webkit-scrollbar-thumb:hover {
     background: var(--ink);
   }
-  /* The running-balance column: the design's signature move, set in the margin
-     the way a printed statement puts it. It is right-aligned like every other
-     figure so the digits line up down the page and the column reads as one
-     continuous number rather than six unrelated ones. */
-  .balance-col,
-  .balance {
-    text-align: right;
-    white-space: nowrap;
-    font-weight: 600;
-    color: var(--accent);
-    padding-right: 16px !important;
-    /* The boundary that makes the balance read as its own continuous column.
-       In `--rule-strong`, not `--rule`: at `--rule` the line measures 1.19:1
-       against the surface, which is painted but invisible — the design document
-       claimed a boundary the render did not show. */
-    border-right: 1px solid var(--rule-strong);
-  }
-  .balance.void {
-    /* A cancelled document never moved money. Its balance still shows what it
-       inherits, struck through with the rest of the row. */
-    color: var(--ink-soft);
-    text-decoration: line-through;
-  }
-
-  table.docs {
-    width: 100%;
-    min-width: 640px;
-    border-collapse: collapse;
-    background: var(--surface);
-    border: 1px solid var(--rule);
-    border-radius: 0 0 4px 4px;
-  }
-  .docs th {
-    font-family: var(--font-figure);
-    font-size: var(--step-1);
-    font-weight: 600;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--ink-soft);
-    text-align: left;
-    padding: 10px 12px;
-    border-bottom: 1px solid var(--rule-strong);
-    white-space: nowrap;
-  }
-  .docs th:first-child,
-  .docs > tbody > tr > td:first-child {
-    padding-left: 16px;
-  }
-  .docs th:last-child,
-  .docs > tbody > tr > td:last-child {
-    padding-right: 16px;
-  }
-  .docs td {
-    padding: 10px 12px;
-    border-bottom: 1px solid var(--rule);
-    vertical-align: middle;
-  }
-  .doc:hover {
-    background: color-mix(in srgb, var(--ink) 3.5%, transparent);
-  }
+  /* Alignment remains for the itemisation tables inside expanded slips. */
   .num {
     text-align: right;
   }
-  .time {
-    font-size: var(--step-2);
+  .who-name {
+    display: block;
+    font-weight: 500;
+    overflow-wrap: anywhere;
   }
-
-  .doc-id {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-family: var(--font-figure);
-    font-size: var(--step-2);
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-    color: var(--ink);
-  }
-
-  /* The whole row is the control, so it has to say so: a pointer, a hover wash,
-     and a visible focus ring for the keyboard reach it now has. Without the
-     hover state the row looks like text and the affordance stays invisible
-     however wide the hit area is. */
-  tr.doc {
-    cursor: pointer;
-  }
-  tr.doc > td {
-    transition: background-color 100ms ease-out;
-  }
-  tr.doc:hover > td,
-  tr.doc:focus-visible > td {
-    background: #f2f6fa;
-  }
-  tr.doc:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: -2px;
-  }
-  tr.doc.open > td {
-    background: #f2f6fa;
-  }
-  /* The chevron stays as the affordance the eye reads: it is the shape that
-     says "this opens", even though the row is what actually opens. */
-  .chev {
-    width: 12px;
-    height: 12px;
+  .who-name.walkin {
     color: var(--ink-soft);
-    transition: transform 120ms ease-out;
+    font-style: italic;
   }
-  .chev.open {
-    transform: rotate(90deg);
-  }
-
-  /* The destination, quieter than the customer and the amount: it explains a figure
-     rather than competing with it, and it is short by nature (one method's name). */
   .method {
-    color: var(--ink-soft);
-    font-size: var(--step--1);
+    color: inherit;
+    font-size: inherit;
     white-space: nowrap;
   }
 
-  /* A document that moved no money is a different **state**, not a missing rail, so
-     it is set apart by weight rather than by colour: the accent is spent on one job
-     per screen and this is not it (DESIGN.md). Italic is the cheapest honest signal
-     that the cell is a claim rather than a name. */
   .method.on-account {
     font-style: italic;
   }
 
-  .customer {
-    color: var(--ink);
-  }
-  .customer.walkin {
-    color: var(--ink-soft);
-    font-style: italic;
-  }
-  .total {
-    font-size: var(--step-3);
-    font-weight: 700;
-    white-space: nowrap;
-  }
-  .total.void {
-    color: var(--ink-soft);
-    text-decoration: line-through;
-    text-decoration-thickness: 1.5px;
-  }
-
-  .lines-row td {
-    padding: 0;
-    border-bottom: 1px solid var(--rule-strong);
-  }
-  .lines {
+  :global(.lines) {
     padding: 4px 16px 10px;
   }
-  .lines table {
+  :global(.lines) table {
     width: 100%;
     border-collapse: collapse;
     background: var(--ground);
     border: 1px solid var(--rule);
     border-radius: var(--radius);
   }
-  .lines caption {
+  :global(.lines) caption {
     caption-side: top;
     text-align: left;
     font-family: var(--font-figure);
@@ -1346,20 +1131,20 @@
     color: var(--ink-soft);
     padding: 0 0 5px;
   }
-  .lines th {
+  :global(.lines) th {
     font-size: var(--step--1);
     padding: 6px 10px;
     border-bottom: 1px solid var(--rule);
   }
-  .lines td {
+  :global(.lines) td {
     padding: 6px 10px;
     border-bottom: 1px solid var(--rule);
     font-size: var(--step-1);
   }
-  .lines tr:last-child td {
+  :global(.lines) tr:last-child td {
     border-bottom: 0;
   }
-  .lines .per {
+  :global(.lines) .per {
     color: var(--ink-soft);
     font-size: var(--step-0);
   }
@@ -1392,7 +1177,7 @@
     padding: 5px 7px;
     border: 1px solid var(--rule-strong);
     border-radius: var(--radius);
-    background: #fff;
+    background: var(--surface);
     color: var(--ink);
     font-family: var(--font-figure);
     font-size: var(--step-1);
@@ -1475,7 +1260,7 @@
        means the running balance. */
     border-color: var(--state-void);
     color: var(--state-void);
-    background: color-mix(in srgb, var(--state-void) 8%, var(--surface));
+    background: color-mix(in srgb, var(--state-void) 8%, transparent);
   }
   .refund button:disabled {
     opacity: 0.55;
@@ -1527,7 +1312,7 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    background: color-mix(in srgb, var(--state-void) 6%, var(--surface));
+    background: color-mix(in srgb, var(--state-void) 6%, transparent);
     border: 1px solid color-mix(in srgb, var(--state-void) 40%, transparent);
     border-radius: var(--radius);
     padding: 12px 14px;
@@ -1649,9 +1434,6 @@
   @media (prefers-reduced-motion: reduce) {
     .bar {
       animation: none;
-    }
-    .chev {
-      transition: none;
     }
   }
 
