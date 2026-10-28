@@ -35,6 +35,8 @@ use uuid::Uuid;
 
 use crate::AppState;
 use crate::db::conflict_or_500;
+use crate::models::destination::Destination;
+use crate::models::expense::Expense;
 use crate::models::expense_category::ExpenseCategory;
 
 pub fn routes() -> Router<AppState> {
@@ -44,6 +46,7 @@ pub fn routes() -> Router<AppState> {
             get(list_expense_categories).post(create_expense_category),
         )
         .route("/expense-categories/{id}", patch(update_expense_category))
+        .merge(routes_with_expenses())
 }
 
 // ── Reading ────────────────────────────────────────────────────────────────
@@ -176,4 +179,177 @@ async fn update_expense_category(
     .ok_or(StatusCode::NOT_FOUND)?;
 
     Ok(Json(updated))
+}
+
+// ── The expense document ───────────────────────────────────────────────────
+
+pub fn routes_with_expenses() -> Router<AppState> {
+    Router::new().route("/expenses", axum::routing::post(create_expense))
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct NewExpense {
+    pub category_id: Uuid,
+    pub payee: String,
+    /// A decimal string, not a JSON number: a float would lose the cent.
+    pub amount: rust_decimal::Decimal,
+    #[serde(default)]
+    pub occurred_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Read raw, so the field's own contract decides the status code. Kept as
+    /// `Option<serde_json::Value>` because `Option<Uuid>` cannot tell an absent key from
+    /// an explicit `null`, and the difference is the whole point of the grammar.
+    #[serde(default, deserialize_with = "crate::models::destination::keep_present")]
+    pub payment_method_id: Option<serde_json::Value>,
+}
+
+async fn create_expense(
+    State(state): State<AppState>,
+    Json(body): Json<NewExpense>,
+) -> Result<(StatusCode, Json<Expense>), StatusCode> {
+    // Trimmed before the emptiness check, for the reason the category route gives: a
+    // payee of spaces is empty, and storing it puts an unreadable row in every ledger.
+    let payee = body.payee.trim().to_string();
+    if payee.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // **Money before any write, and the whole-cents rule is asked here so the caller gets
+    // a 400 instead of a trigger's 500.** The column declares scale 6 with a
+    // `amount = round(amount, 2)` CHECK: a value finer than a cent is *refused* by the
+    // database rather than silently rounded, and `10.005` is the measured example.
+    if body.amount <= rust_decimal::Decimal::ZERO || body.amount != body.amount.round_dp(2) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // **`Destination::from_field` and not a serde deserializer** (`S3`). A custom
+    // deserializer's failure reaches the client through axum's `Json` as **422**, while
+    // this field's contract promises 400 — measured in `v4-payables.md` L4, and both
+    // pre-existing routes were repaired for it. Reading it raw is what keeps the promise.
+    let destination = match Destination::from_field(body.payment_method_id)
+        .map_err(|_| StatusCode::BAD_REQUEST)?
+    {
+        Some(Destination::Method(id)) => Some(id),
+        Some(Destination::OnAccount) => None,
+        // Omitted keeps every older client's behaviour: the seeded till.
+        None => Some(crate::models::account::CASH_PAYMENT_METHOD_ID),
+    };
+
+    let mut tx = state.db.begin().await.map_err(|e| {
+        tracing::error!(?e, "tx begin failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    // The category has to exist, and this reads before the insert so an unknown one is a
+    // 404 with nothing written.
+    let known: Option<Uuid> = sqlx::query_scalar("SELECT id FROM expense_categories WHERE id = $1")
+        .bind(body.category_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| {
+            tracing::error!(?e, "category lookup failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    known.ok_or(StatusCode::NOT_FOUND)?;
+
+    // **The method is resolved before the first write, and it is a 404 rather than a
+    // foreign-key 500.** The first version checked it *after* inserting the expense and
+    // got a 500: the insert already referenced the unknown method, so the FK fired before
+    // the lookup that would have answered 404. Measured by the destination-grammar test,
+    // which asserts the status rather than merely that something failed — a refusal with
+    // the wrong code is a caller who cannot act on it.
+    if let Some(method) = destination {
+        let known_method: Option<Uuid> =
+            sqlx::query_scalar("SELECT id FROM payment_methods WHERE id = $1")
+                .bind(method)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|e| {
+                    tracing::error!(?e, "payment method lookup failed");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?;
+        known_method.ok_or(StatusCode::NOT_FOUND)?;
+    }
+
+    let expense_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO expenses (category_id, payee, amount, occurred_at, payment_method_id, created_by)
+         VALUES ($1, $2, $3, COALESCE($4, NOW()), $5, 'counter') RETURNING id",
+    )
+    .bind(body.category_id)
+    .bind(&payee)
+    .bind(body.amount)
+    .bind(body.occurred_at)
+    .bind(destination)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| {
+        tracing::error!(?e, "expense insert failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    // **A paid expense records its money as a `payments` row, and the row owns the ledger
+    // entry** (`S5`). Writing an `'expense'` entry as well would count the same coin
+    // twice — the defect the first draft of the specification carried.
+    if let Some(method) = destination {
+        let payment_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO payments
+                (party_kind, party_id, payment_method_id, total, direction, occurred_at, created_by)
+             VALUES ('expense', $1, $2, $3, 'out', COALESCE($4, NOW()), 'counter')
+             RETURNING id",
+        )
+        .bind(expense_id)
+        .bind(method)
+        .bind(body.amount)
+        .bind(body.occurred_at)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| {
+            tracing::error!(?e, "expense payment insert failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+        // Money out is negative — `0014`'s convention, declared there and never
+        // re-derived. `payments_claim_their_entry` refuses a payment that writes none.
+        sqlx::query(
+            "INSERT INTO money_entries
+                (account_id, payment_method_id, document_kind, document_id, amount, occurred_at, created_by)
+             SELECT pm.account_id, $1, 'payment', $2, -$3, COALESCE($4, NOW()), 'counter'
+               FROM payment_methods pm WHERE pm.id = $1",
+        )
+        .bind(method)
+        .bind(payment_id)
+        .bind(body.amount)
+        .bind(body.occurred_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            tracing::error!(?e, "expense payment entry failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    }
+
+    // The row as it now stands, read back through the same projection the ledger uses, so
+    // the response cannot describe a document differently from how it will be listed.
+    let created = sqlx::query_as::<_, Expense>(
+        "SELECT e.id, e.category_id, c.name AS category_name, e.payee, e.amount,
+                e.occurred_at, e.payment_method_id, pm.name AS payment_method_name,
+                e.created_at
+           FROM expenses e
+           JOIN expense_categories c ON c.id = e.category_id
+           LEFT JOIN payment_methods pm ON pm.id = e.payment_method_id
+          WHERE e.id = $1",
+    )
+    .bind(expense_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| {
+        tracing::error!(?e, "expense readback failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    tx.commit().await.map_err(|e| {
+        tracing::error!(?e, "tx commit failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok((StatusCode::CREATED, Json(created)))
 }
