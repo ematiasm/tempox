@@ -200,6 +200,79 @@ AFTER INSERT OR UPDATE OF payment_method_id ON expenses
 DEFERRABLE INITIALLY DEFERRED
 FOR EACH ROW EXECUTE FUNCTION expense_payment_method_is_claimed();
 
+-- ── The same claim, seen from the other side ───────────────────────────────
+--
+-- **`R3-001` of `review-5e9ab82a94f3c6e2`, CRITICAL, and it was reachable.** A trigger on
+-- `expenses` fires when the *document* is written — so once a paid expense commits, a later
+-- insert into `payments` for the same expense is never re-checked. Measured on a migrated
+-- database: an expense of 100 paid through the till, then a second payment of 500 through
+-- the bank, and the row pair committed happily — the document naming one rail, its money
+-- naming two, and 600 paid against 100 owed. That is exactly what the trigger above exists
+-- to prevent, and it was watching the wrong table.
+--
+-- The rule belongs on the side that can change last. Every payment naming an expense is now
+-- checked against its document at COMMIT: the rail must match, the sum must not exceed the
+-- amount, and the direction must be `out`.
+--
+-- **Deferred for the same reason as the other one**: the route writes the expense and then
+-- its payment, so the payment exists after the document it answers.
+CREATE OR REPLACE FUNCTION expense_payment_agrees_with_its_document() RETURNS trigger AS $$
+DECLARE
+    doc_method UUID;
+    doc_amount NUMERIC(14, 6);
+    settled    NUMERIC(14, 6);
+BEGIN
+    IF NEW.party_kind <> 'expense' THEN
+        RETURN NEW;
+    END IF;
+
+    SELECT payment_method_id, amount INTO doc_method, doc_amount
+      FROM expenses WHERE id = NEW.party_id;
+
+    -- A payment naming an expense that does not exist is `0017`'s defect with extra steps;
+    -- the foreign-key-shaped check lives here because `party_id` is polymorphic.
+    IF doc_amount IS NULL THEN
+        RAISE EXCEPTION
+            'payment % names expense %, which does not exist', NEW.id, NEW.party_id;
+    END IF;
+
+    IF doc_method IS NULL THEN
+        RAISE EXCEPTION
+            'payment % answers expense %, but that expense says it moved no money',
+            NEW.id, NEW.party_id;
+    END IF;
+
+    IF NEW.payment_method_id IS DISTINCT FROM doc_method THEN
+        RAISE EXCEPTION
+            'payment % moved money through method %, but expense % says method %',
+            NEW.id, NEW.payment_method_id, NEW.party_id, doc_method;
+    END IF;
+
+    IF NEW.direction <> 'out' THEN
+        RAISE EXCEPTION
+            'payment % answers expense % and is not money going out', NEW.id, NEW.party_id;
+    END IF;
+
+    SELECT COALESCE(SUM(total), 0) INTO settled
+      FROM payments
+     WHERE party_kind = 'expense' AND party_id = NEW.party_id;
+
+    IF settled > doc_amount THEN
+        RAISE EXCEPTION
+            'expense % is for %, but % was paid against it',
+            NEW.party_id, doc_amount, settled;
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS payments_answer_their_expense ON payments;
+CREATE CONSTRAINT TRIGGER payments_answer_their_expense
+AFTER INSERT ON payments
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION expense_payment_agrees_with_its_document();
+
 -- ── Prove the guards and the closed sets ──────────────────────────────────
 --
 -- LAST, for the reason `0012` records: a check placed earlier reports whatever happens to
@@ -213,7 +286,8 @@ BEGIN
       FROM (VALUES
               ('expenses', 'expenses_append_only'),
               ('expenses', 'expenses_no_truncate'),
-              ('expenses', 'expenses_payment_method_claimed')
+              ('expenses', 'expenses_payment_method_claimed'),
+              ('payments', 'payments_answer_their_expense')
            ) AS wanted(table_name, name)
      WHERE EXISTS (
              SELECT 1 FROM pg_trigger t
@@ -221,9 +295,9 @@ BEGIN
                 AND t.tgrelid = wanted.table_name::regclass
                 AND NOT t.tgisinternal
            );
-    IF present <> 3 THEN
+    IF present <> 4 THEN
         RAISE EXCEPTION
-            'expected 3 expenses guards, found %; refusing to continue', present;
+            'expected 4 expenses guards, found %; refusing to continue', present;
     END IF;
 
     -- **Every member of each closed set is still there.** `0020` lost one doing exactly this,

@@ -13222,3 +13222,123 @@ async fn v4_expenses_a_direct_insert_cannot_smuggle_a_blank_value_past_a_guard(p
     .await
     .expect("a payee with a real character inside is accepted");
 }
+
+#[sqlx::test]
+async fn v4_expenses_a_second_payment_cannot_bypass_the_documents_claim(pool: sqlx::PgPool) {
+    // `R3-001` of `review-5e9ab82a94f3c6e2`, CRITICAL: the claim fired when the *document*
+    // was written and never again. Measured: 100 through the till, then 500 through the
+    // bank, both committed.
+    let category = category_named(&pool, "Servicios").await;
+    let expense_uuid = uuid::Uuid::parse_str(&category).expect("uuid");
+
+    let (bank_method,): (uuid::Uuid,) = sqlx::query_as(
+        "WITH a AS (
+             INSERT INTO accounts (name) VALUES ('Banco R3') RETURNING id
+         )
+         INSERT INTO payment_methods (account_id, name)
+         SELECT id, 'transferencia-r3' FROM a RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("a second rail");
+
+    // The state the trigger used to accept and never revisit.
+    let mut tx = pool.begin().await.expect("begin");
+    let (expense_id,): (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO expenses (category_id, payee, amount, payment_method_id, created_by)
+         VALUES ($1, 'Edenor', 100.00, $2, 'counter') RETURNING id",
+    )
+    .bind(expense_uuid)
+    .bind(uuid::Uuid::from_u128(4))
+    .fetch_one(&mut *tx)
+    .await
+    .expect("insert the expense");
+
+    let (first_payment,): (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO payments (party_kind, party_id, payment_method_id, total, direction, occurred_at, created_by)
+         VALUES ('expense', $1, $2, 100.00, 'out', NOW(), 'counter') RETURNING id",
+    )
+    .bind(expense_id)
+    .bind(uuid::Uuid::from_u128(4))
+    .fetch_one(&mut *tx)
+    .await
+    .expect("the first payment");
+
+    sqlx::query(
+        "INSERT INTO money_entries
+            (account_id, payment_method_id, document_kind, document_id, amount, occurred_at, created_by)
+         SELECT pm.account_id, $1, 'payment', $2, -100.00, NOW(), 'counter'
+           FROM payment_methods pm WHERE pm.id = $1",
+    )
+    .bind(uuid::Uuid::from_u128(4))
+    .bind(first_payment)
+    .execute(&mut *tx)
+    .await
+    .expect("the first entry");
+
+    tx.commit()
+        .await
+        .expect("a paid expense with its payment commits");
+
+    // Each half its own assertion: wrong rail and wrong amount differ.
+    for (label, method, amount) in [
+        ("a second payment on another rail", bank_method, "1.00"),
+        (
+            "a second payment beyond the amount",
+            uuid::Uuid::from_u128(4),
+            "500.00",
+        ),
+    ] {
+        let mut tx = pool.begin().await.expect("begin the second attempt");
+        let second: Result<(uuid::Uuid,), _> = sqlx::query_as(
+            "INSERT INTO payments (party_kind, party_id, payment_method_id, total, direction, occurred_at, created_by)
+             VALUES ('expense', $1, $2, $3, 'out', NOW(), 'counter') RETURNING id",
+        )
+        .bind(expense_id)
+        .bind(method)
+        .bind(
+            amount
+                .parse::<rust_decimal::Decimal>()
+                .expect("a decimal"),
+        )
+        .fetch_one(&mut *tx)
+        .await;
+
+        let outcome = match second {
+            Err(_) => Err(()),
+            Ok((payment_id,)) => {
+                sqlx::query(
+                    "INSERT INTO money_entries
+                        (account_id, payment_method_id, document_kind, document_id, amount, occurred_at, created_by)
+                     SELECT pm.account_id, $1, 'payment', $2, -1.00, NOW(), 'counter'
+                       FROM payment_methods pm WHERE pm.id = $1",
+                )
+                .bind(method)
+                .bind(payment_id)
+                .execute(&mut *tx)
+                .await
+                .expect("the second entry");
+                tx.commit().await.map_err(|_| ())
+            }
+        };
+
+        assert!(
+            outcome.is_err(),
+            "the database must refuse {label}: the document's claim is not a one-time check"
+        );
+    }
+
+    // The document and its money still agree, which is the observable consequence.
+    let paid: rust_decimal::Decimal = sqlx::query_scalar(
+        "SELECT SUM(total) FROM payments WHERE party_id = $1 AND party_kind = 'expense'",
+    )
+    .bind(expense_id)
+    .fetch_one(&pool)
+    .await
+    .expect("the amount actually paid");
+    assert_eq!(
+        paid.normalize().to_string(),
+        "100",
+        "no refused payment left a row behind"
+    );
+}
