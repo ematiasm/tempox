@@ -12369,3 +12369,193 @@ async fn v4_expenses_patching_a_category_with_nothing_to_change_is_refused(pool:
         "a rename to spaces is refused for the same reason a creation is"
     );
 }
+
+// ── The four findings `review-32b53a14e35954c8` left, pinned as tests ──────
+//
+// The review approved this candidate and listed four non-blocking findings. Three
+// name a gap the tests left and one names a real hole; the hole is `R3-001`, and it
+// is the reason this block exists rather than a note in a document:
+//
+// > the DB nonblank guard uses `btrim(name) <> ''`, whose default trim set is spaces,
+// > so a direct SQL insert can store a name made only of tabs/newlines while the route
+// > trims every Rust whitespace.
+//
+// Measured before the fix, on this database: `SELECT btrim(E'\t\n') = ''` is **false**.
+// The route refuses the same value, because Rust's `str::trim` removes tabs and
+// newlines. So the migration's own comment — "every refusal here is enforced again in
+// the database, because a `psql` session bypasses this file entirely" — was true of
+// spaces only.
+
+#[sqlx::test]
+async fn v4_expenses_the_database_refuses_a_name_that_is_only_whitespace(pool: sqlx::PgPool) {
+    // **`R3-001`.** Not through the route: the claim under test is that the *database*
+    // refuses, because that is the half a `psql` session reaches. `btrim`'s default trim
+    // set is a single space, so without the explicit set this insert succeeded and stored
+    // an unreadable row in every picker.
+    for (label, name) in [
+        ("a tab", "\t"),
+        ("a newline", "\n"),
+        ("a tab and a newline", "\t\n"),
+        ("a carriage return", "\r"),
+        ("a vertical tab", "\u{b}"),
+        ("a form feed", "\u{c}"),
+    ] {
+        let inserted = sqlx::query("INSERT INTO expense_categories (name) VALUES ($1)")
+            .bind(name)
+            .execute(&pool)
+            .await;
+        assert!(
+            inserted.is_err(),
+            "the database must refuse the name {label}: it is whitespace, not a category"
+        );
+    }
+
+    // The positive control, so the loop above cannot pass by refusing everything: a name
+    // with a real character in it, wrapped in the whitespace the guard now trims, is
+    // accepted and stored **exactly as given**. The CHECK validates; it does not rewrite.
+    sqlx::query("INSERT INTO expense_categories (name) VALUES ($1)")
+        .bind("\t Publicidad \n")
+        .execute(&pool)
+        .await
+        .expect("a name with a real character inside is accepted");
+
+    // The lookup uses the **same explicit trim set as the CHECK**, and that is not a
+    // detail: the first version of this query used `btrim(name)`, whose default set is a
+    // space only, so it never matched `\t Publicidad \n` and the test failed on its own
+    // search rather than on the behaviour it measures.
+    let stored: String = sqlx::query_scalar(
+        r"SELECT name FROM expense_categories WHERE btrim(name, E' \t\n\r\f\v') = 'Publicidad'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("the row is there");
+    assert_eq!(
+        stored, "\t Publicidad \n",
+        "the CHECK validates a name; it does not rewrite it"
+    );
+}
+
+#[sqlx::test]
+async fn v4_expenses_renaming_a_category_works_and_a_collision_is_a_conflict(pool: sqlx::PgPool) {
+    // **`R3-002`.** The only successful `PATCH` this suite sent changed `is_active`, so
+    // the name-editing path the route documents — "a typo must be fixable" — was never
+    // exercised, and neither was its `409`.
+    let client = common::client(pool.clone());
+
+    let created = client
+        .post(
+            "/api/expense-categories",
+            serde_json::json!({ "name": "Publcidad" }),
+        )
+        .await;
+    assert_eq!(created.status(), axum::http::StatusCode::CREATED);
+    let id = created.body["id"].as_str().expect("an id").to_string();
+
+    let renamed = client
+        .patch(
+            &format!("/api/expense-categories/{id}"),
+            serde_json::json!({ "name": "  Publicidad  " }),
+        )
+        .await;
+    renamed.expect_status(axum::http::StatusCode::OK);
+    assert_eq!(
+        renamed.body["name"], "Publicidad",
+        "the typo is corrected, and the new name is trimmed"
+    );
+    assert_eq!(
+        renamed.body["is_active"], true,
+        "a rename leaves the retirement flag alone: COALESCE is what makes PATCH partial"
+    );
+
+    // A rename onto a name another category already holds is the same rule reached from
+    // the other side, so it answers the same status a duplicate creation does.
+    let collision = client
+        .patch(
+            &format!("/api/expense-categories/{id}"),
+            serde_json::json!({ "name": "Alquiler" }),
+        )
+        .await;
+    assert_eq!(
+        collision.status(),
+        axum::http::StatusCode::CONFLICT,
+        "two categories the shop cannot tell apart is refused, not absorbed"
+    );
+
+    // **The refusal changed nothing.** A 409 that had already written the name would be
+    // the worst of both: a refusal reported over a row that moved.
+    let unchanged: String = sqlx::query_scalar("SELECT name FROM expense_categories WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(&id).expect("uuid"))
+        .fetch_one(&pool)
+        .await
+        .expect("the row");
+    assert_eq!(unchanged, "Publicidad", "the collision wrote nothing");
+}
+
+#[sqlx::test]
+async fn v4_expenses_an_empty_patch_is_refused_before_the_id_is_resolved(pool: sqlx::PgPool) {
+    // **`R3-003`.** The original test used a non-existent id and asserted only
+    // `is_client_error()`, so it would have passed on a `404` — it never pinned the
+    // documented `400` for an empty body, nor that the body is judged **first**.
+    let client = common::client(pool.clone());
+
+    // The precedence is the assertion: this id does not exist, and the answer is `400`,
+    // not `404`. An empty body is a malformed request whatever the id says.
+    let empty_on_missing_id = client
+        .patch(
+            "/api/expense-categories/00000000-0000-0000-0000-0000000000ff",
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(
+        empty_on_missing_id.status(),
+        axum::http::StatusCode::BAD_REQUEST,
+        "an empty patch is a 400 even when the id is unknown: the body is judged first"
+    );
+
+    // And on a row that does exist, so the ordering claim cannot pass merely because
+    // every id in this test is unknown.
+    let (id,): (uuid::Uuid,) =
+        sqlx::query_as("SELECT id FROM expense_categories WHERE name = 'Otros'")
+            .fetch_one(&pool)
+            .await
+            .expect("the seeded category");
+
+    let empty_on_real_id = client
+        .patch(
+            &format!("/api/expense-categories/{id}"),
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(
+        empty_on_real_id.status(),
+        axum::http::StatusCode::BAD_REQUEST,
+        "a 200 that changed nothing would be a lie the client cannot detect"
+    );
+}
+
+#[sqlx::test]
+async fn v4_expenses_truncate_is_refused_as_well_as_delete(pool: sqlx::PgPool) {
+    // **`R3-004`.** Only `DELETE` was exercised, so the `TRUNCATE` half of the invariant
+    // was existence-checked by the migration's `DO` block and never proved by behaviour.
+    // The distinction is not pedantry: a row-level guard never sees `TRUNCATE`, because it
+    // is a set operation — the mistake `0004` shipped and `0008` repaired for the stock
+    // ledger. A category table that could be truncated would lose every classification at
+    // once, and every expense would render without one.
+    let truncated = sqlx::query("TRUNCATE expense_categories")
+        .execute(&pool)
+        .await;
+    assert!(
+        truncated.is_err(),
+        "TRUNCATE is a set operation: a row-level guard would not see it, so a statement guard must"
+    );
+
+    // The rows are still there, which is the observable consequence.
+    let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM expense_categories")
+        .fetch_one(&pool)
+        .await
+        .expect("count after the refusal");
+    assert_eq!(
+        remaining, 6,
+        "the six seeded categories survive the attempt"
+    );
+}
