@@ -199,6 +199,12 @@ test('a purchase lowers the till and its return raises it back', async ({ page }
   await detail.getByRole('button', { name: 'Devolver al proveedor…' }).click();
   await detail.getByRole('button', { name: 'Sí, devolver' }).click();
 
+  // Wait for the written return to land before re-reading the till: the credit
+  // path is asynchronous, and reading immediately is what made this half of the
+  // test report a return of 0 in a full-suite run while passing in isolation.
+  await expect(detail.locator('.return-block')).toHaveCount(1);
+  await expect(detail.locator('.return-block').first()).toContainText('Devolución al proveedor');
+
   const afterReturn = await till();
   expect(afterReturn - afterPurchase).toBeCloseTo(20, 2);
 });

@@ -63,3 +63,49 @@ Evidence:
 **L1** — user, verbatim:
 
 > hace compras espejo de ventas
+
+**L2** — Owner asked to consolidate the duplicated components ("si, encaralo"). The
+measurement first, because "the same component twice" was the assumption and it
+was only half true:
+
+| | lines | script | style |
+|---|---|---|---|
+| `Ledger` | 1607 → 1478 | 524 | 701 |
+| `PurchaseLedger` | 1042 → 960 | 269 | 455 |
+| `SaleDraft` | 797 | 236 | 342 |
+| `PurchaseDraft` | 573 | 208 | 230 |
+
+The ledgers' **scripts diverge in 621 lines**, and the data models are genuinely
+different: a sale carries `credit_notes`, a purchase carries `supplier_returns`,
+and only the sale has a running balance. Folding them into one component behind
+direction flags was rejected as the conditional monster that would make the next
+change unreadable. That was the right reading of the numbers.
+
+What *was* the same is the slip. Extracted to `DaySlip.svelte` (270 lines): head,
+chevron, body, struck-through state, the whole keyboard contract, and the optional
+`balance`. Each ledger keeps its own `who`/`meta`/`detail` as snippets, so it still
+says in its own file what it prints.
+
+**Correction to an earlier claim.** The first measurement said "157 identical CSS
+lines" — that compared *individual lines* after `sort`, not rules. On inspection
+`.lines td` is `padding: 6px 10px` on sales and `4px 8px` on purchases: the two
+detail panels have genuinely different density. Merging them would have changed how
+one screen looks, which nobody asked for. So `.lines` stays per-surface and is only
+marked global, because the snippet renders in the parent and the style block must
+still reach it.
+
+Evidence:
+
+- `make test` — 263 unit / 67 backend / 157 integration / **35 e2e**.
+- Slip parity measured in the browser on both screens: `radius 8px`, `border 1px`,
+  `headPad 10px 14px`, `slip-no 700`, `slip-total 20px`; the only difference is
+  `hasBal` true on sales and false on purchases, which is the intended asymmetry.
+- Two defects the refactor introduced and the suite caught:
+  1. `PurchaseLedger` was left emitting its own `<article>` while its styles were
+     deleted, so purchases rendered an **unstyled** slip (`radius 0px`,
+     `border 0px`). Found by measuring the computed style, not by the tests.
+  2. `idPrefix` plus the template produced `purchase-lines--<id>` (double hyphen),
+     which broke four specs. Proven to bite by reintroducing it.
+- A flake in the direction test was fixed rather than retried: it read the till
+  before the written return had landed. It now waits for the `.return-block` to
+  appear first.

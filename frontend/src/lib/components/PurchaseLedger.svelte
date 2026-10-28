@@ -35,6 +35,7 @@
   import { isOnAccount, methodLabel } from '#lib/methodLabel.js';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import Stamp from './Stamp.svelte';
+  import DaySlip from './DaySlip.svelte';
   import { overflowsX } from '#lib/overflowsX.js';
 
   interface Props {
@@ -346,87 +347,46 @@
           {@const isOpen = open.has(row.purchase.id)}
           {@const returned = isFullyReturned(row.items, row.supplier_returns)}
           {@const refunded = returnedByLine(row.supplier_returns)}
-          <!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
-          <article
-            class="slip doc"
-            class:open={isOpen}
-            class:void={returned}
-            data-doc-row={row.purchase.id}
-            role="button"
-            tabindex="0"
-            aria-expanded={isOpen}
-            aria-controls="purchase-lines-{row.purchase.id}"
-            data-purchase-id={row.purchase.id}
-            onclick={() => toggle(row.purchase.id)}
-            onkeydown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                toggle(row.purchase.id);
-              }
-            }}
+          <!-- The slip itself lives in `DaySlip.svelte`: the same head, chevron,
+               body and keyboard contract as the sale's, with the fields this
+               surface prints passed in. Purchases deliberately pass no `balance`
+               — a purchase has no running balance in this design. -->
+          <DaySlip
+            id={row.purchase.id}
+            createdAt={row.purchase.created_at}
+            {zone}
+            idPrefix="purchase-lines-"
+            total={row.purchase.total}
+            open={isOpen}
+            void={returned}
+            ontoggle={() => toggle(row.purchase.id)}
           >
-            <div class="slip-head">
-              <div class="slip-id">
-                <svg
-                  class="chev"
-                  class:open={isOpen}
-                  viewBox="0 0 12 12"
-                  aria-hidden="true"
-                  focusable="false"
-                >
-                  <path
-                    d="M4.5 2.5 8 6l-3.5 3.5"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.8"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                  />
-                </svg>
-                <span class="figures slip-no">#{row.purchase.id.slice(0, 8)}</span>
-                <span class="figures slip-time"
-                  >{formatTime(new Date(row.purchase.created_at), zone)}</span
-                >
-              </div>
-            </div>
-            <div class="slip-body">
-              <div class="slip-who">
-                <span class="who-name">
-                  {#if supplierNames.get(row.purchase.supplier_id) === 'one-off-supplier'}
-                    {lang.t.purchases_one_off_supplier}
-                  {:else}
-                    {supplierNames.get(row.purchase.supplier_id) ??
-                      lang.t.purchases_one_off_supplier}
-                  {/if}
-                </span>
-                <span class="who-meta">
-                  <span
-                    class="method"
-                    class:on-account={isOnAccount(row.purchase.payment_method_name)}
-                    >{methodLabel(row.purchase.payment_method_name, {
-                      onAccount: lang.t.method_on_account,
-                      unknown: lang.t.method_unknown
-                    })}</span
-                  >
-                  ·
-                  {#if returned}
-                    <Stamp label={lang.t.purchases_returned_state} tone="annulled" />
-                  {:else}
-                    <Stamp label={lang.t.purchases_confirmed_state} />
-                  {/if}
-                </span>
-              </div>
-              <span class="slip-total figures" class:void={returned}
-                >{formatMoney(row.purchase.total)}</span
+            {#snippet who()}
+              <span class="who-name">
+                {#if supplierNames.get(row.purchase.supplier_id) === 'one-off-supplier'}
+                  {lang.t.purchases_one_off_supplier}
+                {:else}
+                  {supplierNames.get(row.purchase.supplier_id) ?? lang.t.purchases_one_off_supplier}
+                {/if}
+              </span>
+            {/snippet}
+
+            {#snippet meta()}
+              <span class="method" class:on-account={isOnAccount(row.purchase.payment_method_name)}
+                >{methodLabel(row.purchase.payment_method_name, {
+                  onAccount: lang.t.method_on_account,
+                  unknown: lang.t.method_unknown
+                })}</span
               >
-            </div>
-          </article>
-          {#if isOpen}
-            <div
-              class="lines"
-              id="purchase-lines-{row.purchase.id}"
-              data-doc-detail={row.purchase.id}
-            >
+              ·
+              {#if returned}
+                <Stamp label={lang.t.purchases_returned_state} tone="annulled" />
+              {:else}
+                <Stamp label={lang.t.purchases_confirmed_state} />
+              {/if}
+            {/snippet}
+
+            {#snippet detail()}
               <table>
                 <caption>{lang.t.purchases_lines_of} #{row.purchase.id.slice(0, 8)}</caption>
                 <thead>
@@ -546,8 +506,8 @@
                   <p role="status">{reloadNotice.get(row.purchase.id)}</p>
                 {/if}
               </div>
-            </div>
-          {/if}
+            {/snippet}
+          </DaySlip>
         {/each}
       </div>
       {#if hiddenColumns > 0}
@@ -718,97 +678,15 @@
     color: var(--ink-soft);
     text-align: right;
   }
-  .slip {
-    background: var(--surface);
-    border: 1px solid var(--rule);
-    border-radius: var(--panel-radius);
-    overflow: hidden;
-    cursor: pointer;
-    transition: border-color 100ms ease-out;
-  }
-  .slip.open {
-    border-color: var(--rule-strong);
-  }
-  .slip.void {
-    color: var(--ink-soft);
-  }
-  .slip:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-  }
-  .slip-head {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 14px;
-    padding: 10px 14px;
-    border-bottom: 1px solid var(--rule);
-    background: var(--ground);
-  }
-  .slip-id {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
-  }
-  .slip-no {
-    font-size: var(--step-2);
-    font-weight: 700;
-    font-variant-numeric: tabular-nums;
-  }
-  .slip-time {
-    font-size: var(--step--1);
-    color: var(--ink-soft);
-    font-variant-numeric: tabular-nums;
-  }
-  .slip-body {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 14px;
-    align-items: end;
-    padding: 8px 14px 10px;
-  }
-  .slip-who {
-    min-width: 0;
-  }
   .who-name {
     display: block;
     font-weight: 500;
     overflow-wrap: anywhere;
   }
-  .who-meta {
-    display: flex;
-    align-items: baseline;
-    gap: 0.35em;
-    margin-top: 1px;
-    font-size: var(--step--1);
-    color: var(--ink-soft);
-  }
   .method {
     color: inherit;
     font-size: inherit;
     white-space: nowrap;
-  }
-  .chev {
-    width: 12px;
-    height: 12px;
-    flex: 0 0 auto;
-    color: var(--ink-soft);
-    transition: transform 120ms ease-out;
-  }
-  .chev.open {
-    transform: rotate(90deg);
-  }
-  .slip-total {
-    font-size: var(--step-3);
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-    text-align: right;
-    white-space: nowrap;
-  }
-  .slip-total.void {
-    color: var(--ink-soft);
-    text-decoration: line-through;
   }
   .method.on-account {
     font-style: italic;
@@ -856,17 +734,17 @@
     font-variant-numeric: tabular-nums;
     font-family: var(--font-figure);
   }
-  .lines {
+  :global(.lines) {
     padding: 4px 16px 10px;
   }
-  .lines table {
+  :global(.lines) table {
     width: 100%;
     border-collapse: collapse;
     background: var(--ground);
     border: 1px solid var(--rule);
     border-radius: var(--radius);
   }
-  .lines caption {
+  :global(.lines) caption {
     caption-side: top;
     text-align: left;
     font-family: var(--font-figure);
@@ -877,7 +755,7 @@
     color: var(--ink-soft);
     padding: 0 0 5px;
   }
-  .lines th {
+  :global(.lines) th {
     text-align: left;
     font-size: var(--step--1);
     text-transform: uppercase;
@@ -886,12 +764,12 @@
     padding: 4px 8px;
     font-weight: 600;
   }
-  .lines td {
+  :global(.lines) td {
     padding: 4px 8px;
     border-top: 1px solid var(--rule);
     font-size: var(--step-0);
   }
-  .lines .num {
+  :global(.lines) .num {
     text-align: right;
   }
   .return-cell {
