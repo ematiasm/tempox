@@ -17,17 +17,17 @@ Source files read:
 
 ## Colors
 
-| Token | Value | Usage | Source |
-| --- | --- | --- | --- |
-| `--ground` | `#fbfcfd` | page background | `app.css:85` |
-| `--surface` | `#ffffff` | work panels, control surfaces | `app.css:86` |
-| `--rule` | `#e8ecf1` | panel borders, row separators, table rules | `app.css:87` |
-| `--rule-strong` | `#c3ccd6` | control borders, scrollbar thumb | `app.css:88` |
-| `--ink` | `#12212e` | primary text, confirmed state, primary action fill | `app.css:89` |
-| `--ink-soft` | `#5f6f7d` | secondary text, labels, placeholders (5.04:1 on `--ground`) | `app.css:90` |
-| `--accent` | `#0b5f8a` | running balance, active destination, focus ring, caret | `app.css:91` |
-| `--state-void` | `#a33227` | annulled / refunded documents | `app.css:96` |
-| `--state-pending` | `#8a6410` | pending documents | `app.css:97` |
+| Token             | Value     | Usage                                                       | Source       |
+| ----------------- | --------- | ----------------------------------------------------------- | ------------ |
+| `--ground`        | `#fbfcfd` | page background                                             | `app.css:85` |
+| `--surface`       | `#ffffff` | work panels, control surfaces                               | `app.css:86` |
+| `--rule`          | `#e8ecf1` | panel borders, row separators, table rules                  | `app.css:87` |
+| `--rule-strong`   | `#c3ccd6` | control borders, scrollbar thumb                            | `app.css:88` |
+| `--ink`           | `#12212e` | primary text, confirmed state, primary action fill          | `app.css:89` |
+| `--ink-soft`      | `#5f6f7d` | secondary text, labels, placeholders (5.04:1 on `--ground`) | `app.css:90` |
+| `--accent`        | `#0b5f8a` | running balance, active destination, focus ring, caret      | `app.css:91` |
+| `--state-void`    | `#a33227` | annulled / refunded documents                               | `app.css:96` |
+| `--state-pending` | `#8a6410` | pending documents                                           | `app.css:97` |
 
 Derived (not tokens, but the only values found):
 
@@ -40,22 +40,22 @@ Derived (not tokens, but the only values found):
 Faces are served from the project's own files via `@fontsource` (local woff2, latin
 subset); no third-party font host.
 
-| Face | Family stack | Weights used | Source |
-| --- | --- | --- | --- |
-| Figures / labels / headings | `'Plex Condensed', ui-sans-serif, system-ui, sans-serif` | 400, 500, 600, 700 | `app.css:101` |
-| Prose | `'Plex Text', ui-sans-serif, system-ui, -apple-system, sans-serif` | 400, 500, 600 | `app.css:102` |
+| Face                        | Family stack                                                       | Weights used       | Source        |
+| --------------------------- | ------------------------------------------------------------------ | ------------------ | ------------- |
+| Figures / labels / headings | `'Plex Condensed', ui-sans-serif, system-ui, sans-serif`           | 400, 500, 600, 700 | `app.css:101` |
+| Prose                       | `'Plex Text', ui-sans-serif, system-ui, -apple-system, sans-serif` | 400, 500, 600      | `app.css:102` |
 
 Scale (`app.css:104-110`, declared against a 16px root):
 
-| Token | Size |
-| --- | --- |
-| `--step--1` | `0.75rem` |
-| `--step-0` | `0.8125rem` |
-| `--step-1` | `0.875rem` (body) |
-| `--step-2` | `1rem` |
-| `--step-3` | `1.25rem` |
-| `--step-4` | `1.75rem` (page title) |
-| `--step-5` | `2.375rem` |
+| Token       | Size                   |
+| ----------- | ---------------------- |
+| `--step--1` | `0.75rem`              |
+| `--step-0`  | `0.8125rem`            |
+| `--step-1`  | `0.875rem` (body)      |
+| `--step-2`  | `1rem`                 |
+| `--step-3`  | `1.25rem`              |
+| `--step-4`  | `1.75rem` (page title) |
+| `--step-5`  | `2.375rem`             |
 
 Rules observed in the code:
 
@@ -65,34 +65,34 @@ Rules observed in the code:
 
 ## Spacing
 
-| Value | Usage | Source |
-| --- | --- | --- |
-| `24px` (`--panel-gap`) | gap between the two work panels of `/sales` | `app.css:116` |
-| `88px` (`--rail-w`) | navigation rail width | `app.css:117` |
-| `22px 26px 16px 28px` | `/sales` page header | `sales/+page.svelte` |
-| `0 26px 26px 28px` | `/sales` workspace insets | `sales/+page.svelte` |
-| `16px 20px 20px` | action footer inside the draft panel | `sales/+page.svelte` |
-| `10px 11px` | `.control` padding | `app.css` |
-| `12px 18px` | primary action padding | `sales/+page.svelte` |
+| Value                  | Usage                                       | Source               |
+| ---------------------- | ------------------------------------------- | -------------------- |
+| `24px` (`--panel-gap`) | gap between the two work panels of `/sales` | `app.css:116`        |
+| `88px` (`--rail-w`)    | navigation rail width                       | `app.css:117`        |
+| `22px 26px 16px 28px`  | `/sales` page header                        | `sales/+page.svelte` |
+| `0 26px 26px 28px`     | `/sales` workspace insets                   | `sales/+page.svelte` |
+| `16px 20px 20px`       | action footer inside the draft panel        | `sales/+page.svelte` |
+| `10px 11px`            | `.control` padding                          | `app.css`            |
+| `12px 18px`            | primary action padding                      | `sales/+page.svelte` |
 
 ## Radius
 
-| Value | Usage | Source |
-| --- | --- | --- |
-| `2px` (`--radius`) | every control, primary action, focus outline | `app.css:112` |
-| `8px` (`--panel-radius`) | work panels, clipped contents | `app.css:115` |
-| `4px`, one side only | an element joining a neighbour (table foot under a header strip) | `Ledger.svelte` (`0 0 4px 4px`, `4px 4px 0 0`) |
-| `99px` | scrollbar thumb only | `app.css` |
+| Value                    | Usage                                                            | Source                                         |
+| ------------------------ | ---------------------------------------------------------------- | ---------------------------------------------- |
+| `2px` (`--radius`)       | every control, primary action, focus outline                     | `app.css:112`                                  |
+| `8px` (`--panel-radius`) | work panels, clipped contents                                    | `app.css:115`                                  |
+| `4px`, one side only     | an element joining a neighbour (table foot under a header strip) | `Ledger.svelte` (`0 0 4px 4px`, `4px 4px 0 0`) |
+| `99px`                   | scrollbar thumb only                                             | `app.css`                                      |
 
 ## Shadows
 
 The system is flat for work areas: panels carry a 1px border, never a shadow. Two
 shadows exist, both on floating layers only:
 
-| Value | Usage | Source |
-| --- | --- | --- |
+| Value                                    | Usage                   | Source                 |
+| ---------------------------------------- | ----------------------- | ---------------------- |
 | `0 14px 30px -14px rgb(21 22 28 / 0.45)` | product picker dropdown | `ProductPicker.svelte` |
-| `-8px 0 24px rgb(18 33 46 / 8%)` | account panel drawer | `AccountPanel.svelte` |
+| `-8px 0 24px rgb(18 33 46 / 8%)`         | account panel drawer    | `AccountPanel.svelte`  |
 
 ## Component rules
 
@@ -151,24 +151,30 @@ A scroll region the user cannot see is a scroll region they do not know exists.
 
 ## Deviations found
 
-These are real and worth deciding on; the sync records them, it does not fix them.
+These deviations record what the sync found and how the delivery resolved them;
+this section preserves the history while identifying the fixes and their guards.
 
-1. **Undefined custom properties on `/accounts`.** `accounts/+page.svelte` asks for
-   `var(--figure)` (4 uses), `var(--rounded-control)` (4 uses) and
-   `var(--rounded-panel)` (1 use). None of the three is declared anywhere in
-   `app.css`. The result is that the v3 screen's figures render in the prose face
-   and its controls and panel have square corners, while every other screen uses
-   condensed figures and a 2px/8px radius. The correct tokens are
-   `--font-figure`, `--radius` and `--panel-radius`.
-2. **Old world values still live as raw `rgb()` literals.** `DESIGN.md` forbids
-   reintroducing `--paper`, `--indigo`, `--crimson`. The names are gone, but their
-   values survive un-tokenized: `rgb(43 49 98 / …)` (`#2b3162`, indigo) in
-   `Catalog.svelte`, `SaleDraft.svelte` and `Ledger.svelte`;
+1. **Undefined custom properties on `/accounts` — now fixed.** At sync time,
+   `accounts/+page.svelte` asked for `var(--figure)` (4 uses),
+   `var(--rounded-control)` (4 uses) and `var(--rounded-panel)` (1 use). None of
+   the three was declared anywhere in `app.css`. The result was that the v3
+   screen's figures rendered in the prose face and its controls and panel had
+   square corners, while every other screen used condensed figures and a 2px/8px
+   radius. The token repair (the `fix(frontend)` commit that retired the old
+   palette's values) replaced these with `--font-figure`, `--radius` and
+   `--panel-radius`; `tests/unit/design-tokens.test.ts` guards against consuming
+   undeclared custom properties.
+2. **Old world values as raw literals — now fixed.** `DESIGN.md` forbids
+   reintroducing `--paper`, `--indigo`, `--crimson`. At sync time, the names were
+   gone, but their values survived un-tokenized: `rgb(43 49 98 / …)` (`#2b3162`,
+   indigo) in `Catalog.svelte`, `SaleDraft.svelte` and `Ledger.svelte`;
    `rgb(168 27 42 / …)` (`#a81b2a`, crimson) in the same three plus
    `ProductPicker.svelte`; `#f2efe6` light-on-dark text in `ProductPicker.svelte`;
    `#084a6c` in `Catalog.svelte`; `#f2f6fa` row fills in `Ledger.svelte` and
-   `PurchaseLedger.svelte`. That is the drift the DESIGN.md rule was written to
-   prevent, one layer down.
+   `PurchaseLedger.svelte`. The same `fix(frontend)` commit removed these
+   literals, and `tests/unit/design-tokens.test.ts` guards against their return by
+   value — covering `#084a6c`, `#f2f6fa` and `#0a1622` too, which the first
+   version of the guard missed.
 3. **Row tints are not expressible as tokens today.** The low-alpha indigo and
    crimson tints above have no declared equivalent, so any surface that wants a
    tinted row cannot ask for one by name.
