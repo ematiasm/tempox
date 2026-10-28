@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { money, recordedDocumentId } from './unique.js';
+import { money, purchaseDraftLine, purchaseSlip, recordedDocumentId } from './unique.js';
 import { pickFromCatalog } from './picker.js';
 
 /**
@@ -38,7 +38,7 @@ test('a return takes stock out and brings money back, and the purchase stands', 
   await page.goto('/purchases');
   await pickFromCatalog(page, name);
 
-  const draftLine = page.locator('.sheet table.lines tbody tr').first();
+  const draftLine = purchaseDraftLine(page);
   await expect(draftLine).toContainText(name);
   await draftLine.locator('input[aria-label^="Cant"]').fill('6');
   await expect(page.locator('.sheet .total')).toHaveText(money(purchaseTotal));
@@ -60,7 +60,7 @@ test('a return takes stock out and brings money back, and the purchase stands', 
   await page.goto('/purchases');
   // This purchase, by the id the draft reported: position is a lie in a shared
   // ledger and a total is not unique (#52).
-  const doc = page.locator(`.ledger tr.doc[aria-controls="purchase-lines-${purchaseId}"]`);
+  const doc = purchaseSlip(page, purchaseId);
   await expect(doc).toHaveCount(1);
   await expect(doc).toContainText(money(purchaseTotal));
   await doc.click();
@@ -98,7 +98,7 @@ test('a return takes stock out and brings money back, and the purchase stands', 
   // 8. What is left to return is now 4, not 6: the form derives it from the
   //    record rather than from what this page remembers sending.
   await page.goto('/purchases');
-  const docAgain = page.locator(`.ledger tr.doc[aria-controls="purchase-lines-${purchaseId}"]`);
+  const docAgain = purchaseSlip(page, purchaseId);
   await expect(docAgain).toHaveCount(1);
   await docAgain.click();
   const regionAgain = page.locator(`#purchase-lines-${purchaseId}`);
@@ -128,7 +128,7 @@ test('more than a line has left is refused on the screen, and no request leaves 
   await page.goto('/purchases');
   await pickFromCatalog(page, name);
 
-  const draftLine = page.locator('.sheet table.lines tbody tr').first();
+  const draftLine = purchaseDraftLine(page);
   await draftLine.locator('input[aria-label^="Cant"]').fill('3');
   await page.getByRole('button', { name: /Registrar compra/ }).click();
   await expect(page.locator('.sheet .done')).toContainText(money(purchaseTotal));
@@ -137,7 +137,7 @@ test('more than a line has left is refused on the screen, and no request leaves 
   // The form itself refuses the plan: asking for more than the line has left is
   // a quantity the server would answer 409 for, so the screen says so first and
   // sends nothing. Stock must stay at 3 because no request left.
-  const doc = page.locator(`.ledger tr.doc[aria-controls="purchase-lines-${purchaseId}"]`);
+  const doc = purchaseSlip(page, purchaseId);
   await expect(doc).toHaveCount(1);
   await doc.click();
   const region = page.locator(`#purchase-lines-${purchaseId}`);
@@ -191,7 +191,7 @@ test('a return of one line leaves the other line alone, which is the normal case
   ] as const) {
     await pickFromCatalog(page, name);
     await page
-      .locator('.sheet table.lines tbody tr')
+      .locator('[data-draft-line]')
       .filter({ hasText: name })
       .locator('input[aria-label^="Cant"]')
       .fill(qty);
@@ -200,7 +200,7 @@ test('a return of one line leaves the other line alone, which is the normal case
   await expect(page.locator('.sheet .done')).toContainText(money(purchaseTotal));
   const purchaseId = await recordedDocumentId(page);
 
-  const doc = page.locator(`.ledger tr.doc[aria-controls="purchase-lines-${purchaseId}"]`);
+  const doc = purchaseSlip(page, purchaseId);
   await expect(doc).toHaveCount(1);
   await doc.click();
   const region = page.locator(`#purchase-lines-${purchaseId}`);

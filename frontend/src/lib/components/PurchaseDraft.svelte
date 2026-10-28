@@ -268,57 +268,60 @@
   {#if lines.length === 0}
     <p class="empty">{lang.t.purchases_no_lines}</p>
   {:else}
-    <table class="lines">
-      <thead>
-        <tr>
-          <th scope="col">{lang.t.sales_product}</th>
-          <th scope="col" class="num">{lang.t.sales_qty}</th>
-          <th scope="col" class="num">{lang.t.purchases_price_unit}</th>
-          <th scope="col" class="num">{lang.t.sales_line}</th>
-          <th scope="col"><span class="sr-only">{lang.t.sales_remove_column}</span></th>
-        </tr>
-      </thead>
-      <tbody>
+    <!-- The printed body: each line is a row of the document, not a record in a
+         grid. The name stands on its own and its arithmetic sits beneath it, the
+         way a printed slip itemises. This is the mirror of the sales draft, and
+         it moved for the same reason: a purchase is the same document in the
+         other direction. -->
+    <div class="lines-scroll">
+      <div class="printed">
         {#each lines as line, i (line.id)}
-          <tr>
-            <td class="name">{line.product.name}</td>
-            <td class="num">
+          <div class="prow" data-draft-line>
+            <div class="pname">
+              <span class="pname-v">{line.product.name}</span>
+              <span class="pname-sub unit">· {lang.fmt.unit(line.product.unit)}</span>
+            </div>
+
+            <div class="pfields">
               <input
                 type="text"
                 inputmode="numeric"
+                class="qty"
                 bind:value={line.qtyText}
                 aria-label="{lang.t.sales_qty} {line.product.name}"
               />
-            </td>
-            <td class="num">
+              <span class="times" aria-hidden="true">×</span>
+              <span class="cur" aria-hidden="true">$</span>
               <input
                 type="text"
                 inputmode="decimal"
+                class="price"
                 bind:value={line.priceText}
                 aria-label="{lang.t.sales_price} {line.product.name}"
               />
-            </td>
-            <td class="num figure">
+              <span class="per">/{lang.fmt.unit(line.product.unit)}</span>
+            </div>
+
+            <div class="pline figure">
               {#if parsed[i]}
                 {formatMoney(lineTotalAmount(parsed[i]!.quantity, parsed[i]!.unitPrice) ?? '0.00')}
               {:else}
                 —
               {/if}
-            </td>
-            <td>
-              <button
-                type="button"
-                class="ghost"
-                onclick={() => removeLine(line.id)}
-                aria-label="{lang.t.sales_remove} {line.product.name}"
-              >
-                ×
-              </button>
-            </td>
-          </tr>
+            </div>
+
+            <button
+              type="button"
+              class="ghost remove"
+              onclick={() => removeLine(line.id)}
+              aria-label="{lang.t.sales_remove} {line.product.name}"
+            >
+              ×
+            </button>
+          </div>
         {/each}
-      </tbody>
-    </table>
+      </div>
+    </div>
   {/if}
 
   {#if error}
@@ -339,6 +342,9 @@
 </section>
 
 <style>
+  /* The slip is the same artifact as the sale's, in the other direction. The page
+     draws the closed surface around it and pins the action at its foot, so this
+     element is the sheet's interior rather than its frame. */
   .sheet {
     display: flex;
     flex: 1 1 auto;
@@ -346,9 +352,7 @@
     min-height: 0;
     overflow: hidden;
     background: var(--surface);
-    border: 1px solid var(--rule);
-    border-radius: var(--radius);
-    padding: 18px 20px 0;
+    padding: 14px 18px 0;
   }
   .sheet + :global(.action-foot) {
     padding-top: 0;
@@ -421,44 +425,93 @@
     font-size: var(--step-0);
     padding: 18px 0;
   }
-  .lines {
-    width: 100%;
-    border-collapse: collapse;
-    margin-top: 14px;
+  /* The one region that grows without limit, exactly as on the sales slip: it
+     takes whatever height is left and scrolls inside it, so a forty-line purchase
+     never pushes the total or the action off the screen. */
+  .lines-scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    margin-top: 12px;
+    padding-right: 2px;
+    margin-right: -2px;
   }
-  .lines th {
-    text-align: left;
-    font-size: var(--step--1);
-    text-transform: uppercase;
-    letter-spacing: 0.09em;
-    color: var(--ink-soft);
-    border-bottom: 1px solid var(--rule-strong);
-    padding: 6px 8px;
-    font-weight: 600;
+  .printed {
+    padding: 0 0 2px;
   }
-  .lines td {
-    padding: 6px 8px;
+
+  /* A printed line: the product stands on its own, its arithmetic sits beneath
+     it, and the line total sits against the slip's right edge. */
+  .prow {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto auto;
+    gap: 12px;
+    align-items: baseline;
+    padding: 10px 0;
     border-bottom: 1px solid var(--rule);
   }
-  .lines .num {
-    text-align: right;
+  .prow:last-child {
+    border-bottom: 0;
   }
-  .lines input {
+  .pname {
+    min-width: 0;
+  }
+  .pname-v {
+    display: block;
+    overflow-wrap: anywhere;
+  }
+  .pname-sub {
+    display: block;
+    margin-top: 2px;
+  }
+  .unit {
+    color: var(--ink-soft);
+    font-size: var(--step--1);
+  }
+
+  .pfields {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .times {
+    color: var(--ink-soft);
+    font-size: var(--step--1);
+  }
+  .pfields input {
     font: inherit;
     text-align: right;
     padding: 5px 7px;
     border: 1px solid var(--rule-strong);
-    border-radius: 2px;
-    background: var(--ground);
-    width: 100%;
+    border-radius: var(--radius);
+    background: var(--surface);
     font-variant-numeric: tabular-nums;
+  }
+  .pfields .qty {
+    width: 62px;
+  }
+  .pfields .price {
+    width: 96px;
+  }
+  .cur,
+  .per {
+    color: var(--ink-soft);
+    font-size: var(--step--1);
+    white-space: nowrap;
+  }
+  .pline {
+    font-size: var(--step-2);
+    font-weight: 600;
+    text-align: right;
+    min-width: 92px;
+    white-space: nowrap;
+  }
+  .remove {
+    align-self: center;
   }
   .figure {
     font-variant-numeric: tabular-nums;
     font-family: var(--font-figure);
-  }
-  .name {
-    font-weight: 500;
   }
   .ghost {
     background: none;
@@ -487,11 +540,11 @@
   .sheet-foot {
     display: flex;
     flex-wrap: wrap;
-    align-items: center;
+    align-items: baseline;
     gap: 8px 14px;
-    padding: 14px 0 8px;
+    padding: 12px 0 6px;
     margin-top: auto;
-    border-top: 1px solid var(--rule-strong);
+    border-top: 1px dashed var(--rule-strong);
   }
   .hint,
   .state-hint {
@@ -500,28 +553,21 @@
     color: var(--ink-soft);
   }
   .hint {
-    padding-bottom: 10px;
+    padding-bottom: 8px;
   }
   .total-label {
     margin-left: auto;
-    font-size: var(--step--1);
+    font-family: var(--font-figure);
+    font-size: var(--step-0);
+    font-weight: 600;
+    letter-spacing: 0.12em;
     text-transform: uppercase;
-    letter-spacing: 0.1em;
     color: var(--ink-soft);
   }
   .total {
-    font-size: var(--step-3);
-    font-weight: 600;
-  }
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
+    font-size: var(--step-4);
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: -0.01em;
   }
 </style>

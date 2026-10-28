@@ -1,5 +1,11 @@
 import { expect, test } from '@playwright/test';
-import { money, recordedDocumentId } from './unique.js';
+import {
+  money,
+  purchaseDraftLine,
+  purchaseSlip,
+  purchaseSlipDetail,
+  recordedDocumentId
+} from './unique.js';
 import { pickFromCatalog } from './picker.js';
 
 /**
@@ -40,7 +46,7 @@ test('a purchase is recorded and raises the stock it brought in', async ({ page 
   await page.goto('/purchases');
   await pickFromCatalog(page, name);
 
-  const line = page.locator('.sheet table.lines tbody tr').first();
+  const line = purchaseDraftLine(page);
   await expect(line).toContainText(name);
   // The price is prefilled from the list price, written in the shop's own shape
   // so the field's parser accepts it, and stays overridable: a purchase price
@@ -62,13 +68,13 @@ test('a purchase is recorded and raises the stock it brought in', async ({ page 
   await page.getByRole('button', { name: /Registrar compra/ }).click();
 
   await expect(page.locator('.sheet .done')).toContainText(money(sevenTotal));
-  await expect(page.locator('.sheet table.lines tbody tr')).toHaveCount(0);
+  await expect(page.locator('[data-draft-line]')).toHaveCount(0);
   const purchaseId = await recordedDocumentId(page);
 
   // 5. It is in the day's ledger with its lines behind it. Selected by the id the
   //    draft reported: position is a lie in a shared ledger and a total is not
   //    unique (#52).
-  const doc = page.locator(`.ledger tr.doc[aria-controls="purchase-lines-${purchaseId}"]`);
+  const doc = purchaseSlip(page, purchaseId);
   await expect(doc).toHaveCount(1);
   await expect(doc).toContainText('Proveedor ocasional');
   await expect(doc).toContainText(money(sevenTotal));
@@ -114,4 +120,85 @@ test('the purchase screen speaks the shop language and its English side (S3, S11
   await expect(page.locator('#purchase-supplier option:checked')).toHaveText('One-off supplier');
   const railEn = page.getByRole('navigation', { name: 'Main' });
   await expect(railEn.getByRole('link', { name: 'Purchases' })).toBeVisible();
+});
+
+/**
+ * The direction holds after the redraw: a purchase takes money out of the till,
+ * and a supplier return puts it back.
+ *
+ * S3 of `odd/tasks/purchases-receipt-pad.md`. `/purchases` was rebuilt as the
+ * mirror of `/sales`, and the one thing a mirror must not do is flip the sign: a
+ * sale raises the till, a purchase lowers it. That is arithmetic the component
+ * never owned — the server derives cash from every document — but nothing proved
+ * it end to end after the markup changed, and a redraw is exactly when a screen
+ * quietly starts reading the wrong figure.
+ *
+ * Read from `/accounts`, which is where the till is printed, and measured as a
+ * delta around this test's own documents rather than as an absolute: the
+ * database is shared, so an absolute figure belongs to whatever else ran.
+ */
+test('a purchase lowers the till and its return raises it back', async ({ page }) => {
+  const name = `e2e-direction-${Date.now().toString(36)}`;
+
+  /**
+   * The till's balance, read by the account the server marks as default.
+   *
+   * Not by a name: the seeded till is called "Efectivo", while "Caja del negocio"
+   * is the *tick* rendered inside the row — so a `hasText: 'Caja'` filter matched
+   * every row that carried the tick and then read whichever came first. That
+   * mistake made this test report a purchase *raising* the till by 50 when the
+   * server had lowered it by exactly 50.
+   */
+  const till = async () => {
+    await page.goto('/accounts');
+    const row = page.locator('li.row.is-default');
+    await expect(row).toHaveCount(1);
+    const text = (await row.locator('.figure').first().textContent()) ?? '';
+    // The sign is part of the figure: `-$ 50,00` is a till that owes, and
+    // stripping every non-digit turned it into `+50`. That is exactly how this
+    // test first reported a purchase *raising* the till by 50 when the server
+    // had lowered it by 50 — a bug in the test that looked like a bug in money.
+    const negative = text.trim().startsWith('-');
+    const digits = text.replace(/[^\d,]/g, '').replace(',', '.');
+    return (negative ? -1 : 1) * Number(digits);
+  };
+
+  await page.goto('/products');
+  await page.locator('#new-name').fill(name);
+  await page.locator('#new-price').fill('10,00');
+  await page.getByRole('button', { name: 'Crear producto' }).click();
+  await expect(page.getByRole('status')).toContainText(name);
+
+  const before = await till();
+
+  // 5 units at 10.00 = 50.00 out of the till.
+  await page.goto('/purchases');
+  await pickFromCatalog(page, name);
+  await purchaseDraftLine(page).locator('input[aria-label^="Cant"]').fill('5');
+  await expect(page.locator('.sheet .total')).toHaveText(money('50,00'));
+  await page.getByRole('button', { name: /Registrar compra/ }).click();
+  const purchaseId = await recordedDocumentId(page);
+
+  const afterPurchase = await till();
+  expect(before - afterPurchase).toBeCloseTo(50, 2);
+
+  // Back to the day: `till()` navigates to `/accounts` to read the figure, so the
+  // purchases screen has to be re-entered before its slips exist again.
+  await page.goto('/purchases');
+
+  // Return 2 of the 5: 20.00 comes back. The flow is the two-step confirm the
+  // credit note established, driven from inside the opened document.
+  const doc = purchaseSlip(page, purchaseId);
+  await expect(doc).toHaveCount(1);
+  await doc.click();
+  const detail = purchaseSlipDetail(page, purchaseId);
+  await expect(detail).toHaveCount(1);
+  const returnField = detail.locator('input[aria-label^="Cantidad a devolver"]').first();
+  await expect(returnField).toHaveValue('5');
+  await returnField.fill('2');
+  await detail.getByRole('button', { name: 'Devolver al proveedor…' }).click();
+  await detail.getByRole('button', { name: 'Sí, devolver' }).click();
+
+  const afterReturn = await till();
+  expect(afterReturn - afterPurchase).toBeCloseTo(20, 2);
 });
