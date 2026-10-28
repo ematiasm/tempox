@@ -390,13 +390,60 @@ user" — satisfied by `expenses.staff_id` (D5a) rather than a `salaries` docume
 latter duplicates the debt mechanism `0023` already paid for. The column is **not** reserved now
 (D5b), and what D5a promises about not touching `payments` is D5c.
 
-L6 (design, from L2's verb "derivar", and the reason it is a spec rather than an
+L9 (design, from L2's verb "derivar", and the reason it is a spec rather than an
 implementation detail): a purchase is **not** copied into `expenses`. Two records of one fact
 is the defect `0017` killed for balances, and `PRODUCT.md` forbids a report justifying a new
 column at write time — so purchases enter the spending report as a derived term (S9) and
 never as rows.
 
-L7 (design, D3/D4): an owed expense is a **party to its own money** (`party_kind='expense'`,
+L10 (design, D3/D4): an owed expense is a **party to its own money** (`party_kind='expense'`,
 `party_id=expenses.id`) rather than a third debt table with a third ceiling function. The
 price — one payment answers one expense — is L4's mirror left unbuilt on purpose, and it is
 written in D4 rather than left to be discovered.
+
+L11 (evidence, E1-T1 delivered as `7593c16`): `expense_categories` with its six-row seed, the
+delete and truncate guards, and `GET`/`POST`/`PATCH`. RED first — all four tests answered
+`404` before the route existed. Both guards proven to bite by neutering: removing the trim
+made the trim assertion fail, and replacing the delete trigger's `RAISE EXCEPTION` with
+`RETURN NULL` let the `DELETE` succeed. 161 integration tests, 67 unit.
+
+**The migration is `0002`, not a section appended to `0001`, and the reason is measured.**
+`0001` is the squashed chain and is already applied: sqlx keys a migration by version *and*
+checksum, so editing it either fails on every existing database or silently skips the new SQL
+on one that recorded version 1. Confirmed with `select version, description from
+_sqlx_migrations` → exactly `(1, schema)`.
+
+L12 (review `review-32b53a14e35954c8`, approved, authority burned): tier medium, lenses `risk`
++ `reliability`, 2 reviewers, 4 non-blocking findings. **`R3-001` was a real hole and it was
+reachable**: `0002`'s non-blank CHECK used `btrim(name)`, whose default trim set is a single
+space, so `INSERT ... VALUES (E'\t')` succeeded while the route refused it (Rust's `str::trim`
+removes the whole `char::is_whitespace` set). The two layers disagreed, which is the one thing
+that file's own comment promised they would not. Measured both directions before fixing:
+`btrim(E'\t\n') = ''` → false, `btrim(E'\t\n', E' \t\n\r\f\v') = ''` → true.
+The other three were test gaps, passing before the fix and therefore confirming the diagnosis.
+Fixed in `961a00d` with four RED-first tests; the whitespace one failed genuinely first.
+
+L13 (review `review-63c8b89cb1e8f768`, approved after one bounded correction): this is the
+review of the *fix*, and it found **`R3-001` CRITICAL, `deterministic`, `introduced`**: the
+final assertion in `0003` read `count(*) = 6`, which is true only on a database that has never
+had a category created — so any installation where the shop had added its own category could
+never apply a security fix. Measured on disposable databases: with `0002` plus a `Fletes` row,
+the committed `0003` answered `ERROR: expected the 6 seeded expense categories, found 7`,
+while the corrected one applied cleanly. Fixed in `9da1939`; the assertion now counts **the
+six seeded names**, which is the property it owed all along. Validator: `original_criteria`
+passed, `correction_regression` passed.
+
+L14 (debt carried out of `review-63c8b89cb1e8f768`, both excluded from its correction plan and
+recorded here so they are not lost):
+
+- **`R3-002` — the pre-check's diagnostic is unreachable.** `0003` adds the stricter `CHECK`
+  *before* the `DO` block that promises a readable message for pre-existing whitespace-only
+  names. PostgreSQL validates the new `CHECK` during `ALTER TABLE`, so on such a database the
+  migration aborts there and the custom diagnostic never emits. The remedy message is a promise
+  the file cannot keep. Correct shape: run the pre-check first, then the `ALTER`.
+- **`R3-003` — the trim set is ASCII, Rust's is Unicode.** The `CHECK` trims
+  `E' \t\n\r\f\v'`, while `str::trim` also removes U+00A0 and the rest of
+  `char::is_whitespace`. Measured: `btrim(U&'\00A0', E' \t\n\r\f\v') = ''` → **false**, and
+  `"\u{a0}".trim().is_empty()` → **true**. So a name of one non-breaking space still passes the
+  database guard and is refused by the route — the same disagreement `R3-001` fixed for ASCII,
+  left standing for Unicode. Both are informational and neither blocks delivery.
