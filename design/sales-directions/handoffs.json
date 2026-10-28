@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "chosen": "03-receipt-pad.html",
+  "handoffs": {
+    "03-receipt-pad.html": {
+      "status": "in_progress",
+      "queued": false,
+      "sentAt": "2026-10-28T00:54:04.134Z",
+      "startedAt": "2026-10-28T00:54:14.496Z",
+      "implementedAt": null,
+      "note": "Mapping the receipt-pad artboard onto the real Svelte components: /sales shell, SaleDraft, Ledger."
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "title": "Sales screen — three directions",
+  "brief": "Redesign /sales of Tempox, a two-person shop's bookkeeping app, after the impeccable toolchain was retired. Same palette, same components, three different composition strategies; the current world ('The Computed Account Statement') is treated as an anti-reference, not authority.",
+  "artboards": [
+    {
+      "file": "01-statement-spine.html",
+      "title": "El libro es la página",
+      "tradeoff": "Best for reading and explaining the day: one document and one action, with the running balance in a gutter that never scrolls. During a burst of sales the draft is a strip rather than a workspace.",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "file": "02-counter-desk.html",
+      "title": "La mano izquierda es el contador",
+      "tradeoff": "Fastest for the cashier and honest about who the page is for; the balance leaves the table for a fixed margin track. Spends width on the gutter and the narrow left column punishes long product names.",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "file": "03-receipt-pad.html",
+      "title": "El borrador es el comprobante",
+      "tradeoff": "Most legible per document and the most honest about what is being written; no table anywhere. Scanning a day of thirty slips is slower than thirty rows, and long names wrap.",
+      "width": 1440,
+      "height": 900
+    }
+  ]
+}

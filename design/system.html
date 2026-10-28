@@ -1,0 +1,1069 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tempox — design system</title>
+    <style>
+      /* The system board. Every value here is read from the project's sources
+         (see design/system.md) and rendered through the same token names the
+         app uses, so the board and the app cannot drift by accident.
+
+         One deliberate difference: the app serves IBM Plex from local woff2
+         files, and this board may not reference any external URL and carries no
+         font files of its own. So the figure face falls back to the stack
+         declared after 'Plex Condensed' in app.css. Metrics differ; the
+         hierarchy, tracking, tabular alignment and color do not. */
+      :root {
+        --ground: #fbfcfd;
+        --surface: #ffffff;
+        --rule: #e8ecf1;
+        --rule-strong: #c3ccd6;
+        --ink: #12212e;
+        --ink-soft: #5f6f7d;
+        --accent: #0b5f8a;
+        --state-void: #a33227;
+        --state-pending: #8a6410;
+
+        --font-figure: ui-sans-serif, system-ui, sans-serif;
+        --font-text: ui-sans-serif, system-ui, -apple-system, sans-serif;
+
+        --step--1: 0.75rem;
+        --step-0: 0.8125rem;
+        --step-1: 0.875rem;
+        --step-2: 1rem;
+        --step-3: 1.25rem;
+        --step-4: 1.75rem;
+        --step-5: 2.375rem;
+
+        --radius: 2px;
+        --panel-radius: 8px;
+        --panel-gap: 24px;
+        --rail-w: 88px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        font-size: 100%;
+      }
+
+      html,
+      body {
+        background: var(--ground);
+        color: var(--ink);
+        font-family: var(--font-text);
+        line-height: 1.45;
+        -webkit-font-smoothing: antialiased;
+        margin: 0;
+      }
+
+      body {
+        font-size: var(--step-1);
+        width: 1440px;
+        padding: 28px 32px 48px;
+      }
+
+      ::selection {
+        background: rgb(11 95 138 / 0.16);
+        color: var(--ink);
+      }
+
+      :focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+        border-radius: 2px;
+      }
+
+      .figures {
+        font-family: var(--font-figure);
+        font-variant-numeric: tabular-nums;
+        font-feature-settings: 'tnum' 1;
+      }
+
+      .label {
+        font-family: var(--font-figure);
+        font-size: var(--step-0);
+        font-weight: 600;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--ink-soft);
+      }
+
+      h1 {
+        font-family: var(--font-figure);
+        font-size: var(--step-4);
+        font-weight: 600;
+        line-height: 1.1;
+        letter-spacing: -0.01em;
+        margin: 0;
+      }
+
+      .lede {
+        color: var(--ink-soft);
+        margin: 6px 0 0;
+        max-width: 70ch;
+      }
+
+      h2 {
+        font-family: var(--font-figure);
+        font-size: var(--step-3);
+        font-weight: 600;
+        line-height: 1.15;
+        margin: 0 0 2px;
+      }
+
+      .sect-note {
+        color: var(--ink-soft);
+        font-size: var(--step-0);
+        margin: 0 0 14px;
+      }
+
+      section {
+        margin-top: 34px;
+        padding-top: 22px;
+        border-top: 1px solid var(--rule);
+      }
+
+      /* ---------- palette ---------- */
+      .swatches {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: var(--panel-gap);
+      }
+
+      .swatch {
+        background: var(--surface);
+        border: 1px solid var(--rule);
+        border-radius: var(--panel-radius);
+        overflow: hidden;
+      }
+
+      .chip {
+        height: 72px;
+        border-bottom: 1px solid var(--rule);
+      }
+
+      .swatch-body {
+        padding: 10px 12px 12px;
+      }
+
+      .swatch-name {
+        font-family: var(--font-figure);
+        font-weight: 600;
+        font-size: var(--step-1);
+      }
+
+      .swatch-ok {
+        letter-spacing: 0.04em;
+      }
+
+      .swatch-use {
+        color: var(--ink-soft);
+        font-size: var(--step--1);
+        margin-top: 4px;
+      }
+
+      /* ---------- type ---------- */
+      .scale {
+        display: grid;
+        grid-template-columns: 132px 1fr 116px;
+        row-gap: 10px;
+        align-items: baseline;
+        background: var(--surface);
+        border: 1px solid var(--rule);
+        border-radius: var(--panel-radius);
+        padding: 16px 18px;
+      }
+
+      .scale-token {
+        font-family: var(--font-figure);
+        font-size: var(--step-0);
+        color: var(--ink-soft);
+        letter-spacing: 0.06em;
+      }
+
+      .scale-px {
+        font-family: var(--font-figure);
+        font-size: var(--step--1);
+        color: var(--ink-soft);
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .fig-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: var(--panel-gap);
+        margin-top: var(--panel-gap);
+      }
+
+      .fig-demo {
+        background: var(--surface);
+        border: 1px solid var(--rule);
+        border-radius: var(--panel-radius);
+        padding: 14px 16px;
+      }
+
+      .fig-line {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 6px 0;
+        border-bottom: 1px solid var(--rule);
+      }
+
+      .fig-line:last-child {
+        border-bottom: 0;
+      }
+
+      .fig-total {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        padding-top: 10px;
+        margin-top: 6px;
+        border-top: 1px solid var(--rule-strong);
+        font-weight: 700;
+      }
+
+      /* ---------- spacing + radius ---------- */
+      .two-up {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: var(--panel-gap);
+      }
+
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--rule);
+        border-radius: var(--panel-radius);
+        padding: 16px 18px;
+      }
+
+      .bar {
+        height: 12px;
+        background: var(--rule-strong);
+        border-radius: 1px;
+      }
+
+      .space-row {
+        display: grid;
+        grid-template-columns: 110px 1fr 64px;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 10px;
+      }
+
+      .space-name {
+        font-family: var(--font-figure);
+        font-size: var(--step-0);
+        color: var(--ink-soft);
+      }
+
+      .radius-row {
+        display: flex;
+        align-items: flex-end;
+        gap: 26px;
+      }
+
+      .radius-item {
+        text-align: center;
+      }
+
+      .radius-box {
+        width: 92px;
+        height: 62px;
+        background: var(--ground);
+        border: 1px solid var(--rule-strong);
+      }
+
+      .radius-cap {
+        font-family: var(--font-figure);
+        font-size: var(--step--1);
+        color: var(--ink-soft);
+        margin-top: 6px;
+      }
+
+      /* ---------- components ---------- */
+      .comp-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: var(--panel-gap);
+      }
+
+      .panel {
+        background: var(--surface);
+        border: 1px solid var(--rule);
+        border-radius: var(--panel-radius);
+        overflow: hidden;
+        min-width: 0;
+      }
+
+      .panel-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 12px 14px;
+        border-bottom: 1px solid var(--rule);
+      }
+
+      .panel-title {
+        font-family: var(--font-figure);
+        font-size: var(--step-2);
+        font-weight: 600;
+      }
+
+      .panel-body {
+        padding: 14px;
+      }
+
+      .field {
+        margin-bottom: 12px;
+      }
+
+      .control {
+        width: 100%;
+        border: 1px solid var(--rule-strong);
+        background: var(--surface);
+        border-radius: var(--radius);
+        padding: 10px 11px;
+        font-size: var(--step-2);
+        font: inherit;
+        color: inherit;
+        caret-color: var(--accent);
+      }
+
+      .control::placeholder {
+        color: var(--ink-soft);
+      }
+
+      .control:disabled {
+        background: var(--ground);
+        color: var(--ink-soft);
+      }
+
+      .do {
+        width: 100%;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        background: var(--ink);
+        color: var(--surface);
+        border: 1px solid var(--ink);
+        border-radius: var(--radius);
+        padding: 12px 18px;
+        font-family: var(--font-figure);
+        font-size: var(--step-2);
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        cursor: pointer;
+      }
+
+      .do:hover:not(:disabled) {
+        background: #0a1622;
+      }
+
+      .do:disabled {
+        background: var(--surface);
+        color: var(--ink-soft);
+        border: 1px dashed var(--rule-strong);
+        cursor: default;
+      }
+
+      .do kbd {
+        font-family: var(--font-text);
+        font-size: var(--step--1);
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        text-transform: none;
+        border: 1px solid currentColor;
+        border-radius: 2px;
+        padding: 1px 5px;
+        opacity: 0.75;
+      }
+
+      .why {
+        display: block;
+        margin: 0 0 8px;
+        font-size: var(--step--1);
+        color: var(--ink-soft);
+        text-align: center;
+      }
+
+      /* document state: text plus a 2px tick */
+      .state {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-family: var(--font-figure);
+        font-size: var(--step--1);
+        font-weight: 600;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--ink);
+        white-space: nowrap;
+      }
+
+      .state .tick {
+        width: 2px;
+        height: 12px;
+        background: currentColor;
+        flex-shrink: 0;
+      }
+
+      .state.void {
+        color: var(--state-void);
+      }
+
+      .state.pending {
+        color: var(--state-pending);
+      }
+
+      .state-row {
+        display: flex;
+        gap: 22px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+
+      /* ledger sample */
+      .mini-ledger {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: var(--step-1);
+      }
+
+      .mini-ledger th {
+        font-family: var(--font-figure);
+        font-size: var(--step--1);
+        font-weight: 600;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--ink-soft);
+        text-align: left;
+        padding: 0 8px 8px;
+        border-bottom: 1px solid var(--rule-strong);
+      }
+
+      .mini-ledger td {
+        padding: 9px 8px;
+        border-bottom: 1px solid var(--rule);
+        vertical-align: baseline;
+      }
+
+      .mini-ledger .num {
+        text-align: right;
+      }
+
+      .mini-ledger .balance {
+        color: var(--accent);
+        font-family: var(--font-figure);
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+        border-right: 1px solid var(--rule);
+        white-space: nowrap;
+      }
+
+      .mini-ledger tr.annulled td {
+        color: var(--ink-soft);
+      }
+
+      .mini-ledger tr.annulled .struck {
+        text-decoration: line-through;
+      }
+
+      /* rail sample */
+      .rail-demo {
+        display: grid;
+        grid-template-columns: var(--rail-w) 1fr;
+        border: 1px solid var(--rule);
+        border-radius: var(--panel-radius);
+        overflow: hidden;
+        background: var(--ground);
+        min-height: 262px;
+      }
+
+      .rail {
+        border-right: 1px solid var(--rule);
+        display: flex;
+        flex-direction: column;
+      }
+
+      .brand {
+        font-family: var(--font-figure);
+        font-weight: 700;
+        font-size: 14px;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        padding: 18px 0 18px;
+        color: var(--ink);
+        text-align: center;
+      }
+
+      .tab {
+        display: block;
+        font-family: var(--font-figure);
+        font-size: var(--step--1);
+        font-weight: 600;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        text-align: center;
+        padding: 11px 0;
+        color: var(--ink-soft);
+        border-left: 3px solid transparent;
+        text-decoration: none;
+      }
+
+      .tab.active {
+        color: var(--accent);
+        border-left-color: var(--accent);
+      }
+
+      .rail-foot {
+        margin-top: auto;
+        padding: 12px 0 14px;
+        border-top: 1px solid var(--rule);
+        text-align: center;
+        display: grid;
+        gap: 8px;
+      }
+
+      .lang {
+        background: none;
+        border: 1px solid var(--rule-strong);
+        border-radius: var(--radius);
+        color: var(--ink-soft);
+        font-family: var(--font-figure);
+        font-size: var(--step--1);
+        font-weight: 600;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        padding: 5px 0;
+        margin: 0 auto;
+        width: 58px;
+      }
+
+      .version {
+        font-family: var(--font-figure);
+        font-size: var(--step--1);
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--ink-soft);
+      }
+
+      .rail-canvas {
+        padding: 18px;
+      }
+
+      /* deviations */
+      .deviations {
+        display: grid;
+        gap: 10px;
+      }
+
+      .deviation {
+        background: var(--surface);
+        border: 1px solid var(--rule);
+        border-left: 3px solid var(--state-pending);
+        border-radius: 0 var(--panel-radius) var(--panel-radius) 0;
+        padding: 12px 16px;
+      }
+
+      .deviation h3 {
+        font-family: var(--font-figure);
+        font-size: var(--step-2);
+        font-weight: 600;
+        margin: 0 0 4px;
+      }
+
+      .deviation p {
+        margin: 0;
+        color: var(--ink-soft);
+        font-size: var(--step-0);
+      }
+
+      .deviation code {
+        font-family: var(--font-figure);
+        color: var(--ink);
+        font-size: var(--step-0);
+      }
+
+      footer {
+        margin-top: 34px;
+        padding-top: 14px;
+        border-top: 1px solid var(--rule);
+        color: var(--ink-soft);
+        font-size: var(--step--1);
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        * {
+          transition: none !important;
+          animation: none !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Tempox — design system</h1>
+      <p class="lede">
+        Synced from <code>frontend/src/</code> on 2026-10-26. Every value below is declared in the
+        project's own sources; nothing here is a proposal. The full inventory, with a source line per
+        entry, is in <code>design/system.md</code>.
+      </p>
+    </header>
+
+    <section>
+      <h2>Color</h2>
+      <p class="sect-note">
+        One accent, reserved to the running balance and the live destination. State colors never
+        decorate.
+      </p>
+      <div class="swatches">
+        <div class="swatch">
+          <div class="chip" style="background: var(--ground)"></div>
+          <div class="swatch-body">
+            <div class="swatch-name">--ground</div>
+            <div class="swatch-ok figures swatch-px">#fbfcfd</div>
+            <div class="swatch-use">Page background</div>
+          </div>
+        </div>
+        <div class="swatch">
+          <div class="chip" style="background: var(--surface)"></div>
+          <div class="swatch-body">
+            <div class="swatch-name">--surface</div>
+            <div class="swatch-ok figures">#ffffff</div>
+            <div class="swatch-use">Work panels, control surfaces</div>
+          </div>
+        </div>
+        <div class="swatch">
+          <div class="chip" style="background: var(--rule)"></div>
+          <div class="swatch-body">
+            <div class="swatch-name">--rule</div>
+            <div class="swatch-ok figures">#e8ecf1</div>
+            <div class="swatch-use">Panel borders, row separators</div>
+          </div>
+        </div>
+        <div class="swatch">
+          <div class="chip" style="background: var(--rule-strong)"></div>
+          <div class="swatch-body">
+            <div class="swatch-name">--rule-strong</div>
+            <div class="swatch-ok figures">#c3ccd6</div>
+            <div class="swatch-use">Control borders, scrollbar thumb</div>
+          </div>
+        </div>
+        <div class="swatch">
+          <div class="chip" style="background: var(--ink)"></div>
+          <div class="swatch-body">
+            <div class="swatch-name">--ink</div>
+            <div class="swatch-ok figures">#12212e</div>
+            <div class="swatch-use">Text, confirmed state, primary fill</div>
+          </div>
+        </div>
+        <div class="swatch">
+          <div class="chip" style="background: var(--ink-soft)"></div>
+          <div class="swatch-body">
+            <div class="swatch-name">--ink-soft</div>
+            <div class="swatch-ok figures">#5f6f7d</div>
+            <div class="swatch-use">Secondary text, labels · 5.04:1 on ground</div>
+          </div>
+        </div>
+        <div class="swatch">
+          <div class="chip" style="background: var(--accent)"></div>
+          <div class="swatch-body">
+            <div class="swatch-name">--accent</div>
+            <div class="swatch-ok figures">#0b5f8a</div>
+            <div class="swatch-use">Running balance, active destination, focus</div>
+          </div>
+        </div>
+        <div class="swatch">
+          <div class="chip" style="background: var(--state-void)"></div>
+          <div class="swatch-body">
+            <div class="swatch-name">--state-void</div>
+            <div class="swatch-ok figures">#a33227</div>
+            <div class="swatch-use">Annulled, refunded</div>
+          </div>
+        </div>
+        <div class="swatch">
+          <div class="chip" style="background: var(--state-pending)"></div>
+          <div class="swatch-body">
+            <div class="swatch-name">--state-pending</div>
+            <div class="swatch-ok figures">#8a6410</div>
+            <div class="swatch-use">Pending document</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Type scale</h2>
+      <p class="sect-note">
+        Condensed Plex carries figures, labels and headings; Plex Text carries prose. This board has
+        no font files and may not fetch any, so it renders the declared fallback stack. The app
+        serves Plex from <code>@fontsource</code> woff2 files.
+      </p>
+      <div class="scale">
+        <div class="scale-token">--step--1</div>
+        <div class="figures" style="font-size: var(--step--1)">
+          Caja — todas las ventas confirmadas
+        </div>
+        <div class="scale-px">12px</div>
+
+        <div class="scale-token">--step-0</div>
+        <div class="figures" style="font-size: var(--step-0)">
+          Cada venta es un comprobante
+        </div>
+        <div class="scale-px">13px</div>
+
+        <div class="scale-token">--step-1 · body</div>
+        <div style="font-size: var(--step-1); font-family: var(--font-text)">
+          El stock y la caja se actualizan juntos, desde una sola carga
+        </div>
+        <div class="scale-px">14px</div>
+
+        <div class="scale-token">--step-2</div>
+        <div class="figures" style="font-size: var(--step-2)">Venta nueva</div>
+        <div class="scale-px">16px</div>
+
+        <div class="scale-token">--step-3</div>
+        <div class="figures" style="font-size: var(--step-3); font-weight: 600">
+          Libro de ventas
+        </div>
+        <div class="scale-px">20px</div>
+
+        <div class="scale-token">--step-4</div>
+        <div class="figures" style="font-size: var(--step-4); font-weight: 600">
+          Registrar venta
+        </div>
+        <div class="scale-px">28px</div>
+
+        <div class="scale-token">--step-5</div>
+        <div class="figures" style="font-size: var(--step-5); font-weight: 600">
+          $ 1.234,56
+        </div>
+        <div class="scale-px">38px</div>
+      </div>
+
+      <div class="fig-row">
+        <div class="fig-demo">
+          <div class="label" style="margin-bottom: 8px">Tabular figures align</div>
+          <div class="fig-line">
+            <span>Comprobante 0001</span>
+            <span class="figures">$ 1.234,50</span>
+          </div>
+          <div class="fig-line">
+            <span>Comprobante 0002</span>
+            <span class="figures">$ 98,00</span>
+          </div>
+          <div class="fig-line">
+            <span>Comprobante 0003</span>
+            <span class="figures">$ 12.000,00</span>
+          </div>
+          <div class="fig-total figures">
+            <span>Suma del período</span>
+            <span>$ 13.332,50</span>
+          </div>
+        </div>
+        <div class="fig-demo">
+          <div class="label" style="margin-bottom: 8px">Label voice</div>
+          <p style="margin: 0 0 10px; color: var(--ink-soft); font-size: var(--step-0)">
+            Labels are condensed, 600, uppercase, tracked at <code>0.12em</code>, and carry the
+            tracking rather than the weight. They sit beside a heading, never above it.
+          </p>
+          <div style="display: flex; gap: 10px; flex-wrap: wrap">
+            <span class="label">Total en vivo</span>
+            <span class="label">Período</span>
+            <span class="label">Saldo</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Spacing and radius</h2>
+      <p class="sect-note">
+        Separation between two work areas is the panel's border plus a 24px gap — never whitespace
+        alone. The rail is the page's margin, not a filled slab.
+      </p>
+      <div class="two-up">
+        <div class="card">
+          <div class="space-row">
+            <span class="space-name">--rail-w</span>
+            <div class="bar" style="width: 88px"></div>
+            <span class="space-name figures" style="text-align: right">88px</span>
+          </div>
+          <div class="space-row">
+            <span class="space-name">--panel-gap</span>
+            <div class="bar" style="width: 24px"></div>
+            <span class="space-name figures" style="text-align: right">24px</span>
+          </div>
+          <div class="space-row">
+            <span class="space-name">control</span>
+            <div class="bar" style="width: 10px"></div>
+            <span class="space-name figures" style="text-align: right">10px</span>
+          </div>
+          <div class="space-row">
+            <span class="space-name">control</span>
+            <div class="bar" style="width: 11px"></div>
+            <span class="space-name figures" style="text-align: right">11px</span>
+          </div>
+          <div class="space-row" style="margin-bottom: 0">
+            <span class="space-name">action</span>
+            <div class="bar" style="width: 18px"></div>
+            <span class="space-name figures" style="text-align: right">12/18</span>
+          </div>
+        </div>
+        <div class="card">
+          <div class="radius-row">
+            <div class="radius-item">
+              <div class="radius-box" style="border-radius: 2px"></div>
+              <div class="radius-cap">2px · control</div>
+            </div>
+            <div class="radius-item">
+              <div class="radius-box" style="border-radius: 4px"></div>
+              <div class="radius-cap">4px · joined edge</div>
+            </div>
+            <div class="radius-item">
+              <div class="radius-box" style="border-radius: 8px"></div>
+              <div class="radius-cap">8px · panel</div>
+            </div>
+          </div>
+          <p style="margin: 16px 0 0; font-size: var(--step-0); color: var(--ink-soft)">
+            4px belongs to an element that meets another edge on one side and closes on the other:
+            a table foot continuing a header strip. It is not a third control size.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Components</h2>
+      <p class="sect-note">
+        Fields, the primary action, document state, the ledger row and the rail — as built.
+      </p>
+
+      <div class="comp-grid">
+        <div class="panel">
+          <div class="panel-head">
+            <span class="panel-title">Fields</span>
+            <span class="label">2px · strong rule</span>
+          </div>
+          <div class="panel-body">
+            <div class="field">
+              <div class="label" style="margin-bottom: 6px">Producto</div>
+              <input class="control" placeholder="Buscar por nombre…" />
+            </div>
+            <div class="field">
+              <div class="label" style="margin-bottom: 6px">Total en vivo</div>
+              <input
+                class="control figures"
+                style="text-align: right"
+                value="$ 1.234,56"
+                aria-label="Total en vivo"
+              />
+            </div>
+            <div class="field" style="margin-bottom: 0">
+              <div class="label" style="margin-bottom: 6px">Disabled</div>
+              <input class="control" placeholder="Sin datos" disabled />
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <span class="panel-title">Primary action</span>
+            <span class="label">Ink fill</span>
+          </div>
+          <div class="panel-body">
+            <span class="why">Agregá un producto para poder registrar</span>
+            <button class="do" disabled>Registrar venta <kbd>F2</kbd></button>
+            <div style="height: 12px"></div>
+            <button class="do">Registrar venta <kbd>F2</kbd></button>
+            <p style="margin: 12px 0 0; font-size: var(--step--1); color: var(--ink-soft)">
+              Never the accent as fill: the accent belongs to the running balance.
+            </p>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <span class="panel-title">Document state</span>
+            <span class="label">Text + 2px tick</span>
+          </div>
+          <div class="panel-body">
+            <div class="state-row">
+              <span class="state"><span class="tick" aria-hidden="true"></span>Confirmada</span>
+              <span class="state void"
+                ><span class="tick" aria-hidden="true"></span>Anulada</span
+              >
+              <span class="state pending"
+                ><span class="tick" aria-hidden="true"></span>Pendiente</span
+              >
+            </div>
+            <p style="margin: 14px 0 0; font-size: var(--step--1); color: var(--ink-soft)">
+              Never a filled pill. Confirmed stays quiet in ink; the word is the state and the tick
+              is decorative.
+            </p>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <span class="panel-title">Shadows</span>
+            <span class="label">Floating layers only</span>
+          </div>
+          <div class="panel-body">
+            <div
+              style="
+                background: var(--surface);
+                border: 1px solid var(--rule);
+                border-radius: var(--panel-radius);
+                box-shadow: 0 14px 30px -14px rgb(21 22 28 / 0.45);
+                padding: 12px 14px;
+                font-size: var(--step-0);
+              "
+            >
+              Product picker dropdown<br />
+              <span class="figures" style="color: var(--ink-soft); font-size: var(--step--1)"
+                >0 14px 30px -14px</span
+              >
+            </div>
+            <p style="margin: 14px 0 0; font-size: var(--step--1); color: var(--ink-soft)">
+              Work panels are flat. Their separation is the border, never a shadow.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top: var(--panel-gap)">
+        <div class="panel-head">
+          <span class="panel-title">Ledger row</span>
+          <span class="label">Running balance in the left margin</span>
+        </div>
+        <div class="panel-body">
+          <table class="mini-ledger">
+            <thead>
+              <tr>
+                <th scope="col">Saldo</th>
+                <th scope="col">Hora</th>
+                <th scope="col">Venta</th>
+                <th scope="col">Cliente</th>
+                <th scope="col">Estado</th>
+                <th scope="col" class="num">Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="balance">$ 13.332,50</td>
+                <td class="figures">11:42</td>
+                <td class="figures">0003</td>
+                <td>Consumidor Final</td>
+                <td><span class="state"><span class="tick"></span>Confirmada</span></td>
+                <td class="num figures">$ 12.000,00</td>
+              </tr>
+              <tr>
+                <td class="balance">$ 1.332,50</td>
+                <td class="figures">10:15</td>
+                <td class="figures">0002</td>
+                <td>Marta Quiroga</td>
+                <td><span class="state"><span class="tick"></span>Confirmada</span></td>
+                <td class="num figures">$ 98,00</td>
+              </tr>
+              <tr class="annulled">
+                <td class="balance struck">$ 1.234,50</td>
+                <td class="figures">09:03</td>
+                <td class="figures">0001</td>
+                <td>Consumidor Final</td>
+                <td><span class="state void"><span class="tick"></span>Anulada</span></td>
+                <td class="num figures struck">$ 1.234,50</td>
+              </tr>
+            </tbody>
+          </table>
+          <p style="margin: 12px 0 0; font-size: var(--step--1); color: var(--ink-soft)">
+            An annulled row strikes through its amount and the balance it inherited; a cancellation
+            does not add money to the running balance.
+          </p>
+        </div>
+      </div>
+
+      <div class="rail-demo" style="margin-top: var(--panel-gap)">
+        <nav class="rail" aria-label="Sample navigation">
+          <div class="brand">Tempox</div>
+          <a class="tab active" href="#components" aria-current="page">Ventas</a>
+          <a class="tab" href="#components">Compras</a>
+          <a class="tab" href="#components">Productos</a>
+          <a class="tab" href="#components">Cuentas</a>
+          <a class="tab" href="#components">Clientes</a>
+          <a class="tab" href="#components">Proveedores</a>
+          <div class="rail-foot">
+            <button class="lang" type="button">EN</button>
+            <span class="version">v3</span>
+          </div>
+        </nav>
+        <div class="rail-canvas">
+          <div class="label" style="margin-bottom: 8px">Navigation</div>
+          <p style="margin: 0; color: var(--ink-soft); max-width: 46ch">
+            The rail is the page's margin: transparent against the ground, separated by a 1px rule,
+            with the active destination carried by accent text and a 3px left rule. Not a filled
+            block — a block would compete with the day's figures for the eye.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Deviations found while syncing</h2>
+      <p class="sect-note">
+        The sync records what the code does; it does not silently fix it. These three are real and
+        worth a decision.
+      </p>
+      <div class="deviations">
+        <div class="deviation">
+          <h3>Undefined custom properties on /accounts</h3>
+          <p>
+            <code>accounts/+page.svelte</code> asks for <code>var(--figure)</code>,
+            <code>var(--rounded-control)</code> and <code>var(--rounded-panel)</code>. None is
+            declared anywhere. The v3 screen therefore renders its figures in the prose face and its
+            controls and panel with square corners, while every other screen uses condensed figures
+            and 2px/8px. The intended tokens are <code>--font-figure</code>, <code>--radius</code>
+            and <code>--panel-radius</code>.
+          </p>
+        </div>
+        <div class="deviation">
+          <h3>The previous world's colors survive as raw rgb() values</h3>
+          <p>
+            <code>DESIGN.md</code> forbids reintroducing the old token names. The names are gone; the
+            values are not. Indigo <code>rgb(43 49 98 / …)</code> and crimson
+            <code>rgb(168 27 42 / …)</code> still paint rows in <code>Catalog.svelte</code>,
+            <code>SaleDraft.svelte</code>, <code>Ledger.svelte</code> and
+            <code>ProductPicker.svelte</code>, alongside <code>#f2f6fa</code>,
+            <code>#084a6c</code> and <code>#f2efe6</code>.
+          </p>
+        </div>
+        <div class="deviation">
+          <h3>Row tints have no token to ask for</h3>
+          <p>
+            Those low-alpha tints are not declared anywhere, so a surface that needs a tinted row
+            cannot request one by name and reaches for a literal instead. This is the mechanism that
+            produced the deviation above.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <footer>
+      Sources: <code>frontend/src/app.css</code>, <code>frontend/src/routes/+layout.svelte</code>,
+      <code>frontend/src/routes/sales/+page.svelte</code>,
+      <code>frontend/src/lib/components/Stamp.svelte</code> and the component style blocks listed in
+      <code>design/system.md</code>. Fonts: the app's local Plex woff2 files; this board renders the
+      declared fallback stack because it may not reference an external URL.
+    </footer>
+  </body>
+</html>
