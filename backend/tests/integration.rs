@@ -12157,3 +12157,215 @@ async fn v5_s4_a_collection_racing_a_committed_settlement_reads_the_current_stat
         "the refused collection recorded no money: {account}"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v4-expenses E1-T1 — a category is a row, never a closed set
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// `odd/tasks/v4-expenses.md` S1, S10 and S11. The claim these tests pin is the one
+// `D2` argues: adding a category is an `INSERT`, never a migration — so the shape
+// under test is a table with a seed, not a `CHECK` with a member list.
+
+#[sqlx::test]
+async fn v4_expenses_the_seeded_categories_are_listed_with_their_names(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+
+    let listed = client.get("/api/expense-categories").await;
+    listed.expect_status(axum::http::StatusCode::OK);
+
+    let categories = listed.json().as_array().expect("an array of categories");
+    assert!(
+        categories.len() >= 6,
+        "the six seeded categories: {listed:?}"
+    );
+
+    // **Found by name, never by position.** `v5-customer-account.md` V2b records this
+    // repository passing for the wrong row three times through a count or an index; the
+    // seed's names are the identity, and the array order is not a contract.
+    let names: Vec<&str> = categories
+        .iter()
+        .map(|row| row["name"].as_str().expect("a category name"))
+        .collect();
+    for expected in [
+        "Alquiler",
+        "Sueldos",
+        "Servicios",
+        "Mantenimiento",
+        "Impuestos",
+        "Otros",
+    ] {
+        assert!(
+            names.contains(&expected),
+            "the seed must carry {expected}: {names:?}"
+        );
+    }
+
+    // Every category the API hands out is complete, because a picker renders it
+    // directly and a missing field would be a blank row with no error.
+    for row in categories {
+        assert!(row["id"].is_string(), "a category has an id: {row}");
+        assert_eq!(row["is_active"], true, "the seed is active: {row}");
+        assert!(
+            row["created_at"].is_string(),
+            "a category has a creation instant"
+        );
+    }
+}
+
+#[sqlx::test]
+async fn v4_expenses_creating_a_category_is_an_insert_and_a_duplicate_or_blank_is_refused(
+    pool: sqlx::PgPool,
+) {
+    let client = common::client(pool.clone());
+
+    // The positive case first, and it is the whole point of `D2`: a new category the
+    // shop invents today must be storable without touching the schema.
+    let created = client
+        .post(
+            "/api/expense-categories",
+            serde_json::json!({ "name": "  Publicidad  " }),
+        )
+        .await;
+    assert_eq!(created.status(), axum::http::StatusCode::CREATED);
+    assert_eq!(
+        created.body["name"], "Publicidad",
+        "the name is trimmed before it is stored"
+    );
+    assert_eq!(created.body["is_active"], true);
+
+    // It is really there, read back through the list and found by name.
+    let listed = client.get("/api/expense-categories").await;
+    let names: Vec<&str> = listed
+        .json()
+        .as_array()
+        .expect("an array")
+        .iter()
+        .map(|row| row["name"].as_str().expect("a name"))
+        .collect();
+    assert!(
+        names.contains(&"Publicidad"),
+        "the new category is listed: {names:?}"
+    );
+
+    let duplicate = client
+        .post(
+            "/api/expense-categories",
+            serde_json::json!({ "name": "Publicidad" }),
+        )
+        .await;
+    assert_eq!(
+        duplicate.status(),
+        axum::http::StatusCode::CONFLICT,
+        "names are globally unique, so a picker never offers two entries the shop cannot tell apart"
+    );
+
+    let blank = client
+        .post(
+            "/api/expense-categories",
+            serde_json::json!({ "name": "   " }),
+        )
+        .await;
+    assert_eq!(
+        blank.status(),
+        axum::http::StatusCode::BAD_REQUEST,
+        "a name of spaces is empty"
+    );
+
+    // **The refusals wrote nothing.** A 409 that left a row behind would be a category
+    // nobody asked for, and the two counts below are the assertion that says so.
+    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM expense_categories")
+        .fetch_one(&pool)
+        .await
+        .expect("count categories");
+    assert_eq!(total, 7, "six seeded plus exactly one created");
+}
+
+#[sqlx::test]
+async fn v4_expenses_a_category_is_retired_not_deleted_and_the_ledger_still_reads_it(
+    pool: sqlx::PgPool,
+) {
+    let client = common::client(pool.clone());
+
+    let created = client
+        .post(
+            "/api/expense-categories",
+            serde_json::json!({ "name": "Fletes" }),
+        )
+        .await;
+    assert_eq!(created.status(), axum::http::StatusCode::CREATED);
+    let id = created.body["id"].as_str().expect("an id").to_string();
+
+    // Retiring is a `PATCH`, exactly as `payment_methods.is_active` is.
+    let retired = client
+        .patch(
+            &format!("/api/expense-categories/{id}"),
+            serde_json::json!({ "is_active": false }),
+        )
+        .await;
+    retired.expect_status(axum::http::StatusCode::OK);
+    assert_eq!(retired.body["is_active"], false);
+
+    // **Retired is not gone.** `GET` returns it, for the reason S10 gives: a ledger
+    // rendering a historical expense needs the name of a category retired afterwards.
+    // `GET /api/payment-methods` makes the same choice for the same reason.
+    let listed = client.get("/api/expense-categories").await;
+    let retired_row = listed
+        .json()
+        .as_array()
+        .expect("an array")
+        .iter()
+        .find(|row| row["id"] == serde_json::json!(id))
+        .unwrap_or_else(|| panic!("a retired category is still listed: {listed:?}"));
+    assert_eq!(retired_row["is_active"], false);
+    assert_eq!(retired_row["name"], "Fletes", "its name is still readable");
+
+    // And it cannot be deleted at any price: the row is history the moment an expense
+    // names it, and `is_active` is how a category stops being offered.
+    let deleted = sqlx::query("DELETE FROM expense_categories WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(&id).expect("uuid"))
+        .execute(&pool)
+        .await;
+    assert!(
+        deleted.is_err(),
+        "a category cannot be deleted: is_active is how a category is retired"
+    );
+}
+
+#[sqlx::test]
+async fn v4_expenses_patching_a_category_with_nothing_to_change_is_refused(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+
+    // The same rule `v3_t0_patch_with_nothing_to_change_is_refused` pins for accounts:
+    // an empty body is a `200` that changed nothing while looking like it did.
+    let empty = client
+        .patch(
+            "/api/expense-categories/00000000-0000-0000-0000-0000000000f1",
+            serde_json::json!({}),
+        )
+        .await;
+    assert!(
+        empty.status().is_client_error(),
+        "an empty patch is refused before the id is even resolved; got {}",
+        empty.status()
+    );
+
+    let missing = client
+        .patch(
+            "/api/expense-categories/00000000-0000-0000-0000-0000000000ff",
+            serde_json::json!({ "is_active": false }),
+        )
+        .await;
+    assert_eq!(missing.status(), axum::http::StatusCode::NOT_FOUND);
+
+    let blank = client
+        .patch(
+            "/api/expense-categories/00000000-0000-0000-0000-0000000000f1",
+            serde_json::json!({ "name": "  " }),
+        )
+        .await;
+    assert_eq!(
+        blank.status(),
+        axum::http::StatusCode::BAD_REQUEST,
+        "a rename to spaces is refused for the same reason a creation is"
+    );
+}
