@@ -69,6 +69,37 @@ deciding whether to merge the drafts instead: a purchase could be recorded twice
 by any caller that was not the button (two purchases, stock up twice, till down
 twice), and the screen advertised an `F2` shortcut that no handler listened for.
 
+## Opened
+
+| PR | Branch | Base | Diff | Checks |
+|---|---|---|---|---|
+| [#104](https://github.com/ematiasm/tempox/pull/104) | `design/receipt-pad-slice/docs` | `main` | +4132/−42, 18 files | running |
+| [#105](https://github.com/ematiasm/tempox/pull/105) | `design/receipt-pad-slice/sales` | `…/docs` | +941/−864, 7 files | running |
+| [#106](https://github.com/ematiasm/tempox/pull/106) | `design/receipt-pad-slice/purchases` | `…/sales` | +1224/−712, 10 files | running |
+
+Every diff was checked for pollution before opening: #105 touches no design file
+and no token file, and #106 touches `Ledger.svelte` and `sale.spec.ts` only because
+the shared slip and its mirrored test are genuinely part of that slice.
+
+Each slice was verified green **on its own**, which is what makes the chain
+honest: 33 e2e on #104, 34 on #105, 38 on #106, each with `svelte-check` at 0
+errors 0 warnings and the 263 unit tests passing. A slice that only passes when
+its children are present is not a slice.
+
+Two things were wrong the first time and are worth remembering:
+
+1. The token guard only went green on the last branch, because `Ledger.svelte`
+   and `SaleDraft.svelte` still carried retired literals that PR 2 rewrote
+   anyway. A guard added in an early PR must be satisfied **on that PR**, so the
+   literal cleanup was pulled forward into #104.
+2. Rebuilding the chain by cherry-picking reordered the feature documents and, at
+   one point, left the sales ledger importing a component that only arrives in
+   #106 — which `svelte-check` caught on the intermediate branch, exactly where it
+   should be caught.
+
+Merging order is #104 → #105 → #106, retargeting each child to `main` after its
+parent lands (the flow this repository used for #74 → #75).
+
 ## Out of scope, deliberately
 
 - **Consolidating `SaleDraft` and `PurchaseDraft`.** Their scripts diverge in 308
