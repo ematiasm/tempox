@@ -1,4 +1,4 @@
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 
 /**
  * Finding a spec's own document in a ledger every spec writes to (#52).
@@ -62,4 +62,63 @@ export function money(amount: string): string {
 export function lineTotal(price: string, quantity: number): string {
   const cents = Math.round(Number(price.replace(',', '.')) * 100) * quantity;
   return (cents / 100).toFixed(2).replace('.', ',');
+}
+
+/**
+ * One line in the sale draft, wherever the draft decides to put it.
+ *
+ * The draft stopped being a table when the receipt-pad direction landed: a line
+ * is now a printed row on the slip, not a `<tr>`. Twenty-three assertions across
+ * `sale.spec.ts` and `method.spec.ts` pointed at `table.lines tbody tr`, so the
+ * markup change would have rewritten all of them in place and the next one would
+ * have done it again.
+ *
+ * The contract these selectors encode is deliberately narrow, because it is the
+ * only thing a test should be allowed to know about the draft's markup:
+ *
+ * - A line is an element carrying `data-draft-line`.
+ * - Inside it, the quantity and price fields are still found by their accessible
+ *   names. Those are the labels the cashier reads, so a rename is a user-visible
+ *   change and *should* break a test, not get quietly absorbed here.
+ *
+ * The quantity field's name starts with `Cant` because `sale.spec.ts` matches it
+ * by prefix (`input[aria-label^="Cant"]`), which is also how it distinguishes the
+ * quantity from the price inside a row that holds both.
+ */
+export function saleDraftLine(page: Page, hasText?: string): Locator {
+  const all = page.locator('[data-draft-line]');
+  return hasText === undefined ? all.first() : all.filter({ hasText });
+}
+
+/** Every line currently printed on the draft slip. */
+export function saleDraftLines(page: Page): Locator {
+  return page.locator('[data-draft-line]');
+}
+
+/**
+ * One recorded document in the day's book, by its id.
+ *
+ * Found by id and never by position or total (#52): every spec writes to the same
+ * append-only ledger, so `first()` means "the newest document in the whole
+ * suite", not "mine". `recordedDocumentId` is how a spec learns its own id.
+ *
+ * The id travels in `data-doc-row`, which replaced the `aria-controls` attribute
+ * the table used. `aria-controls` was doing two jobs — naming the expandable
+ * region and incidentally being the only place the full id appeared — and the
+ * second job is now explicit instead of a side effect of an accessibility
+ * attribute.
+ */
+export function daySlip(page: Page, id: string): Locator {
+  return page.locator(`[data-doc-row="${id}"]`);
+}
+
+/**
+ * The lines panel a document opens, by the document's id.
+ *
+ * Still scoped by document, because two open documents must not be confused for
+ * one another: the panel holds the refund form and every assertion about it is
+ * about *that* sale.
+ */
+export function daySlipDetail(page: Page, id: string): Locator {
+  return page.locator(`[data-doc-detail="${id}"]`);
 }
