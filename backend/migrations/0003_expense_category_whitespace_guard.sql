@@ -70,6 +70,7 @@ DO $$
 DECLARE
     refused  boolean;
     accepted boolean;
+    seeded   bigint;
 BEGIN
     refused := (btrim(E'\t\n', E' \t\n\r\f\v') = '');
     IF NOT refused THEN
@@ -83,10 +84,28 @@ BEGIN
             'the whitespace guard would refuse a name with a real character in it; refusing to continue';
     END IF;
 
-    IF (SELECT count(*) FROM expense_categories) <> 6 THEN
+    -- **`R3-001` of `review-63c8b89cb1e8f768`, and it blocked the upgrade.** The first
+    -- version asserted `count(*) = 6`, which is true only on a database that has never had
+    -- a category created. `0002` exists so the shop *can* add its own — that is `D2`'s whole
+    -- point — and the route creates them, so any database where somebody added "Fletes"
+    -- failed this migration and could never apply the whitespace fix. A migration that
+    -- refuses to run on correct data is worse than the hole it repairs.
+    --
+    -- What the assertion actually owed is weaker and still meaningful: **the six seeded
+    -- names are all still there**, which is what proves this migration did not change the
+    -- vocabulary while re-cutting a constraint over it. Expressed as "none of the seed is
+    -- missing" instead of "nothing else exists", it holds on a database of any size.
+    SELECT count(*) INTO seeded
+      FROM expense_categories
+     WHERE name IN (
+             'Alquiler', 'Sueldos', 'Servicios',
+             'Mantenimiento', 'Impuestos', 'Otros'
+           );
+
+    IF seeded <> 6 THEN
         RAISE EXCEPTION
-            'expected the 6 seeded expense categories, found %; refusing to continue',
-            (SELECT count(*) FROM expense_categories);
+            'expected all 6 seeded expense categories to still be present, found %; refusing to continue',
+            seeded;
     END IF;
 END;
 $$;
