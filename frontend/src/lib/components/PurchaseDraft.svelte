@@ -94,6 +94,10 @@
     return draftTotal(parsed.filter((p) => p !== null));
   });
 
+  // The library owns the rule; this screen does not restate half of it. Purchases
+  // are stricter than sales about *which* lines count, which is why the strict
+  // check is `everyLineComplete` and not `canRecord` — but "not while in flight"
+  // is one fact, and it lives in one place on the other drafts.
   const ready = $derived(parsedOk && !submitting);
 
   $effect(() => {
@@ -147,6 +151,16 @@
   }
 
   async function record() {
+    // The guard against a second submission landing while the first is in flight.
+    // It used to be missing here, and the disabled button hid that: the button is
+    // only one caller, and a queued keyboard event or a form submit reaches this
+    // handler regardless. A purchase raises stock and lowers cash, so recording it
+    // twice moves the till twice — measured before this line existed, two
+    // dispatched Ctrl+Enter presses produced two purchases.
+    //
+    // `SaleDraft` guards the same way through `canRecord(lines, submitting)`, and
+    // `Catalog.svelte` names the symmetry in its own comment.
+    if (submitting) return;
     if (!supplierId) {
       error = lang.t.purchases_supplier_required;
       return;

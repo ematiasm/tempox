@@ -109,3 +109,50 @@ Evidence:
 - A flake in the direction test was fixed rather than retried: it read the till
   before the written return had landed. It now waits for the `.return-block` to
   appear first.
+
+**L3** — Owner asked whether to go on and consolidate `SaleDraft`/`PurchaseDraft`.
+The answer was no, measured rather than assumed, and the measurement turned up two
+real defects that had nothing to do with consolidation.
+
+**Why consolidation is not the move.** The scripts diverge in 308 lines, and the
+divergence is semantic: only `SaleDraft` has customers, payment methods and bonus
+counting; only `PurchaseDraft` has suppliers and its own `describe`. `draftLines.ts`
+already states the deliberate difference in its own header — a sale records what is
+complete with at least one line, a purchase requires every line to parse. One
+component behind a `mode` flag would put that rule in a conditional.
+
+**What was worth doing.** `PurchaseDraft` re-implemented half of a rule the library
+owns (`ready = parsedOk && !submitting` instead of using the shared guard), which is
+the shape that drifts silently. `record()` now consults `submitting` on entry, so
+the rule lives in one place and the guard is real.
+
+**Two defects found while measuring, both real and both fixed:**
+
+1. **`PurchaseDraft.record()` had no re-entry guard.** Only the disabled button
+   prevented a second submission: a queued Ctrl+Enter or a form submit reached the
+   handler regardless. Measured before the fix — two dispatched Ctrl+Enter presses
+   produced **two purchases** (`posts: 2`), so stock rose twice and the till fell
+   twice. `Catalog.svelte` already named this exact symmetry in its own comment
+   ("`SaleDraft` opens with `if (!canRecord) return` … this one had lost the
+   symmetry"). Now guarded, and covered by an e2e that proves it bites.
+2. **`/purchases` advertises F2 and does not implement it.** The button prints
+   `<kbd>F2</kbd>`, carries `aria-keyshortcuts="F2 Control+Enter"`, and the hint
+   says "Ctrl+Enter registra" — but the route registers no key handler at all.
+   `Ctrl+Enter` happens to work because the draft listens for it itself; `F2` does
+   nothing. `/sales` wires F2 on the page. **Not fixed here** — it is a separate
+   behaviour decision (wire F2, or stop advertising it) and it is recorded rather
+   than silently guessed.
+
+**Third finding, about coverage rather than code:** crippling `SaleDraft`'s guard
+(`canRecordNow(lines, false)`) left all six sale specs green. The sale screen was
+correct but untested on this exact risk, so a later refactor could have removed the
+guard with the suite's blessing. Both directions now have the test, and both were
+proven to bite by breaking the guard and observing `Received: 2`.
+
+Evidence: `make test` — 263 unit / 67 backend / 157 integration / **37 e2e**.
+
+**Deferred, with its criterion:** extracting the shared *frame* of the two drafts
+(header, printed row, foot) as presentational components — the move that worked for
+`DaySlip` — is worth doing **only when the redesign next touches a draft**, and only
+for the markup, never for the validation rules. Not now: this branch is at ~7.4k
+authored lines and adding a 1.4k-line refactor makes it harder to review, not easier.

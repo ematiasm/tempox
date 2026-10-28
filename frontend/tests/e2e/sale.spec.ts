@@ -321,3 +321,58 @@ test('each slip prints the balance it inherits from the documents below it', asy
   expect(Number.isFinite(secondBalance)).toBe(true);
   expect(secondBalance - firstBalance).toBeCloseTo(30, 2);
 });
+
+/**
+ * A sale cannot be recorded twice by a caller that is not the button.
+ *
+ * The mirror of the purchase test, and it was missing for the same reason: the
+ * button disables itself, so nothing ever exercised the guard behind it. Measured
+ * before this test existed — crippling `canRecord` to ignore `submitting` left all
+ * six sale specs green.
+ *
+ * `Catalog.svelte` states the rule and names `SaleDraft` as one of the screens
+ * that already had it ("`SaleDraft` opens with `if (!canRecord) return`, and
+ * `canRecord` takes `submitting` for exactly this reason"). That was true and
+ * untested, which is one refactor away from being false and untested.
+ *
+ * A duplicated sale is money in the till that never arrived, so the stake is the
+ * same in both directions.
+ */
+test('a sale submitted twice while in flight is recorded once', async ({ page }) => {
+  const name = `e2e-dup-sale-${Date.now().toString(36)}`;
+
+  await page.goto('/products');
+  await page.locator('#new-name').fill(name);
+  await page.locator('#new-price').fill('10,00');
+  await page.locator('#new-stock').fill('10');
+  await page.getByRole('button', { name: 'Crear producto' }).click();
+  await expect(page.getByRole('status')).toContainText(name);
+
+  // Count the writes and hold the first response, so the second call lands while
+  // it is still in flight — the window the guard exists for.
+  let posts = 0;
+  await page.route('**/api/sales', async (route) => {
+    if (route.request().method() !== 'POST') return route.continue();
+    posts += 1;
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    await route.continue();
+  });
+
+  await page.goto('/sales');
+  await pickFromCatalog(page, name);
+  await saleDraftLine(page).locator('input[aria-label^="Cant"]').fill('3');
+  await expect(page.locator('.sheet .total')).toHaveText(money('30,00'));
+
+  // Two synchronous Ctrl+Enter presses, the way a held key or a queued event
+  // arrives. Through the button it would only prove a disabled button disables.
+  await page.evaluate(() => {
+    for (let i = 0; i < 2; i++) {
+      window.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, cancelable: true })
+      );
+    }
+  });
+
+  await expect(page.locator('.recorded')).toContainText(money('30,00'));
+  expect(posts, 'a sale must be written once, not twice').toBe(1);
+});
