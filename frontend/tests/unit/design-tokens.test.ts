@@ -61,13 +61,59 @@ function walk(dir: string): string[] {
  */
 function code(text: string): string {
   const blank = (match: string) => match.replace(/[^\n]/g, ' ');
-  return text.replace(/\/\*[\s\S]*?\*\//g, blank).replace(/<!--[\s\S]*?-->/g, blank);
+  const withoutBlockComments = text
+    .replace(/\/\*[\s\S]*?\*\//g, blank)
+    .replace(/<!--[\s\S]*?-->/g, blank);
+
+  // This handles quoted strings and URLs, but does not parse regex literals or
+  // template-literal interpolation; a `//` there can still look like a comment.
+  return withoutBlockComments
+    .split('\n')
+    .map((line) => {
+      let quote: string | undefined;
+      let escaped = false;
+      for (let i = 0; i < line.length - 1; i++) {
+        const char = line[i];
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+        if (quote && char === '\\') {
+          escaped = true;
+          continue;
+        }
+        if (quote) {
+          if (char === quote) quote = undefined;
+          continue;
+        }
+        if (char === "'" || char === '"' || char === '`') {
+          quote = char;
+          continue;
+        }
+        if (char === '/' && line[i + 1] === '/' && line[i - 1] !== ':') {
+          return line.slice(0, i) + line.slice(i).replace(/[^\n]/g, ' ');
+        }
+      }
+      return line;
+    })
+    .join('\n');
 }
 
 const files = walk(SRC);
 const sources = files.map((file) => ({ file, text: code(readFileSync(file, 'utf8')) }));
 
 describe('every consumed custom property is declared', () => {
+  it('ignores // comments without swallowing following code', () => {
+    const fixture = code('// TODO: revisit var(--nope)\nvar(--nope)');
+    const references = [...fixture.matchAll(/var\(\s*(--[\w-]+)\s*\)/g)];
+    const reported = references.map((match) => {
+      const line = fixture.slice(0, match.index).split('\n').length;
+      return `fixture:${line} var(${match[1]})`;
+    });
+
+    expect(reported).toEqual(['fixture:2 var(--nope)']);
+  });
+
   it('no var() references an undeclared token', () => {
     // Declarations: `--name:` at the start of a declaration, which covers both
     // `:root { --name: … }` in app.css and an inline `style="--name: …"`.
@@ -114,13 +160,19 @@ const RETIRED_VALUES: Array<{ value: string; was: string }> = [
   // The paper world's cream, used as light text on a dark popover. It is not a
   // token from the alias block, but it is that world's colour and it is still in
   // `ProductPicker.svelte`.
-  { value: '#f2efe6', was: 'the paper world’s cream' }
+  { value: '#f2efe6', was: 'the paper world’s cream' },
+  // These three are not alias-block tokens; they are surviving values from the
+  // previous world, so guard them by value rather than inventing token names.
+  { value: '#084a6c', was: 'a second blue used for error labels, replaced with var(--accent)' },
+  { value: '#f2f6fa', was: 'a hover/open row fill in the day tables' },
+  { value: '#0a1622', was: "the primary button's hover ink" }
 ];
 
 const RETIRED_RGB = [
   { value: 'rgb(43 49 98', was: '--indigo' },
   { value: 'rgb(168 27 42', was: '--crimson' },
-  { value: 'rgb(32 36 66', was: 'the retired hairline' }
+  { value: 'rgb(32 36 66', was: 'the retired hairline' },
+  { value: 'rgb(242 239 230', was: 'the paper world’s cream' }
 ];
 
 describe('the retired palette does not survive as a literal value', () => {

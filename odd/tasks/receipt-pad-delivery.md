@@ -21,11 +21,11 @@ otherwise).
 
 ## Why three, and why each is over the 400-line budget
 
-| PR | Changed lines | What it is |
-|---|---|---|
-| 1 | ~3.8k | the design system sync, three 1440×900 artboards, the canvas record |
-| 2 | ~2.1k | `/sales` rebuilt as a pad and a stack of slips |
-| 3 | ~2.2k | `/purchases` mirrored, the shared slip extracted, two guards fixed |
+| PR  | Changed lines | What it is                                                          |
+| --- | ------------- | ------------------------------------------------------------------- |
+| 1   | ~3.8k         | the design system sync, three 1440×900 artboards, the canvas record |
+| 2   | ~2.1k         | `/sales` rebuilt as a pad and a stack of slips                      |
+| 3   | ~2.2k         | `/purchases` mirrored, the shared slip extracted, two guards fixed  |
 
 One honest slicing pass produced this split, and no cohesive split gets any of
 them under 400. The reason is structural rather than slack: this work **replaces**
@@ -55,8 +55,9 @@ record. It also carries the token repair the sync exposed: `/accounts` consumed
 the browser as `Plex Text` and a `0px` radius where the app meant `Plex
 Condensed` and `8px`; and the retired palette's values (`#2b3162`, `#a81b2a`,
 `#084a6c`, `#f2f6fa`, `#f2efe6`, `#0a1622`) surviving as literals in six files,
-invisible to a test that bans their *names*. Both are now guarded by
-`tests/unit/design-tokens.test.ts`.
+invisible to a test that bans their _names_. Both are now guarded by
+`tests/unit/design-tokens.test.ts`; its retired-value guard was widened to cover
+all six values, including the three previous-world values that were missing.
 
 **PR 2 — `/sales` as the receipt pad.** The draft becomes the slip it prints and
 the day becomes a stack of documents, each carrying the balance it inherits. The
@@ -71,10 +72,10 @@ twice), and the screen advertised an `F2` shortcut that no handler listened for.
 
 ## Opened
 
-| PR | Branch | Base | Diff | Checks |
-|---|---|---|---|---|
-| [#104](https://github.com/ematiasm/tempox/pull/104) | `design/receipt-pad-slice/docs` | `main` | +4132/−42, 18 files | running |
-| [#105](https://github.com/ematiasm/tempox/pull/105) | `design/receipt-pad-slice/sales` | `…/docs` | +941/−864, 7 files | running |
+| PR                                                  | Branch                               | Base      | Diff                 | Checks  |
+| --------------------------------------------------- | ------------------------------------ | --------- | -------------------- | ------- |
+| [#104](https://github.com/ematiasm/tempox/pull/104) | `design/receipt-pad-slice/docs`      | `main`    | +4132/−42, 18 files  | running |
+| [#105](https://github.com/ematiasm/tempox/pull/105) | `design/receipt-pad-slice/sales`     | `…/docs`  | +941/−864, 7 files   | running |
 | [#106](https://github.com/ematiasm/tempox/pull/106) | `design/receipt-pad-slice/purchases` | `…/sales` | +1224/−712, 10 files | running |
 
 Every diff was checked for pollution before opening: #105 touches no design file
@@ -105,7 +106,7 @@ parent lands (the flow this repository used for #74 → #75).
 - **Consolidating `SaleDraft` and `PurchaseDraft`.** Their scripts diverge in 308
   semantically meaningful lines and `draftLines.ts` records that the two screens
   have deliberately different validity rules. Deferred with a criterion: extract
-  only their shared *presentational frame*, only when the redesign next touches a
+  only their shared _presentational frame_, only when the redesign next touches a
   draft, and never the validation rules.
 - **Any `Draft.svelte` with a `mode` flag.** That is the shape that reads well in
   a diff and rots in maintenance.
