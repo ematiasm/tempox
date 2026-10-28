@@ -278,7 +278,49 @@ const en: Dict = {
   purchases_return_recorded:
     'The return was recorded — the day could not be reloaded, so what is left above may be out of date. Reload the page to see it.',
   purchases_return_invalid: 'A return quantity is not valid — fix it before returning.',
-  purchases_return_line: (name) => `Return quantity for ${name}`
+  purchases_return_line: (name) => `Return quantity for ${name}`,
+
+  // ── Expenses (v4-expenses) ──────────────────────────────────────────────
+  //
+  // The shop's words, not the schema's: an expense is "what I spent", a payee is who was
+  // paid, and the day it belongs to is not always the day it was paid — which is why the
+  // draft says "the day it belongs to" rather than "date".
+  nav_expenses: 'Expenses',
+  expenses_title: 'Record expense',
+  expenses_tagline: 'Money out, no stock in',
+  expenses_ledger_title: 'The day’s expenses',
+  expenses_payee: 'Paid to',
+  expenses_payee_placeholder: 'Edenor, Juan Pérez, the hardware shop',
+  expenses_category: 'Category',
+  expenses_amount: 'Amount',
+  expenses_method: 'Paid with',
+  expenses_on_account: 'On account (the shop owes)',
+  expenses_occurred_at: 'The day it belongs to',
+  expenses_action: 'Record expense',
+  expenses_action_hint: 'A payee and an amount',
+  expenses_recorded: 'Expense recorded',
+  expenses_empty: 'No expenses recorded yet',
+  expenses_empty_day: 'Nothing spent on this day',
+  expenses_spent: 'Spent',
+  expenses_purchases: 'Purchases',
+  expenses_returned: 'Returned',
+  expenses_net: 'Net',
+  expenses_paid: 'Paid',
+  expenses_outstanding: 'Owed',
+  expenses_amount_advanced: 'Advance amount',
+  expenses_advance_action: 'Record advance',
+  expenses_advanced: 'Advance recorded',
+  expenses_advance_only_owed: 'Only an expense on account takes advances',
+  expenses_category_new: 'New category',
+  expenses_category_new_action: 'Add',
+  documents_one: 'document',
+  documents_other: 'documents',
+
+  expenses_read_failed: 'The expenses could not be read',
+  expenses_write_failed: 'It could not be recorded. Check the data and try again.',
+  expenses_method_till: 'Cash (the till)',
+
+  expenses_loading: 'Reading the day’s expenses…'
 };
 
 export default en;

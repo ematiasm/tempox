@@ -25,6 +25,7 @@ test('rail carries the three jobs and marks the active one', async ({ page }) =>
   const sales = rail.getByRole('link', { name: 'Ventas' });
   const purchases = rail.getByRole('link', { name: 'Compras' });
   const products = rail.getByRole('link', { name: 'Productos' });
+  const expenses = rail.getByRole('link', { name: 'Gastos' });
 
   // Sell, buy, and look after the catalog: the three jobs the shop does. A rail
   // that listed every reachable URL would be a map of the repo, not of the job,
@@ -32,6 +33,9 @@ test('rail carries the three jobs and marks the active one', async ({ page }) =>
   await expect(sales).toBeVisible();
   await expect(purchases).toBeVisible();
   await expect(products).toBeVisible();
+  // `/expenses` joins in v4-expenses: what the shop spent is a job it does, and it sits
+  // beside the purchase because both are money going out.
+  await expect(expenses).toBeVisible();
   await expect(sales).toHaveAttribute('aria-current', 'page');
   await expect(purchases).not.toHaveAttribute('aria-current', 'page');
   await expect(products).not.toHaveAttribute('aria-current', 'page');

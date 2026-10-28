@@ -310,4 +310,42 @@ export interface Dict {
   purchases_return_invalid: string;
   /** The return field's accessible name, which names the line it corrects. */
   purchases_return_line: (name: string) => string;
+
+  // ── Expenses (v4-expenses) ──────────────────────────────────────────────
+  nav_expenses: string;
+  expenses_title: string;
+  expenses_tagline: string;
+  expenses_ledger_title: string;
+  expenses_payee: string;
+  expenses_payee_placeholder: string;
+  expenses_category: string;
+  expenses_amount: string;
+  expenses_method: string;
+  expenses_on_account: string;
+  expenses_occurred_at: string;
+  expenses_action: string;
+  expenses_action_hint: string;
+  expenses_recorded: string;
+  expenses_empty: string;
+  expenses_empty_day: string;
+  expenses_spent: string;
+  expenses_purchases: string;
+  expenses_returned: string;
+  expenses_net: string;
+  expenses_paid: string;
+  expenses_outstanding: string;
+  expenses_amount_advanced: string;
+  expenses_advance_action: string;
+  expenses_advanced: string;
+  expenses_advance_only_owed: string;
+  expenses_category_new: string;
+  expenses_category_new_action: string;
+  documents_one: string;
+  documents_other: string;
+
+  expenses_read_failed: string;
+  expenses_write_failed: string;
+  expenses_method_till: string;
+
+  expenses_loading: string;
 }
