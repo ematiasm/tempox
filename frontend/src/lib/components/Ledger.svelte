@@ -1234,7 +1234,7 @@
     vertical-align: middle;
   }
   .doc:hover {
-    background: rgb(43 49 98 / 0.035);
+    background: color-mix(in srgb, var(--ink) 3.5%, transparent);
   }
   .num {
     text-align: right;
@@ -1475,7 +1475,7 @@
        means the running balance. */
     border-color: var(--state-void);
     color: var(--state-void);
-    background: rgb(168 27 42 / 0.08);
+    background: color-mix(in srgb, var(--state-void) 8%, var(--surface));
   }
   .refund button:disabled {
     opacity: 0.55;
@@ -1527,8 +1527,8 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    background: rgb(168 27 42 / 0.06);
-    border: 1px solid rgb(168 27 42 / 0.4);
+    background: color-mix(in srgb, var(--state-void) 6%, var(--surface));
+    border: 1px solid color-mix(in srgb, var(--state-void) 40%, transparent);
     border-radius: var(--radius);
     padding: 12px 14px;
     font-size: var(--step-0);
@@ -1562,9 +1562,9 @@
     border-radius: 2px;
     background: linear-gradient(
       90deg,
-      rgb(43 49 98 / 0.09),
-      rgb(43 49 98 / 0.17),
-      rgb(43 49 98 / 0.09)
+      color-mix(in srgb, var(--ink) 9%, transparent),
+      color-mix(in srgb, var(--ink) 17%, transparent),
+      color-mix(in srgb, var(--ink) 9%, transparent)
     );
     background-size: 200% 100%;
     animation: sweep 1.4s linear infinite;

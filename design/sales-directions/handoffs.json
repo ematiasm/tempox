@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "chosen": "03-receipt-pad.html",
+  "handoffs": {
+    "03-receipt-pad.html": {
+      "status": "implemented",
+      "queued": false,
+      "sentAt": "2026-10-28T00:54:04.134Z",
+      "startedAt": "2026-10-28T00:54:14.496Z",
+      "implementedAt": "2026-10-28T01:09:04.446Z",
+      "note": "Implemented as the pad + day composition: SaleDraft is now the slip, Ledger is a stack of documents each carrying its own inherited balance. Tokens from design/system.md only. make test green (261 unit / 67 backend / 157 integration / 34 e2e), and the migrated selectors were proven to bite by mutation.",
+      "previewUrl": "http://localhost:5173/sales"
+    }
+  }
+}

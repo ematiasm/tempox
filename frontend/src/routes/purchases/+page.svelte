@@ -217,7 +217,7 @@
     cursor: pointer;
   }
   .do:hover:not(:disabled) {
-    background: #0a1622;
+    background: color-mix(in srgb, var(--ink) 88%, black);
   }
   .do:disabled {
     background: var(--surface);

@@ -777,7 +777,7 @@
   tr.doc:hover > td,
   tr.doc:focus-visible > td,
   tr.doc.open > td {
-    background: #f2f6fa;
+    background: color-mix(in srgb, var(--ink) 4%, var(--surface));
   }
   tr.doc:focus-visible {
     outline: 2px solid var(--accent);
@@ -1015,7 +1015,7 @@
   .refund button.danger:hover:not(:disabled) {
     border-color: var(--state-void);
     color: var(--state-void);
-    background: rgb(168 27 42 / 0.08);
+    background: color-mix(in srgb, var(--state-void) 8%, var(--surface));
   }
   .refund button:disabled {
     opacity: 0.55;

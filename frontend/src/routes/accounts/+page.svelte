@@ -322,7 +322,7 @@
   }
 
   h1 {
-    font-family: var(--figure);
+    font-family: var(--font-figure);
     font-size: var(--step-3);
     font-weight: 600;
     margin: 0;
@@ -338,7 +338,7 @@
     padding: 10px 12px;
     border: 1px solid var(--rule-strong);
     border-left: 2px solid var(--state-void);
-    border-radius: var(--rounded-control);
+    border-radius: var(--radius);
     color: var(--state-void);
     font-size: var(--step-0);
   }
@@ -346,7 +346,7 @@
   .panel {
     background: var(--surface);
     border: 1px solid var(--rule);
-    border-radius: var(--rounded-panel);
+    border-radius: var(--panel-radius);
     overflow: hidden;
   }
 
@@ -360,7 +360,7 @@
   }
 
   h2 {
-    font-family: var(--figure);
+    font-family: var(--font-figure);
     font-size: var(--step-1);
     font-weight: 600;
     margin: 0;
@@ -378,7 +378,7 @@
     background: var(--surface);
     color: var(--ink);
     border: 1px solid var(--rule-strong);
-    border-radius: var(--rounded-control);
+    border-radius: var(--radius);
     padding: 10px 11px;
     font-size: var(--step-0);
   }
@@ -397,9 +397,9 @@
     background: var(--ink);
     color: var(--surface);
     border: 1px solid var(--ink);
-    border-radius: var(--rounded-control);
+    border-radius: var(--radius);
     padding: 10px 14px;
-    font-family: var(--figure);
+    font-family: var(--font-figure);
     font-size: var(--step-0);
     font-weight: 600;
   }
@@ -454,7 +454,7 @@
   }
 
   .name {
-    font-family: var(--figure);
+    font-family: var(--font-figure);
     font-size: var(--step-1);
     font-weight: 600;
   }
@@ -469,7 +469,7 @@
 
   .figure {
     margin-left: auto;
-    font-family: var(--figure);
+    font-family: var(--font-figure);
     font-variant-numeric: tabular-nums;
     font-size: var(--step-2);
     font-weight: 600;

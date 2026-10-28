@@ -546,7 +546,7 @@
   }
   .ghost:hover:not(:disabled) {
     border-color: var(--ink);
-    background: rgb(43 49 98 / 0.05);
+    background: color-mix(in srgb, var(--ink) 5%, transparent);
   }
   .ghost:disabled {
     opacity: 0.5;
@@ -556,7 +556,7 @@
   .notice {
     margin: 0;
     padding: 9px 18px;
-    background: rgb(43 49 98 / 0.06);
+    background: color-mix(in srgb, var(--ink) 6%, transparent);
     border-bottom: 1px solid var(--rule);
     color: var(--ink);
     font-size: var(--step-0);
@@ -630,7 +630,7 @@
      not in a message somewhere else on the page. */
   .control.bad {
     border-color: var(--state-void);
-    background: rgb(168 27 42 / 0.05);
+    background: color-mix(in srgb, var(--state-void) 5%, var(--surface));
   }
 
   .pricewrap {
@@ -661,14 +661,14 @@
   }
   .remove:hover {
     color: var(--state-void);
-    background: rgb(168 27 42 / 0.08);
+    background: color-mix(in srgb, var(--state-void) 8%, var(--surface));
   }
 
   .error {
     margin: 0;
     padding: 10px 18px;
-    background: rgb(168 27 42 / 0.07);
-    border-top: 1px solid rgb(168 27 42 / 0.35);
+    background: color-mix(in srgb, var(--state-void) 7%, var(--surface));
+    border-top: 1px solid color-mix(in srgb, var(--state-void) 35%, transparent);
     color: var(--ink);
     font-size: var(--step-0);
   }

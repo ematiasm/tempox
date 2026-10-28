@@ -1,0 +1,862 @@
+<!doctype html>
+<html lang="es-AR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tempox — /sales — 03 · El borrador es el comprobante</title>
+    <style>
+      /* DIRECTION 03 — "El borrador es el comprobante" (receipt pad)
+
+         STRATEGY: drop the table entirely. The sale being typed is drawn in the
+         exact shape it will be printed in — a slip with a header, ruled lines
+         and a foot — so the cashier confirms what they already see rather than
+         translating a form into a document. The day is not a grid of columns
+         but a stack of the slips it produced, newest first, each one carrying
+         its own arithmetic and its inherited balance in its own header.
+
+         There is no column layout anywhere. Alignment comes from the slip's own
+         composition, and the running balance travels inside each slip instead of
+         owning a column.
+
+         TRADE-OFF: the most legible per document and the most honest about what
+         is being written; scanning a day of thirty slips is slower than scanning
+         thirty rows, and long product names wrap instead of truncating. */
+      :root {
+        --ground: #fbfcfd;
+        --surface: #ffffff;
+        --rule: #e8ecf1;
+        --rule-strong: #c3ccd6;
+        --ink: #12212e;
+        --ink-soft: #5f6f7d;
+        --accent: #0b5f8a;
+        --state-void: #a33227;
+        --state-pending: #8a6410;
+
+        --font-figure: ui-sans-serif, system-ui, sans-serif;
+        --font-text: ui-sans-serif, system-ui, -apple-system, sans-serif;
+
+        --step--1: 0.75rem;
+        --step-0: 0.8125rem;
+        --step-1: 0.875rem;
+        --step-2: 1rem;
+        --step-3: 1.25rem;
+        --step-4: 1.75rem;
+        --step-5: 2.375rem;
+
+        --radius: 2px;
+        --panel-radius: 8px;
+        --panel-gap: 24px;
+        --rail-w: 88px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        font-size: 100%;
+      }
+      html,
+      body {
+        margin: 0;
+        background: var(--ground);
+        color: var(--ink);
+        font-family: var(--font-text);
+        line-height: 1.45;
+        -webkit-font-smoothing: antialiased;
+      }
+      body {
+        font-size: var(--step-1);
+      }
+      ::selection {
+        background: rgb(11 95 138 / 0.16);
+        color: var(--ink);
+      }
+      input,
+      select,
+      button {
+        caret-color: var(--accent);
+        font: inherit;
+        color: inherit;
+      }
+      :focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+        border-radius: 2px;
+      }
+
+      .figures {
+        font-family: var(--font-figure);
+        font-variant-numeric: tabular-nums;
+        font-feature-settings: 'tnum' 1;
+      }
+      .label {
+        font-family: var(--font-figure);
+        font-size: var(--step-0);
+        font-weight: 600;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--ink-soft);
+      }
+
+      /* ---------- shell ---------- */
+      .app {
+        display: grid;
+        grid-template-columns: var(--rail-w) minmax(0, 1fr);
+        height: 100vh;
+        align-content: start;
+      }
+      .rail {
+        border-right: 1px solid var(--rule);
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+      .brand {
+        font-family: var(--font-figure);
+        font-weight: 700;
+        font-size: 14px;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        padding: 22px 0 24px;
+        color: var(--ink);
+        text-align: center;
+        text-decoration: none;
+      }
+      .tab {
+        display: block;
+        font-family: var(--font-figure);
+        font-size: var(--step--1);
+        font-weight: 600;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        text-align: center;
+        padding: 12px 0;
+        color: var(--ink-soft);
+        text-decoration: none;
+        border-left: 3px solid transparent;
+      }
+      .tab:hover {
+        color: var(--ink);
+      }
+      .tab.is-active {
+        color: var(--accent);
+        border-left-color: var(--accent);
+      }
+      .rail-foot {
+        margin-top: auto;
+        padding: 16px 0 18px;
+        border-top: 1px solid var(--rule);
+        text-align: center;
+        display: grid;
+        gap: 8px;
+      }
+      .lang {
+        background: none;
+        border: 1px solid var(--rule-strong);
+        border-radius: var(--radius);
+        color: var(--ink-soft);
+        font-family: var(--font-figure);
+        font-size: var(--step--1);
+        font-weight: 600;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        padding: 5px 0;
+        margin: 0 auto;
+        width: 58px;
+        cursor: pointer;
+      }
+      .version {
+        font-family: var(--font-figure);
+        font-size: var(--step--1);
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--ink-soft);
+      }
+
+      /* ---------- page ---------- */
+      .content {
+        display: grid;
+        grid-template-columns: minmax(0, 620px) minmax(360px, 1fr);
+        min-height: 0;
+        height: 100vh;
+        align-content: start;
+      }
+
+      /* ===== LEFT: the slip being written ===== */
+      .pad {
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+        min-height: 0;
+        padding: 22px 0 22px 28px;
+        border-right: 1px solid var(--rule);
+      }
+      .pad-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 0 22px 14px 0;
+      }
+      h1 {
+        font-family: var(--font-figure);
+        font-size: var(--step-4);
+        font-weight: 600;
+        line-height: 1.1;
+        letter-spacing: -0.01em;
+        margin: 0;
+      }
+      .tagline {
+        font-size: var(--step--1);
+        color: var(--ink-soft);
+        margin: 3px 0 0;
+      }
+
+      .pad-scroll {
+        overflow: auto;
+        min-height: 0;
+        padding-right: 8px;
+      }
+
+      /* The slip: the artifact itself, not a form that resembles one. A dashed
+         edge marks what is still provisional; a solid one marks what is printed. */
+      .slip {
+        background: var(--surface);
+        border: 1px solid var(--rule);
+        border-radius: var(--panel-radius);
+        overflow: hidden;
+        box-shadow: 0 1px 0 var(--rule);
+      }
+      .slip-top {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 14px;
+        padding: 14px 18px 12px;
+        border-bottom: 1px dashed var(--rule-strong);
+      }
+      .slip-no {
+        display: grid;
+        gap: 1px;
+      }
+      .slip-no-v {
+        font-family: var(--font-figure);
+        font-size: var(--step-3);
+        font-weight: 700;
+        font-variant-numeric: tabular-nums;
+        line-height: 1;
+        color: var(--ink-soft);
+      }
+      .slip-meta {
+        display: flex;
+        gap: 18px;
+        flex-wrap: wrap;
+      }
+      .meta-item {
+        display: grid;
+        gap: 4px;
+        min-width: 96px;
+      }
+      select {
+        border: 1px solid var(--rule-strong);
+        background: var(--surface);
+        border-radius: var(--radius);
+        padding: 6px 8px;
+        font-size: var(--step-1);
+      }
+
+      /* entry line on the slip */
+      .entry {
+        padding: 12px 18px;
+        border-bottom: 1px solid var(--rule);
+        background: var(--ground);
+      }
+      .search-row {
+        position: relative;
+      }
+      .search {
+        width: 100%;
+        border: 1px solid var(--rule-strong);
+        background: var(--surface);
+        border-radius: var(--radius);
+        padding: 11px 12px;
+        font-size: var(--step-2);
+      }
+      .search::placeholder {
+        color: var(--ink-soft);
+      }
+      .kbd {
+        position: absolute;
+        right: 10px;
+        top: 50%;
+        transform: translateY(-50%);
+        font-family: var(--font-text);
+        font-size: var(--step--1);
+        font-weight: 600;
+        border: 1px solid var(--rule-strong);
+        border-radius: 2px;
+        padding: 1px 5px;
+        color: var(--ink-soft);
+      }
+
+      .printed {
+        padding: 4px 18px 0;
+      }
+      .prow {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto auto;
+        gap: 12px;
+        align-items: baseline;
+        padding: 11px 0;
+        border-bottom: 1px solid var(--rule);
+      }
+      .prow:last-child {
+        border-bottom: 0;
+      }
+      .pname {
+        min-width: 0;
+      }
+      .pname-v {
+        display: block;
+      }
+      .pname-sub {
+        display: block;
+        font-family: var(--font-figure);
+        font-variant-numeric: tabular-nums;
+        font-size: var(--step--1);
+        color: var(--ink-soft);
+        margin-top: 2px;
+      }
+      .pfields {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .mini {
+        border: 1px solid var(--rule-strong);
+        background: var(--surface);
+        border-radius: var(--radius);
+        padding: 5px 7px;
+        font-family: var(--font-figure);
+        font-variant-numeric: tabular-nums;
+        font-size: var(--step-1);
+        text-align: right;
+      }
+      .mini.qty {
+        width: 54px;
+      }
+      .mini.price {
+        width: 96px;
+      }
+      .unit {
+        color: var(--ink-soft);
+        font-size: var(--step--1);
+      }
+      .pline {
+        font-family: var(--font-figure);
+        font-size: var(--step-2);
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+        text-align: right;
+        min-width: 92px;
+      }
+      .remove {
+        background: none;
+        border: 0;
+        color: var(--ink-soft);
+        cursor: pointer;
+        font-size: var(--step--1);
+        padding: 4px;
+      }
+      .remove:hover {
+        color: var(--state-void);
+      }
+
+      .slip-foot {
+        border-top: 1px dashed var(--rule-strong);
+        padding: 14px 18px 16px;
+      }
+      .sums {
+        display: grid;
+        gap: 6px;
+        margin-bottom: 14px;
+      }
+      .sum {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+        font-size: var(--step-0);
+        color: var(--ink-soft);
+      }
+      .sum.big {
+        font-size: var(--step-1);
+        color: var(--ink);
+        padding-top: 8px;
+        border-top: 1px solid var(--rule);
+      }
+      .sum-v {
+        font-family: var(--font-figure);
+        font-variant-numeric: tabular-nums;
+      }
+      .sum.big .sum-v {
+        font-size: var(--step-4);
+        font-weight: 700;
+        line-height: 1;
+        letter-spacing: -0.01em;
+      }
+      .do {
+        width: 100%;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        background: var(--ink);
+        color: var(--surface);
+        border: 1px solid var(--ink);
+        border-radius: var(--radius);
+        padding: 12px 18px;
+        font-family: var(--font-figure);
+        font-size: var(--step-2);
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        cursor: pointer;
+      }
+      .do:hover {
+        background: #0a1622;
+      }
+      .do kbd {
+        font-family: var(--font-text);
+        font-size: var(--step--1);
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        text-transform: none;
+        color: inherit;
+        border: 1px solid currentColor;
+        border-radius: 2px;
+        padding: 1px 5px;
+        opacity: 0.75;
+      }
+      .hint {
+        display: block;
+        margin: 8px 0 0;
+        font-size: var(--step--1);
+        color: var(--ink-soft);
+        text-align: center;
+      }
+
+      /* ===== RIGHT: the stack of printed slips ===== */
+      .day {
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+        min-height: 0;
+        min-width: 0;
+      }
+      .day-head {
+        padding: 22px 26px 14px 24px;
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 16px;
+      }
+      .day-titles {
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .day-title {
+        font-family: var(--font-figure);
+        font-size: var(--step-3);
+        font-weight: 600;
+        line-height: 1.15;
+        margin: 0;
+      }
+      .day-sub {
+        font-size: var(--step--1);
+        color: var(--ink-soft);
+      }
+      .cash {
+        text-align: right;
+      }
+      .cash-v {
+        font-family: var(--font-figure);
+        font-size: var(--step-4);
+        font-weight: 700;
+        font-variant-numeric: tabular-nums;
+        line-height: 1;
+        color: var(--accent);
+      }
+      .cash-note {
+        font-size: var(--step--1);
+        color: var(--ink-soft);
+        margin-top: 2px;
+      }
+
+      .stack {
+        overflow: auto;
+        min-height: 0;
+        padding: 0 26px 26px 24px;
+        display: grid;
+        gap: 10px;
+        align-content: start;
+      }
+
+      .print {
+        background: var(--surface);
+        border: 1px solid var(--rule);
+        border-radius: var(--panel-radius);
+        overflow: hidden;
+      }
+      .print-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 14px;
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--rule);
+        background: var(--ground);
+      }
+      .print-id {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+      }
+      .print-no {
+        font-family: var(--font-figure);
+        font-size: var(--step-2);
+        font-weight: 700;
+        font-variant-numeric: tabular-nums;
+      }
+      .print-time {
+        font-family: var(--font-figure);
+        font-variant-numeric: tabular-nums;
+        font-size: var(--step--1);
+        color: var(--ink-soft);
+      }
+      .print-bal {
+        font-family: var(--font-figure);
+        font-size: var(--step-1);
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+        color: var(--accent);
+        white-space: nowrap;
+      }
+      .print-bal.strike {
+        color: var(--ink-soft);
+        text-decoration: line-through;
+      }
+      .print-body {
+        padding: 8px 14px 10px;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 14px;
+        align-items: end;
+      }
+      .print-who {
+        min-width: 0;
+      }
+      .who-name {
+        font-weight: 500;
+      }
+      .who-meta {
+        font-size: var(--step--1);
+        color: var(--ink-soft);
+        margin-top: 1px;
+      }
+      .print-total {
+        font-family: var(--font-figure);
+        font-size: var(--step-3);
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+        text-align: right;
+        white-space: nowrap;
+      }
+      .print-total.strike {
+        color: var(--ink-soft);
+        text-decoration: line-through;
+      }
+
+      .state {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-family: var(--font-figure);
+        font-size: var(--step--1);
+        font-weight: 600;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--ink);
+        white-space: nowrap;
+      }
+      .state .tick {
+        width: 2px;
+        height: 12px;
+        background: currentColor;
+        flex-shrink: 0;
+      }
+      .state.void {
+        color: var(--state-void);
+      }
+
+      .day-foot {
+        padding: 0 26px 0 24px;
+      }
+      .day-total {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 14px;
+        padding: 11px 14px;
+        border-top: 1px solid var(--rule-strong);
+        font-size: var(--step-0);
+        color: var(--ink-soft);
+      }
+      .day-total-v {
+        font-family: var(--font-figure);
+        font-variant-numeric: tabular-nums;
+        font-size: var(--step-2);
+        font-weight: 600;
+        color: var(--ink);
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        * {
+          transition: none !important;
+          animation: none !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <nav class="rail" aria-label="Principal">
+        <a class="brand" href="#main">Tempox</a>
+        <a class="tab is-active" href="#main" aria-current="page">Ventas</a>
+        <a class="tab" href="#main">Compras</a>
+        <a class="tab" href="#main">Productos</a>
+        <a class="tab" href="#main">Cuentas</a>
+        <a class="tab" href="#main">Clientes</a>
+        <a class="tab" href="#main">Proveedores</a>
+        <div class="rail-foot">
+          <button class="lang" type="button" aria-label="Cambiar idioma">EN</button>
+          <span class="version">v3</span>
+        </div>
+      </nav>
+
+      <main class="content" id="main">
+        <section class="pad" aria-labelledby="pad-h">
+          <div class="pad-head">
+            <div>
+              <h1 id="pad-h">Registrar venta</h1>
+              <p class="tagline">
+                El stock y la caja se actualizan juntos, desde una sola carga
+              </p>
+            </div>
+            <span class="label">4 comprobantes</span>
+          </div>
+
+          <div class="pad-scroll">
+            <article class="slip" aria-label="Venta nueva">
+              <div class="slip-top">
+                <div class="slip-no">
+                  <span class="slip-no-v">0005</span>
+                  <span class="label">Nueva</span>
+                </div>
+                <div class="slip-meta">
+                  <div class="meta-item">
+                    <label class="label" for="c">Cliente</label>
+                    <select id="c">
+                      <option>Consumidor Final</option>
+                      <option>Marta Quiroga</option>
+                      <option>Almacén Los Pinos</option>
+                    </select>
+                  </div>
+                  <div class="meta-item">
+                    <label class="label" for="m">Medio</label>
+                    <select id="m">
+                      <option>Caja (por defecto)</option>
+                      <option>Transferencia</option>
+                      <option>A cuenta</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <div class="entry">
+                <div class="search-row">
+                  <input class="search" placeholder="Buscar por nombre…" aria-label="Producto" />
+                  <span class="kbd">F2</span>
+                </div>
+              </div>
+
+              <div class="printed">
+                <div class="prow">
+                  <div class="pname">
+                    <span class="pname-v">Harina 000 Panda 1 kg</span>
+                    <span class="pname-sub">2 × $ 1.250,00 / unidad</span>
+                  </div>
+                  <div class="pfields">
+                    <input class="mini qty" value="2" aria-label="Cantidad de Harina 000 Panda 1 kg" />
+                    <span class="unit">×</span>
+                    <input
+                      class="mini price"
+                      value="1.250,00"
+                      aria-label="Precio de Harina 000 Panda 1 kg"
+                    />
+                  </div>
+                  <div class="pline">$ 2.500,00</div>
+                </div>
+                <div class="prow">
+                  <div class="pname">
+                    <span class="pname-v">Yerba Playadito 1 kg</span>
+                    <span class="pname-sub">1 × $ 4.890,00 / unidad</span>
+                  </div>
+                  <div class="pfields">
+                    <input class="mini qty" value="1" aria-label="Cantidad de Yerba Playadito 1 kg" />
+                    <span class="unit">×</span>
+                    <input
+                      class="mini price"
+                      value="4.890,00"
+                      aria-label="Precio de Yerba Playadito 1 kg"
+                    />
+                  </div>
+                  <div class="pline">$ 4.890,00</div>
+                </div>
+              </div>
+
+              <div class="slip-foot">
+                <div class="sums">
+                  <div class="sum">
+                    <span>2 líneas · 3 unidades base</span>
+                    <span class="sum-v">$ 7.390,00</span>
+                  </div>
+                  <div class="sum">
+                    <span>Efecto en stock y caja</span>
+                    <span class="sum-v">al registrar</span>
+                  </div>
+                  <div class="sum big">
+                    <span class="label" style="letter-spacing: 0.12em">Total en vivo</span>
+                    <span class="sum-v">$ 7.390,00</span>
+                  </div>
+                </div>
+                <button class="do" type="button">Registrar venta <kbd>F2</kbd></button>
+                <span class="hint">Ctrl+Enter registra</span>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section class="day" aria-labelledby="day-h">
+          <div class="day-head">
+            <div class="day-titles">
+              <h2 class="day-title" id="day-h">Libro de ventas</h2>
+              <span class="day-sub">Cada venta es un comprobante; lo último primero</span>
+            </div>
+            <div class="cash">
+              <div class="cash-v">$ 184.320,50</div>
+              <div class="cash-note">Caja · todas las ventas confirmadas</div>
+            </div>
+          </div>
+
+          <div class="stack">
+            <article class="print">
+              <div class="print-head">
+                <div class="print-id">
+                  <span class="print-no">0004</span>
+                  <span class="print-time">12:05</span>
+                </div>
+                <span class="print-bal">$ 25.630,00</span>
+              </div>
+              <div class="print-body">
+                <div class="print-who">
+                  <div class="who-name">Marta Quiroga</div>
+                  <div class="who-meta">
+                    Caja ·
+                    <span class="state"
+                      ><span class="tick" aria-hidden="true"></span>Confirmada</span
+                    >
+                  </div>
+                </div>
+                <div class="print-total">$ 4.890,00</div>
+              </div>
+            </article>
+
+            <article class="print">
+              <div class="print-head">
+                <div class="print-id">
+                  <span class="print-no">0003</span>
+                  <span class="print-time">11:42</span>
+                </div>
+                <span class="print-bal">$ 20.740,00</span>
+              </div>
+              <div class="print-body">
+                <div class="print-who">
+                  <div class="who-name">Consumidor Final</div>
+                  <div class="who-meta">
+                    Caja ·
+                    <span class="state"
+                      ><span class="tick" aria-hidden="true"></span>Confirmada</span
+                    >
+                  </div>
+                </div>
+                <div class="print-total">$ 12.000,00</div>
+              </div>
+            </article>
+
+            <article class="print">
+              <div class="print-head">
+                <div class="print-id">
+                  <span class="print-no">0002</span>
+                  <span class="print-time">10:15</span>
+                </div>
+                <span class="print-bal">$ 8.740,00</span>
+              </div>
+              <div class="print-body">
+                <div class="print-who">
+                  <div class="who-name">Almacén Los Pinos</div>
+                  <div class="who-meta">
+                    Transferencia ·
+                    <span class="state"
+                      ><span class="tick" aria-hidden="true"></span>Confirmada</span
+                    >
+                  </div>
+                </div>
+                <div class="print-total">$ 8.740,00</div>
+              </div>
+            </article>
+
+            <article class="print" style="border-color: var(--rule-strong)">
+              <div class="print-head">
+                <div class="print-id">
+                  <span class="print-no" style="color: var(--ink-soft)">0001</span>
+                  <span class="print-time">09:03</span>
+                </div>
+                <span class="print-bal strike">$ 0,00</span>
+              </div>
+              <div class="print-body">
+                <div class="print-who">
+                  <div class="who-name" style="color: var(--ink-soft)">Consumidor Final</div>
+                  <div class="who-meta">
+                    Caja ·
+                    <span class="state void"
+                      ><span class="tick" aria-hidden="true"></span>Anulada</span
+                    >
+                  </div>
+                </div>
+                <div class="print-total strike">$ 1.234,50</div>
+              </div>
+            </article>
+
+            <div class="day-foot">
+              <div class="day-total">
+                <span>Suma del período · 4 comprobantes</span>
+                <span class="day-total-v">$ 25.630,00</span>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>

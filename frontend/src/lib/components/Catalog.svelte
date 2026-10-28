@@ -630,7 +630,7 @@ lista") removes a scroll that revealed
     padding-right: 18px;
   }
   .catalog tbody tr:hover {
-    background: rgb(43 49 98 / 0.035);
+    background: color-mix(in srgb, var(--ink) 3.5%, transparent);
   }
   .num {
     text-align: right;
@@ -745,32 +745,32 @@ lista") removes a scroll that revealed
   }
   .form .control.bad {
     border-color: var(--accent);
-    background: rgb(168 27 42 / 0.05);
+    background: color-mix(in srgb, var(--state-void) 5%, var(--surface));
   }
 
   .ok {
     margin: 0;
     padding: 10px 18px;
     border-top: 1px solid var(--rule);
-    background: rgb(43 49 98 / 0.05);
+    background: color-mix(in srgb, var(--ink) 5%, transparent);
     font-size: var(--step-0);
   }
   .error {
     margin: 0;
     padding: 10px 18px;
-    border-top: 1px solid rgb(168 27 42 / 0.35);
-    background: rgb(168 27 42 / 0.07);
+    border-top: 1px solid color-mix(in srgb, var(--state-void) 35%, transparent);
+    background: color-mix(in srgb, var(--state-void) 7%, var(--surface));
     font-size: var(--step-0);
   }
   .error strong {
     font-family: var(--font-figure);
-    color: #084a6c;
+    color: var(--accent);
     margin-right: 6px;
   }
   .warn {
     margin: 0;
     padding: 0 18px 12px;
-    color: #084a6c;
+    color: var(--accent);
     font-size: var(--step-0);
   }
 
@@ -802,9 +802,9 @@ lista") removes a scroll that revealed
     border-radius: 2px;
     background: linear-gradient(
       90deg,
-      rgb(43 49 98 / 0.09),
-      rgb(43 49 98 / 0.17),
-      rgb(43 49 98 / 0.09)
+      color-mix(in srgb, var(--ink) 9%, transparent),
+      color-mix(in srgb, var(--ink) 17%, transparent),
+      color-mix(in srgb, var(--ink) 9%, transparent)
     );
     background-size: 200% 100%;
     animation: sweep 1.4s linear infinite;
@@ -832,15 +832,15 @@ lista") removes a scroll that revealed
     align-items: center;
     gap: 10px;
     margin: 14px 18px;
-    background: rgb(168 27 42 / 0.06);
-    border: 1px solid rgb(168 27 42 / 0.4);
+    background: color-mix(in srgb, var(--state-void) 6%, var(--surface));
+    border: 1px solid color-mix(in srgb, var(--state-void) 40%, transparent);
     border-radius: var(--radius);
     padding: 12px 14px;
     font-size: var(--step-0);
   }
   .alert strong {
     font-family: var(--font-figure);
-    color: #084a6c;
+    color: var(--accent);
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -891,7 +891,7 @@ lista") removes a scroll that revealed
     cursor: pointer;
   }
   .do:hover:not(:disabled) {
-    background: #0a1622;
+    background: color-mix(in srgb, var(--ink) 88%, black);
   }
   .do:disabled {
     background: var(--surface);
