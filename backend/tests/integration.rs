@@ -13048,3 +13048,177 @@ async fn v4_expenses_payments_learns_the_third_party_and_only_the_out_direction(
 
     tx.commit().await.expect("commit the customer payment");
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v4-expenses — one definition of "blank", for every guard that asks
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// `R3-003`/`R3-004`/`R3-005` of `review-1abfbd892fed09cb` are one finding reported three
+// times, and measuring it turned up **seventeen** constraints with the same defect:
+//
+//     btrim(name) <> ''
+//
+// `btrim`'s default trim set is a single space. Rust's `str::trim` removes the whole
+// `char::is_whitespace` set. So every one of those guards accepts a value made of a tab,
+// a newline, or a non-breaking space, while the route in front of it refuses the same
+// value — the two layers disagreeing about what "blank" means, which is the defect
+// `R3-001` fixed for one constraint in `0003`.
+//
+// **`[[:space:]]` is not the answer either**, and that was measured before choosing:
+// PostgreSQL's POSIX class does not include U+00A0, so `E'\u00A0' ~ '^[[:space:]]*$'` is
+// **false**. The set has to be spelled out.
+
+#[sqlx::test]
+async fn v4_expenses_is_blank_agrees_with_rust_about_every_kind_of_whitespace(pool: sqlx::PgPool) {
+    // The function is the single definition every guard will call. It is asserted against
+    // the values Rust trims, on the database side, because that is the side that had no
+    // definition at all.
+    let cases: Vec<(&str, bool)> = vec![
+        ("", true),
+        (" ", true),
+        ("\t", true),
+        ("\n", true),
+        ("\r", true),
+        ("\u{b}", true),
+        ("\u{c}", true),
+        ("\u{85}", true),
+        ("\u{a0}", true),
+        ("\u{1680}", true),
+        ("\u{2000}", true),
+        ("\u{2003}", true),
+        ("\u{2009}", true),
+        ("\u{2028}", true),
+        ("\u{2029}", true),
+        ("\u{202f}", true),
+        ("\u{205f}", true),
+        ("\u{3000}", true),
+        (" \t\n ", true),
+        ("a", false),
+        ("  Publicidad  ", false),
+        ("\u{a0}\u{a0}x\u{a0}", false),
+        ("0", false),
+    ];
+
+    for (value, expected) in cases {
+        let actual: bool = sqlx::query_scalar("SELECT is_blank($1)")
+            .bind(value)
+            .fetch_one(&pool)
+            .await
+            .expect("call is_blank");
+        assert_eq!(
+            actual, expected,
+            "is_blank({value:?}) must be {expected}: the database has to agree with Rust \
+             about what whitespace is"
+        );
+
+        // And the Rust side of the same claim, so the two are compared rather than assumed.
+        assert_eq!(
+            value.trim().is_empty(),
+            expected,
+            "the expectation above is Rust's own answer for {value:?}"
+        );
+    }
+}
+
+#[sqlx::test]
+async fn v4_expenses_every_not_blank_guard_uses_is_blank_instead_of_btrim(pool: sqlx::PgPool) {
+    // The sweep, asserted rather than promised: no constraint may keep the default `btrim`,
+    // and none may keep an inline trim set either. A future migration that writes
+    // `btrim(x) <> ''` fails here instead of silently reopening the disagreement for one
+    // more column — which is exactly what happened between `0003` and this fix.
+    let offenders: Vec<String> = sqlx::query_scalar(
+        "SELECT conname FROM pg_constraint
+          WHERE contype = 'c'
+            AND pg_get_constraintdef(oid) LIKE '%btrim(%'
+            AND pg_get_constraintdef(oid) NOT LIKE '%is_blank(%'",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("list constraints");
+
+    assert!(
+        offenders.is_empty(),
+        "these constraints still trim with btrim's default set: {offenders:?}"
+    );
+
+    // The positive control: the guards exist and do use the shared function. Without this,
+    // an empty result above could mean the query was wrong rather than the schema clean.
+    let using: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM pg_constraint
+          WHERE contype = 'c' AND pg_get_constraintdef(oid) LIKE '%is_blank(%'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count constraints");
+    assert!(
+        using >= 17,
+        "expected every not-blank guard to call is_blank, found {using}"
+    );
+}
+
+#[sqlx::test]
+async fn v4_expenses_a_direct_insert_cannot_smuggle_a_blank_value_past_a_guard(pool: sqlx::PgPool) {
+    // Three of the seventeen, chosen because they are the ones the review named and because
+    // they cover the three shapes: a name, a payee, and the audit column every table has.
+    for (label, sql) in [
+        (
+            "a category name of one non-breaking space",
+            "INSERT INTO expense_categories (name) VALUES (U&'\\00A0')",
+        ),
+        (
+            "a category name of tabs",
+            "INSERT INTO expense_categories (name) VALUES (E'\\t\\t')",
+        ),
+        (
+            "an account name of one non-breaking space",
+            "INSERT INTO accounts (name) VALUES (U&'\\00A0')",
+        ),
+    ] {
+        let refused = sqlx::query(sql).execute(&pool).await;
+        assert!(
+            refused.is_err(),
+            "the database must refuse {label}: it is whitespace, not a value"
+        );
+    }
+
+    // The payee guard needs its parent rows, so it gets its own statement.
+    let category: String = sqlx::query_scalar("SELECT id::text FROM expense_categories LIMIT 1")
+        .fetch_one(&pool)
+        .await
+        .expect("a category");
+    let refused_payee = sqlx::query(
+        "INSERT INTO expenses (category_id, payee, amount, created_by)
+         VALUES ($1, U&'\\00A0\\00A0', 10.00, 'counter')",
+    )
+    .bind(uuid::Uuid::parse_str(&category).expect("uuid"))
+    .execute(&pool)
+    .await;
+    assert!(
+        refused_payee.is_err(),
+        "the payee guard must refuse a non-breaking-space payee, the same way the route does"
+    );
+
+    // And the audit column, which the sweep covers twelve times over.
+    let refused_created_by = sqlx::query(
+        "INSERT INTO expenses (category_id, payee, amount, created_by)
+         VALUES ($1, 'Edenor', 10.00, E'\\t')",
+    )
+    .bind(uuid::Uuid::parse_str(&category).expect("uuid"))
+    .execute(&pool)
+    .await;
+    assert!(
+        refused_created_by.is_err(),
+        "created_by must be held to the same definition of blank"
+    );
+
+    // The positive control: real values still pass, so the sweep above cannot pass by
+    // refusing everything.
+    sqlx::query(
+        "INSERT INTO expenses (category_id, payee, amount, created_by)
+         VALUES ($1, U&'\\00A0Edenor\\00A0', 10.00, 'counter')",
+    )
+    .bind(uuid::Uuid::parse_str(&category).expect("uuid"))
+    .execute(&pool)
+    .await
+    .expect("a payee with a real character inside is accepted");
+}
