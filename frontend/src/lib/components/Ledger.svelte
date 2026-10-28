@@ -34,6 +34,7 @@
   import { runningBalances } from '#lib/runningBalance.js';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import Stamp from './Stamp.svelte';
+  import DaySlip from './DaySlip.svelte';
 
   interface Props {
     /** Changes whenever a sale is recorded, so the day reloads. */
@@ -640,76 +641,41 @@
         {#each rows as row (row.id)}
           {@const open = expanded.has(row.id)}
           {@const annulled = isFullyRefunded(row)}
-          <!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
-          <article
-            class="slip doc"
-            class:open
-            class:void={annulled}
-            data-doc-row={row.id}
-            role="button"
-            tabindex="0"
-            aria-expanded={open}
-            aria-controls="lines-{row.id}"
-            onclick={() => toggle(row.id)}
-            onkeydown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                toggle(row.id);
-              }
-            }}
+          <!-- The a11y-ignore this used to carry lives in `DaySlip.svelte`, where
+               the `<article role="button">` actually is now. Keeping a copy here
+               would silence nothing and eslint rightly reports an unused ignore. -->
+          <DaySlip
+            id={row.id}
+            createdAt={row.created_at}
+            zone={shopZone}
+            total={row.total}
+            {open}
+            void={annulled}
+            balance={balances.get(row.id) ?? row.total}
+            ontoggle={() => toggle(row.id)}
           >
-            <div class="slip-head">
-              <div class="slip-id">
-                <svg
-                  class="chev"
-                  class:open
-                  viewBox="0 0 12 12"
-                  aria-hidden="true"
-                  focusable="false"
-                >
-                  <path
-                    d="M4.5 2.5 8 6l-3.5 3.5"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.8"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                  />
-                </svg>
-                <span class="figures slip-no">#{row.id.slice(0, 8)}</span>
-                <span class="figures slip-time"
-                  >{formatTime(new Date(row.created_at), shopZone)}</span
-                >
-              </div>
-              <span class="slip-bal figures" class:void={annulled}
-                >{formatMoney(balances.get(row.id) ?? row.total)}</span
+            {#snippet who()}
+              <span class="who-name" class:walkin={row.customer_name === 'walk-in'}>
+                {row.customer_name === 'walk-in' ? lang.t.sales_walkin : row.customer_name}
+              </span>
+            {/snippet}
+
+            {#snippet meta()}
+              <span class="method" class:on-account={isOnAccount(row.payment_method_name)}
+                >{methodLabel(row.payment_method_name, {
+                  onAccount: lang.t.method_on_account,
+                  unknown: lang.t.method_unknown
+                })}</span
               >
-            </div>
-            <div class="slip-body">
-              <div class="slip-who">
-                <span class="who-name" class:walkin={row.customer_name === 'walk-in'}>
-                  {row.customer_name === 'walk-in' ? lang.t.sales_walkin : row.customer_name}
-                </span>
-                <span class="who-meta">
-                  <span class="method" class:on-account={isOnAccount(row.payment_method_name)}
-                    >{methodLabel(row.payment_method_name, {
-                      onAccount: lang.t.method_on_account,
-                      unknown: lang.t.method_unknown
-                    })}</span
-                  >
-                  ·
-                  {#if isFullyRefunded(row)}
-                    <Stamp label={lang.t.sales_refunded_state} tone="annulled" />
-                  {:else}
-                    <Stamp label={lang.t.sales_confirmed} />
-                  {/if}
-                </span>
-              </div>
-              <span class="slip-total figures" class:void={annulled}>{formatMoney(row.total)}</span>
-            </div>
-          </article>
-          {#if open}
-            <div class="lines" id="lines-{row.id}" data-doc-detail={row.id}>
+              ·
+              {#if isFullyRefunded(row)}
+                <Stamp label={lang.t.sales_refunded_state} tone="annulled" />
+              {:else}
+                <Stamp label={lang.t.sales_confirmed} />
+              {/if}
+            {/snippet}
+
+            {#snippet detail()}
               <table>
                 <caption>{lang.t.sales_lines_of} #{row.id.slice(0, 8)}</caption>
                 <thead>
@@ -855,8 +821,8 @@
                   </p>
                 {/if}
               </div>
-            </div>
-          {/if}
+            {/snippet}
+          </DaySlip>
         {/each}
       </div>
       {#if rowsBelowFold > 0}
@@ -1125,72 +1091,6 @@
   .num {
     text-align: right;
   }
-
-  .slip {
-    background: var(--surface);
-    border: 1px solid var(--rule);
-    border-radius: var(--panel-radius);
-    overflow: hidden;
-    cursor: pointer;
-    transition: border-color 100ms ease-out;
-  }
-  .slip.open {
-    border-color: var(--rule-strong);
-  }
-  .slip.void {
-    color: var(--ink-soft);
-  }
-  .slip:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-  }
-  .slip-head {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 14px;
-    padding: 10px 14px;
-    border-bottom: 1px solid var(--rule);
-    background: var(--ground);
-  }
-  .slip-id {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
-  }
-  .slip-no {
-    font-size: var(--step-2);
-    font-weight: 700;
-    font-variant-numeric: tabular-nums;
-  }
-  .slip-time {
-    font-size: var(--step--1);
-    color: var(--ink-soft);
-    font-variant-numeric: tabular-nums;
-  }
-  .slip-bal {
-    font-size: var(--step-1);
-    font-weight: 600;
-    color: var(--accent);
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-  }
-  .slip-bal.void,
-  .slip-total.void {
-    color: var(--ink-soft);
-    text-decoration: line-through;
-  }
-  .slip-body {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 14px;
-    align-items: end;
-    padding: 8px 14px 10px;
-  }
-  .slip-who {
-    min-width: 0;
-  }
   .who-name {
     display: block;
     font-weight: 500;
@@ -1200,35 +1100,9 @@
     color: var(--ink-soft);
     font-style: italic;
   }
-  .who-meta {
-    display: flex;
-    align-items: baseline;
-    gap: 0.35em;
-    margin-top: 1px;
-    font-size: var(--step--1);
-    color: var(--ink-soft);
-  }
   .method {
     color: inherit;
     font-size: inherit;
-    white-space: nowrap;
-  }
-  .chev {
-    width: 12px;
-    height: 12px;
-    flex: 0 0 auto;
-    color: var(--ink-soft);
-    transition: transform 120ms ease-out;
-  }
-  .chev.open {
-    transform: rotate(90deg);
-  }
-
-  .slip-total {
-    font-size: var(--step-3);
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-    text-align: right;
     white-space: nowrap;
   }
 
@@ -1236,17 +1110,17 @@
     font-style: italic;
   }
 
-  .lines {
+  :global(.lines) {
     padding: 4px 16px 10px;
   }
-  .lines table {
+  :global(.lines) table {
     width: 100%;
     border-collapse: collapse;
     background: var(--ground);
     border: 1px solid var(--rule);
     border-radius: var(--radius);
   }
-  .lines caption {
+  :global(.lines) caption {
     caption-side: top;
     text-align: left;
     font-family: var(--font-figure);
@@ -1257,20 +1131,20 @@
     color: var(--ink-soft);
     padding: 0 0 5px;
   }
-  .lines th {
+  :global(.lines) th {
     font-size: var(--step--1);
     padding: 6px 10px;
     border-bottom: 1px solid var(--rule);
   }
-  .lines td {
+  :global(.lines) td {
     padding: 6px 10px;
     border-bottom: 1px solid var(--rule);
     font-size: var(--step-1);
   }
-  .lines tr:last-child td {
+  :global(.lines) tr:last-child td {
     border-bottom: 0;
   }
-  .lines .per {
+  :global(.lines) .per {
     color: var(--ink-soft);
     font-size: var(--step-0);
   }
@@ -1560,9 +1434,6 @@
   @media (prefers-reduced-motion: reduce) {
     .bar {
       animation: none;
-    }
-    .chev {
-      transition: none;
     }
   }
 

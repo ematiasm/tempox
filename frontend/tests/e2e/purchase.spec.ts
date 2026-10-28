@@ -1,5 +1,11 @@
 import { expect, test } from '@playwright/test';
-import { money, recordedDocumentId } from './unique.js';
+import {
+  money,
+  purchaseDraftLine,
+  purchaseSlip,
+  purchaseSlipDetail,
+  recordedDocumentId
+} from './unique.js';
 import { pickFromCatalog } from './picker.js';
 
 /**
@@ -40,7 +46,7 @@ test('a purchase is recorded and raises the stock it brought in', async ({ page 
   await page.goto('/purchases');
   await pickFromCatalog(page, name);
 
-  const line = page.locator('.sheet table.lines tbody tr').first();
+  const line = purchaseDraftLine(page);
   await expect(line).toContainText(name);
   // The price is prefilled from the list price, written in the shop's own shape
   // so the field's parser accepts it, and stays overridable: a purchase price
@@ -62,13 +68,13 @@ test('a purchase is recorded and raises the stock it brought in', async ({ page 
   await page.getByRole('button', { name: /Registrar compra/ }).click();
 
   await expect(page.locator('.sheet .done')).toContainText(money(sevenTotal));
-  await expect(page.locator('.sheet table.lines tbody tr')).toHaveCount(0);
+  await expect(page.locator('[data-draft-line]')).toHaveCount(0);
   const purchaseId = await recordedDocumentId(page);
 
   // 5. It is in the day's ledger with its lines behind it. Selected by the id the
   //    draft reported: position is a lie in a shared ledger and a total is not
   //    unique (#52).
-  const doc = page.locator(`.ledger tr.doc[aria-controls="purchase-lines-${purchaseId}"]`);
+  const doc = purchaseSlip(page, purchaseId);
   await expect(doc).toHaveCount(1);
   await expect(doc).toContainText('Proveedor ocasional');
   await expect(doc).toContainText(money(sevenTotal));
@@ -114,4 +120,204 @@ test('the purchase screen speaks the shop language and its English side (S3, S11
   await expect(page.locator('#purchase-supplier option:checked')).toHaveText('One-off supplier');
   const railEn = page.getByRole('navigation', { name: 'Main' });
   await expect(railEn.getByRole('link', { name: 'Purchases' })).toBeVisible();
+});
+
+/**
+ * The direction holds after the redraw: a purchase takes money out of the till,
+ * and a supplier return puts it back.
+ *
+ * S3 of `odd/tasks/purchases-receipt-pad.md`. `/purchases` was rebuilt as the
+ * mirror of `/sales`, and the one thing a mirror must not do is flip the sign: a
+ * sale raises the till, a purchase lowers it. That is arithmetic the component
+ * never owned — the server derives cash from every document — but nothing proved
+ * it end to end after the markup changed, and a redraw is exactly when a screen
+ * quietly starts reading the wrong figure.
+ *
+ * Read from `/accounts`, which is where the till is printed, and measured as a
+ * delta around this test's own documents rather than as an absolute: the
+ * database is shared, so an absolute figure belongs to whatever else ran.
+ */
+test('a purchase lowers the till and its return raises it back', async ({ page }) => {
+  const name = `e2e-direction-${Date.now().toString(36)}`;
+
+  /**
+   * The till's balance, read by the account the server marks as default.
+   *
+   * Not by a name: the seeded till is called "Efectivo", while "Caja del negocio"
+   * is the *tick* rendered inside the row — so a `hasText: 'Caja'` filter matched
+   * every row that carried the tick and then read whichever came first. That
+   * mistake made this test report a purchase *raising* the till by 50 when the
+   * server had lowered it by exactly 50.
+   */
+  const till = async () => {
+    await page.goto('/accounts');
+    const row = page.locator('li.row.is-default');
+    await expect(row).toHaveCount(1);
+    const text = (await row.locator('.figure').first().textContent()) ?? '';
+    // The sign is part of the figure: `-$ 50,00` is a till that owes, and
+    // stripping every non-digit turned it into `+50`. That is exactly how this
+    // test first reported a purchase *raising* the till by 50 when the server
+    // had lowered it by 50 — a bug in the test that looked like a bug in money.
+    const negative = text.trim().startsWith('-');
+    const digits = text.replace(/[^\d,]/g, '').replace(',', '.');
+    return (negative ? -1 : 1) * Number(digits);
+  };
+
+  await page.goto('/products');
+  await page.locator('#new-name').fill(name);
+  await page.locator('#new-price').fill('10,00');
+  await page.getByRole('button', { name: 'Crear producto' }).click();
+  await expect(page.getByRole('status')).toContainText(name);
+
+  const before = await till();
+
+  // 5 units at 10.00 = 50.00 out of the till.
+  await page.goto('/purchases');
+  await pickFromCatalog(page, name);
+  await purchaseDraftLine(page).locator('input[aria-label^="Cant"]').fill('5');
+  await expect(page.locator('.sheet .total')).toHaveText(money('50,00'));
+  await page.getByRole('button', { name: /Registrar compra/ }).click();
+  const purchaseId = await recordedDocumentId(page);
+
+  const afterPurchase = await till();
+  expect(before - afterPurchase).toBeCloseTo(50, 2);
+
+  // Back to the day: `till()` navigates to `/accounts` to read the figure, so the
+  // purchases screen has to be re-entered before its slips exist again.
+  await page.goto('/purchases');
+
+  // Return 2 of the 5: 20.00 comes back. The flow is the two-step confirm the
+  // credit note established, driven from inside the opened document.
+  const doc = purchaseSlip(page, purchaseId);
+  await expect(doc).toHaveCount(1);
+  await doc.click();
+  const detail = purchaseSlipDetail(page, purchaseId);
+  await expect(detail).toHaveCount(1);
+  const returnField = detail.locator('input[aria-label^="Cantidad a devolver"]').first();
+  await expect(returnField).toHaveValue('5');
+  await returnField.fill('2');
+  await detail.getByRole('button', { name: 'Devolver al proveedor…' }).click();
+  await detail.getByRole('button', { name: 'Sí, devolver' }).click();
+
+  // Wait for the written return to land before re-reading the till: the credit
+  // path is asynchronous, and reading immediately is what made this half of the
+  // test report a return of 0 in a full-suite run while passing in isolation.
+  await expect(detail.locator('.return-block')).toHaveCount(1);
+  await expect(detail.locator('.return-block').first()).toContainText('Devolución al proveedor');
+
+  const afterReturn = await till();
+  expect(afterReturn - afterPurchase).toBeCloseTo(20, 2);
+});
+
+/**
+ * A purchase cannot be recorded twice by a caller that is not the button.
+ *
+ * The purchase draft's `record()` checked the supplier and the lines, then set
+ * `submitting` — but it never consulted it on entry, so the disable on the button
+ * was the only thing stopping a second call. The button is one caller; the form's
+ * submit event and the page's F2 handler are others, and a second event queued
+ * before the first render lands reaches the handler regardless.
+ *
+ * `Catalog.svelte` names this exact symmetry in its own comment ("`SaleDraft`
+ * opens with `if (!canRecord) return`, and `canRecord` takes `submitting` for
+ * exactly this reason; this one had lost the symmetry"). `SaleDraft` has it.
+ * `PurchaseDraft` had lost it too, and nothing covered it.
+ *
+ * The stake is higher than a duplicate row: a purchase raises stock and lowers
+ * cash, so recording it twice moves the till twice. Measured before the fix:
+ * two dispatched submits produced two purchases and the till dropped twice.
+ */
+test('a purchase submitted twice while in flight is recorded once', async ({ page }) => {
+  const name = `e2e-dup-purchase-${Date.now().toString(36)}`;
+
+  await page.goto('/products');
+  await page.locator('#new-name').fill(name);
+  await page.locator('#new-price').fill('10,00');
+  await page.locator('#new-stock').fill('0');
+  await page.getByRole('button', { name: 'Crear producto' }).click();
+  await expect(page.getByRole('status')).toContainText(name);
+
+  // Count the writes, and hold the first response so the second submit lands
+  // while it is still in flight — the window the guard exists for.
+  let posts = 0;
+  await page.route('**/api/purchases', async (route) => {
+    if (route.request().method() !== 'POST') return route.continue();
+    posts += 1;
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    await route.continue();
+  });
+
+  await page.goto('/purchases');
+  await pickFromCatalog(page, name);
+  await purchaseDraftLine(page).locator('input[aria-label^="Cant"]').fill('4');
+  await expect(page.locator('.sheet .total')).toHaveText(money('40,00'));
+
+  // Dispatch the recording action twice, synchronously, the way a held key or a
+  // queued event does. Going through the button would prove only that a disabled
+  // button is disabled. Ctrl+Enter is the shortcut the draft really listens for:
+  // the F2 the button prints is not wired on this route, which is recorded
+  // separately in the feature document rather than fixed here.
+  const submitTwice = () =>
+    page.evaluate(() => {
+      for (let i = 0; i < 2; i++) {
+        window.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, cancelable: true })
+        );
+      }
+    });
+
+  await submitTwice();
+
+  await expect(page.locator('.sheet .done')).toContainText(money('40,00'));
+  expect(posts, 'a purchase must be written once, not twice').toBe(1);
+});
+
+/**
+ * The purchase screen announces only shortcuts it actually has.
+ *
+ * The button printed `F2` beside its label, declared
+ * `aria-keyshortcuts="F2 Control+Enter"`, and no handler on the route listened for
+ * F2 — only `Ctrl+Enter`, which the draft registers itself. An advertised shortcut
+ * that does nothing is worse than an absent one: a sighted user presses F2 and
+ * concludes the app is broken, and a screen-reader user is told the key exists and
+ * has no way to discover otherwise. The decision was to stop advertising it, not
+ * to wire it, so this test pins the absence.
+ *
+ * It is a real risk rather than a one-off: `/purchases` was written by copying
+ * `/sales`, and `/sales` legitimately has F2. The copy inherited the *claim*
+ * without the handler, which is exactly how it will come back.
+ */
+test('the purchase screen does not advertise a shortcut it lacks', async ({ page }) => {
+  await page.goto('/purchases');
+
+  const action = page.getByRole('button', { name: /Registrar compra/ });
+  await expect(action).toBeVisible();
+
+  // The only shortcut this screen honours, and the only one it may declare.
+  await expect(action).toHaveAttribute('aria-keyshortcuts', 'Control+Enter');
+
+  // No F2 in the visible label, and no stray <kbd> chip promising one.
+  await expect(action).not.toContainText('F2');
+  await expect(action.locator('kbd')).toHaveCount(0);
+
+  // And the claim is true: Ctrl+Enter really records. A shortcut declared and
+  // unimplemented is the defect this whole test exists for, so the passing half
+  // has to be measured too, or the assertion above only proves silence.
+  await page.goto('/products');
+  const name = `e2e-kbd-${Date.now().toString(36)}`;
+  await page.locator('#new-name').fill(name);
+  await page.locator('#new-price').fill('5,00');
+  await page.getByRole('button', { name: 'Crear producto' }).click();
+  await expect(page.getByRole('status')).toContainText(name);
+
+  await page.goto('/purchases');
+  await pickFromCatalog(page, name);
+  await expect(page.locator('.sheet .total')).toHaveText(money('5,00'));
+
+  await page.evaluate(() => {
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, cancelable: true })
+    );
+  });
+  await expect(page.locator('.sheet .done')).toContainText(money('5,00'));
 });

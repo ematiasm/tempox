@@ -4,70 +4,46 @@
   import PurchaseLedger from '#lib/components/PurchaseLedger.svelte';
 
   // Bumping the token tells the ledger a purchase was just recorded, so the day
-  // reloads and the new document appears.
+  // reloads and the new document appears in the stack.
   let refreshToken = $state(0);
-
-  // The sheet exposes its own `triggerRecord()`, so the pinned action, F2 and
-  // Ctrl+Enter are one code path rather than three that can drift.
   let draft = $state<PurchaseDraft | undefined>(undefined);
   let ready = $state(false);
-  // The period's document count, reported by the ledger once its reads land.
   let docCount = $state<number | null>(null);
-
-  /**
-   * F2 continues the purchase, and what continuing means depends on state.
-   *
-   * With lines in the sheet it records; with an empty sheet it puts the caret in
-   * the product field. One key, one meaning per state — the same rule the sales
-   * surface settled, kept identical so the two screens teach the same reflex.
-   */
-  function onkeydown(e: KeyboardEvent) {
-    if (e.key === 'F2') {
-      e.preventDefault();
-      if (ready) draft?.triggerRecord();
-      else document.getElementById('product-search')?.focus();
-    }
-  }
-
-  // The product field is where a purchase starts, so it holds the caret on
-  // arrival: the operator can type the first product without touching the mouse.
-  $effect(() => {
-    queueMicrotask(() => document.getElementById('product-search')?.focus());
-  });
 </script>
 
-<svelte:window {onkeydown} />
+<!-- The pad and the day, side by side — the same composition as `/sales`, because a
+     purchase is the same document in the other direction. The slip being written
+     is the left column, the day's stack is the right one, and the rule between
+     them is the divider rather than air.
 
+     No band: the statement world gives the figures the loudest voice and puts the
+     single next action at the foot of the slip it closes. -->
 <div class="page">
-  <!-- No band. The statement world gives the figures the loudest voice and puts
-       the single next action at the foot of the draft it closes; a coloured
-       region above everything would shout before the page had said anything.
-       This mirrors /sales exactly, so the two screens read as one product. -->
-  <header class="head">
-    <div class="head-line">
-      <h1>{lang.t.purchases_title}</h1>
-      <span class="tagline">{lang.t.purchases_tagline}</span>
-    </div>
-    {#if docCount !== null}
-      <div class="count">
-        <span class="count-n">{docCount}</span>
-        <span class="count-l">
-          {docCount === 1 ? lang.t.sales_document_one : lang.t.sales_documents}
-        </span>
+  <section class="pad" aria-labelledby="pad-h">
+    <header class="pad-head">
+      <div class="head-line">
+        <h1 id="pad-h">{lang.t.purchases_title}</h1>
+        <span class="tagline">{lang.t.purchases_tagline}</span>
       </div>
-    {/if}
-  </header>
+      {#if docCount !== null}
+        <div class="count">
+          <span class="count-n figures">{docCount}</span>
+          <span class="count-l">
+            {docCount === 1 ? lang.t.sales_document_one : lang.t.sales_documents}
+          </span>
+        </div>
+      {/if}
+    </header>
 
-  <div class="workspace">
-    <section class="panel panel-draft" aria-label={lang.t.purchases_draft_title}>
+    <div class="pad-body">
       <PurchaseDraft
         bind:this={draft}
         onrecorded={() => refreshToken++}
         onready={(r) => (ready = r)}
       />
-      <!-- The page's single next action, pinned to the panel's foot and always on
-           screen. The mobile stack scrolls, so this sticks to the viewport edge
-           rather than floating over the fields above it. -->
+      <!-- The page's single next action, at the foot of the slip it closes and
+           always on screen. The mobile stack scrolls, so this sticks to the
+           viewport edge rather than floating over the fields above it. -->
       <div class="action-foot">
         {#if !ready}
           <span class="why">{lang.t.purchases_action_hint}</span>
@@ -76,66 +52,75 @@
           class="do"
           disabled={!ready}
           onclick={() => draft?.triggerRecord()}
-          aria-keyshortcuts="F2 Control+Enter"
+          aria-keyshortcuts="Control+Enter"
         >
-          {lang.t.purchases_action} <kbd>F2</kbd>
+          {lang.t.purchases_action}
         </button>
       </div>
-    </section>
-    <section class="panel panel-ledger" aria-label={lang.t.purchases_ledger_title}>
-      <PurchaseLedger {refreshToken} oncount={(c) => (docCount = c)} />
-    </section>
-  </div>
+    </div>
+  </section>
+
+  <section class="day" aria-labelledby="day-h">
+    <span class="sr-only" id="day-h">{lang.t.purchases_ledger_title}</span>
+    <PurchaseLedger {refreshToken} oncount={(c) => (docCount = c)} />
+  </section>
 </div>
 
 <style>
-  :global(.content) {
-    height: 100dvh;
-    overflow: hidden;
-  }
-
+  /* Two columns divided by one rule: the slip is the work in hand and gets a
+     fixed, comfortable width; the day takes the rest, because a stack of
+     documents reads better wide than a form does. */
   .page {
     display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-columns: minmax(0, 620px) minmax(360px, 1fr);
     height: 100%;
     min-height: 0;
   }
 
-  .head {
-    padding: 22px 26px 16px 28px;
+  .pad {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    min-height: 0;
+    border-right: 1px solid var(--rule);
+    padding: 20px 0 20px 26px;
+  }
+
+  .pad-head {
     display: flex;
     align-items: baseline;
     justify-content: space-between;
-    gap: 20px;
+    gap: 18px;
+    padding: 0 22px 13px 0;
+    flex-wrap: wrap;
   }
   .head-line {
     display: flex;
     align-items: baseline;
-    gap: 14px;
+    gap: 13px;
     flex-wrap: wrap;
   }
-  .head h1 {
+  .pad-head h1 {
     font-family: var(--font-figure);
     font-size: var(--step-4);
     font-weight: 600;
     line-height: 1.1;
     letter-spacing: -0.01em;
     color: var(--ink);
+    margin: 0;
   }
   .tagline {
-    font-size: var(--step-0);
+    font-size: var(--step--1);
     color: var(--ink-soft);
   }
+
   .count {
     display: flex;
     align-items: baseline;
     gap: 8px;
   }
   .count-n {
-    font-family: var(--font-figure);
     font-size: var(--step-4);
     font-weight: 700;
-    font-variant-numeric: tabular-nums;
     line-height: 1;
     color: var(--ink);
   }
@@ -148,35 +133,22 @@
     color: var(--ink-soft);
   }
 
-  .workspace {
-    display: grid;
-    grid-template-columns: minmax(520px, 1fr) minmax(420px, 640px);
-    gap: var(--panel-gap);
-    align-items: stretch;
-    padding: 0 26px 26px 28px;
-    min-height: 0;
-  }
-  .workspace > section {
-    min-height: 0;
-  }
-
-  .panel-draft {
+  /* The slip is a closed surface so the action can sit at its foot and still read
+     as part of the document it closes. */
+  .pad-body {
     display: flex;
     flex-direction: column;
     min-height: 0;
+    margin-right: 22px;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: var(--panel-radius);
     overflow: hidden;
   }
 
   .action-foot {
     flex-shrink: 0;
-    /* Pushed to the panel's foot. Without this it follows the sheet's content and
-       stops wherever that ends — measured on an empty draft, the action landed at
-       y≈395 inside a panel running to y≈874, leaving ~480px of surface below an
-       action that read as the page having run out of content. The panel is a
-       column that fills its grid track; its action belongs at the bottom of that
-       track, not at the bottom of the content. */
-    margin-top: auto;
-    padding: 16px 20px 20px;
+    padding: 12px 18px 16px;
     border-top: 1px solid var(--rule);
     background: var(--surface);
   }
@@ -188,16 +160,8 @@
     text-align: center;
   }
 
-  .panel-ledger {
-    min-height: 480px;
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-  }
-
-  /* Solid ink, never the accent: the accent belongs to the running balance on
-     /sales and to the live destination, and this page does not get a second
-     claim on it. */
+  /* Solid ink bar, never the accent: the accent belongs to the one figure the
+     screen exists to make readable. */
   .do {
     width: 100%;
     display: inline-flex;
@@ -225,35 +189,61 @@
     border: 1px dashed var(--rule-strong);
     cursor: default;
   }
-  .do kbd {
-    font-family: var(--font-text);
-    font-size: var(--step--1);
-    font-weight: 600;
-    letter-spacing: 0.02em;
-    text-transform: none;
-    color: inherit;
-    border: 1px solid currentColor;
-    border-radius: 2px;
-    padding: 1px 5px;
-    opacity: 0.75;
+
+  .day {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    padding: 20px 26px 20px 22px;
   }
 
-  @media (max-width: 1080px) {
+  .sr-only {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  :global(.content) {
+    height: 100dvh;
+    overflow: hidden;
+  }
+
+  /* Below this width the two columns stop fitting beside each other: the stack
+     scrolls like a document and the action sticks to the bottom edge. */
+  @media (max-width: 1120px) {
     :global(.content) {
       height: auto;
       min-height: 100dvh;
       overflow: visible;
     }
-    .workspace {
+    .page {
       grid-template-columns: minmax(0, 1fr);
+      height: auto;
     }
-    .panel-draft {
-      max-height: none;
+    .pad {
+      border-right: 0;
+      border-bottom: 1px solid var(--rule);
+      padding: 18px 20px;
+    }
+    .pad-head {
+      padding: 0 0 12px;
+    }
+    .pad-body {
+      margin-right: 0;
     }
     .action-foot {
       position: sticky;
       bottom: 0;
       z-index: 3;
+    }
+    .day {
+      padding: 18px 20px;
     }
   }
 </style>

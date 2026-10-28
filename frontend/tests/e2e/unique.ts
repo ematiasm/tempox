@@ -122,3 +122,25 @@ export function daySlip(page: Page, id: string): Locator {
 export function daySlipDetail(page: Page, id: string): Locator {
   return page.locator(`[data-doc-detail="${id}"]`);
 }
+
+/**
+ * One line in the purchase draft, and one recorded purchase in its day.
+ *
+ * Purchases are the mirror of sales, so they get the same contract rather than a
+ * second convention: `data-draft-line` for a line being typed, `data-doc-row` for
+ * a recorded document and `data-doc-detail` for the panel it opens. The selectors
+ * used to name `<tr>` elements in a table, which pinned the tests to markup the
+ * receipt-pad direction removed from both screens.
+ */
+export function purchaseDraftLine(page: Page, hasText?: string): Locator {
+  const all = page.locator('[data-draft-line]');
+  return hasText === undefined ? all.first() : all.filter({ hasText });
+}
+
+export function purchaseSlip(page: Page, id: string): Locator {
+  return page.locator(`[data-doc-row="${id}"]`);
+}
+
+export function purchaseSlipDetail(page: Page, id: string): Locator {
+  return page.locator(`[data-doc-detail="${id}"]`);
+}
