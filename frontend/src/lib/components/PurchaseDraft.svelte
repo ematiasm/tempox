@@ -135,13 +135,20 @@
   /**
    * Ctrl/Cmd+Enter records, so the keyboard flow never needs the mouse.
    *
-   * This lives here rather than on the page because `record()` does: the page's
-   * F2 handler and this one are the same action reached two ways, and the sheet
-   * owning its own shortcut is what keeps them from drifting. It was missing —
-   * the page advertised `Control+Enter` in `aria-keyshortcuts` and nothing
-   * listened, so the shortcut the sales screen teaches silently did nothing
-   * here. The review caught it; the button had been promising it since the page
-   * was written.
+   * This lives here rather than on the page because `record()` does: the sheet
+   * owning its own shortcut is what keeps the action and the key from drifting.
+   * It was missing once — the page advertised `Control+Enter` in
+   * `aria-keyshortcuts` and nothing listened, so the shortcut the sales screen
+   * teaches silently did nothing here. The review caught it; the button had been
+   * promising it since the page was written.
+   *
+   * This is the ONLY shortcut this screen has, and the button now says only this.
+   * It used to print `F2` beside its label and declare `F2 Control+Enter` to
+   * assistive technology, while no handler on the route listened for F2 at all:
+   * a shortcut advertised and unimplemented is a lie a screen reader repeats.
+   * The decision was to stop advertising it rather than to wire it, so `/sales`
+   * keeps its F2 (that page really does handle it) and `/purchases` does not
+   * claim one.
    */
   function onsheetkeydown(e: KeyboardEvent) {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {

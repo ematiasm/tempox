@@ -52,9 +52,9 @@
           class="do"
           disabled={!ready}
           onclick={() => draft?.triggerRecord()}
-          aria-keyshortcuts="F2 Control+Enter"
+          aria-keyshortcuts="Control+Enter"
         >
-          {lang.t.purchases_action} <kbd>F2</kbd>
+          {lang.t.purchases_action}
         </button>
       </div>
     </div>
@@ -188,18 +188,6 @@
     color: var(--ink-soft);
     border: 1px dashed var(--rule-strong);
     cursor: default;
-  }
-  .do kbd {
-    font-family: var(--font-text);
-    font-size: var(--step--1);
-    font-weight: 600;
-    letter-spacing: 0.02em;
-    text-transform: none;
-    color: inherit;
-    border: 1px solid currentColor;
-    border-radius: 2px;
-    padding: 1px 5px;
-    opacity: 0.75;
   }
 
   .day {

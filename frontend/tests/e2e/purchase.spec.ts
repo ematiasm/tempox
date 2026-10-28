@@ -271,3 +271,53 @@ test('a purchase submitted twice while in flight is recorded once', async ({ pag
   await expect(page.locator('.sheet .done')).toContainText(money('40,00'));
   expect(posts, 'a purchase must be written once, not twice').toBe(1);
 });
+
+/**
+ * The purchase screen announces only shortcuts it actually has.
+ *
+ * The button printed `F2` beside its label, declared
+ * `aria-keyshortcuts="F2 Control+Enter"`, and no handler on the route listened for
+ * F2 — only `Ctrl+Enter`, which the draft registers itself. An advertised shortcut
+ * that does nothing is worse than an absent one: a sighted user presses F2 and
+ * concludes the app is broken, and a screen-reader user is told the key exists and
+ * has no way to discover otherwise. The decision was to stop advertising it, not
+ * to wire it, so this test pins the absence.
+ *
+ * It is a real risk rather than a one-off: `/purchases` was written by copying
+ * `/sales`, and `/sales` legitimately has F2. The copy inherited the *claim*
+ * without the handler, which is exactly how it will come back.
+ */
+test('the purchase screen does not advertise a shortcut it lacks', async ({ page }) => {
+  await page.goto('/purchases');
+
+  const action = page.getByRole('button', { name: /Registrar compra/ });
+  await expect(action).toBeVisible();
+
+  // The only shortcut this screen honours, and the only one it may declare.
+  await expect(action).toHaveAttribute('aria-keyshortcuts', 'Control+Enter');
+
+  // No F2 in the visible label, and no stray <kbd> chip promising one.
+  await expect(action).not.toContainText('F2');
+  await expect(action.locator('kbd')).toHaveCount(0);
+
+  // And the claim is true: Ctrl+Enter really records. A shortcut declared and
+  // unimplemented is the defect this whole test exists for, so the passing half
+  // has to be measured too, or the assertion above only proves silence.
+  await page.goto('/products');
+  const name = `e2e-kbd-${Date.now().toString(36)}`;
+  await page.locator('#new-name').fill(name);
+  await page.locator('#new-price').fill('5,00');
+  await page.getByRole('button', { name: 'Crear producto' }).click();
+  await expect(page.getByRole('status')).toContainText(name);
+
+  await page.goto('/purchases');
+  await pickFromCatalog(page, name);
+  await expect(page.locator('.sheet .total')).toHaveText(money('5,00'));
+
+  await page.evaluate(() => {
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, cancelable: true })
+    );
+  });
+  await expect(page.locator('.sheet .done')).toContainText(money('5,00'));
+});

@@ -139,9 +139,14 @@ the rule lives in one place and the guard is real.
    `<kbd>F2</kbd>`, carries `aria-keyshortcuts="F2 Control+Enter"`, and the hint
    says "Ctrl+Enter registra" — but the route registers no key handler at all.
    `Ctrl+Enter` happens to work because the draft listens for it itself; `F2` does
-   nothing. `/sales` wires F2 on the page. **Not fixed here** — it is a separate
-   behaviour decision (wire F2, or stop advertising it) and it is recorded rather
-   than silently guessed.
+   nothing. `/sales` wires F2 on the page. **Decided by the owner on 2026-10-28:
+   stop advertising it.** The button now prints only its label and declares
+   `aria-keyshortcuts="Control+Enter"`; `/sales` keeps its F2, which it really
+   handles. `PurchaseDraft`'s comment no longer claims a page-level F2 handler that
+   never existed. A test pins the absence AND measures that Ctrl+Enter still
+   records, because asserting silence alone would pass for a screen that honours
+   nothing. Proven to bite by restoring the false claim: `Expected:
+   "Control+Enter", Received: "F2 Control+Enter"`.
 
 **Third finding, about coverage rather than code:** crippling `SaleDraft`'s guard
 (`canRecordNow(lines, false)`) left all six sale specs green. The sale screen was
@@ -149,7 +154,7 @@ correct but untested on this exact risk, so a later refactor could have removed 
 guard with the suite's blessing. Both directions now have the test, and both were
 proven to bite by breaking the guard and observing `Received: 2`.
 
-Evidence: `make test` — 263 unit / 67 backend / 157 integration / **37 e2e**.
+Evidence: `make test` — 263 unit / 67 backend / 157 integration / **38 e2e**.
 
 **Deferred, with its criterion:** extracting the shared *frame* of the two drafts
 (header, printed row, foot) as presentational components — the move that worked for
