@@ -13545,3 +13545,216 @@ async fn v4_expenses_an_advance_is_refused_where_it_would_be_meaningless(pool: s
         "no refused advance wrote a payment"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v4-expenses E1-T4 — the ledger and the summary
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// `odd/tasks/v4-expenses.md` S8 and S9. Two claims: `paid` and `outstanding` are
+// **derived**, never stored, and the summary answers "what did the shop spend" in two
+// terms — the expenses it recorded plus the purchases it already has.
+
+#[sqlx::test]
+async fn v4_expenses_the_ledger_derives_paid_and_outstanding_and_scopes_by_day(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+    let category = category_named(&pool, "Servicios").await;
+
+    // One paid expense and one owed expense with a partial advance.
+    let paid = client
+        .post(
+            "/api/expenses",
+            serde_json::json!({
+                "category_id": category, "payee": "Edenor", "amount": "80.00"
+            }),
+        )
+        .await;
+    paid.expect_status(axum::http::StatusCode::CREATED);
+    let paid_id = paid.body["id"].as_str().expect("id").to_string();
+
+    let owed = client
+        .post(
+            "/api/expenses",
+            serde_json::json!({
+                "category_id": category, "payee": "AySA", "amount": "200.00",
+                "payment_method_id": "on_account"
+            }),
+        )
+        .await;
+    let owed_id = owed.body["id"].as_str().expect("id").to_string();
+
+    client
+        .post(
+            &format!("/api/expenses/{owed_id}/advances"),
+            serde_json::json!({ "amount": "50.00" }),
+        )
+        .await
+        .expect_status(axum::http::StatusCode::CREATED);
+
+    let listed = client.get("/api/expenses").await;
+    listed.expect_status(axum::http::StatusCode::OK);
+    let rows = listed.json().as_array().expect("an array of expenses");
+    assert_eq!(rows.len(), 2, "the ledger returns both: {listed:?}");
+
+    // Found by id, never by position: the ledger is shared and ordered by time.
+    let find = |id: &str| {
+        rows.iter()
+            .find(|row| row["id"] == serde_json::json!(id))
+            .unwrap_or_else(|| panic!("row {id} in {listed:?}"))
+    };
+
+    let paid_row = find(&paid_id);
+    assert_eq!(paid_row["paid"], "80.00", "a cash expense is paid in full");
+    assert_eq!(paid_row["outstanding"], "0.00");
+    assert_eq!(paid_row["payment_method_name"], "cash");
+    assert_eq!(paid_row["category_name"], "Servicios", "the name is joined");
+
+    let owed_row = find(&owed_id);
+    assert_eq!(owed_row["paid"], "50.00", "the advance counts as paid");
+    assert_eq!(
+        owed_row["outstanding"], "150.00",
+        "outstanding is amount minus what was advanced, derived"
+    );
+    assert_eq!(
+        owed_row["payment_method_name"],
+        serde_json::Value::Null,
+        "an owed document has no rail of its own"
+    );
+
+    // **Nothing is stored.** The claim is that these figures are subtractions of rows, so
+    // the schema must not have columns to disagree with them. Asserted rather than assumed.
+    let columns: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM information_schema.columns
+          WHERE table_name = 'expenses' AND column_name IN ('paid', 'outstanding')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect columns");
+    assert_eq!(
+        columns, 0,
+        "paid and outstanding are derived; a stored copy could disagree with its own sources"
+    );
+}
+
+#[sqlx::test]
+async fn v4_expenses_the_summary_counts_expenses_and_purchases_and_nets_returns(
+    pool: sqlx::PgPool,
+) {
+    let client = common::client(pool.clone());
+    let category = category_named(&pool, "Mantenimiento").await;
+
+    // An expense recorded in a known window. The instant is passed explicitly so the test
+    // does not depend on the wall clock — `docs/en/testing.md`'s rule, and the one the
+    // e2e helper `unique.ts` exists because of.
+    let at = chrono::DateTime::parse_from_rfc3339("2026-03-15T12:00:00Z")
+        .expect("a fixed instant")
+        .with_timezone(&chrono::Utc);
+    client
+        .post(
+            "/api/expenses",
+            serde_json::json!({
+                "category_id": category, "payee": "Ferreteria",
+                "amount": "300.00", "occurred_at": at
+            }),
+        )
+        .await
+        .expect_status(axum::http::StatusCode::CREATED);
+
+    // A purchase and a supplier return in the same window, through the API so the summary
+    // is measured against documents the system actually wrote.
+    let supplier = client
+        .post(
+            "/api/suppliers",
+            serde_json::json!({ "name": "Proveedor T4" }),
+        )
+        .await;
+    let supplier_id = supplier.body["id"]
+        .as_str()
+        .expect("supplier id")
+        .to_string();
+
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "Clavo T4", "list_price": "100.00" }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("product id").to_string();
+
+    let purchase = client
+        .post(
+            "/api/purchases",
+            serde_json::json!({
+                "supplier_id": supplier_id,
+                "items": [{ "product_id": product_id, "quantity": 5 }]
+            }),
+        )
+        .await;
+    purchase.expect_status(axum::http::StatusCode::CREATED);
+    // **The create response nests the document under `purchase`.** Reading `body["id"]`
+    // panicked here, and the panic is the useful part: the shape is
+    // `{purchase: {...}, items: [...]}`, and a test that guessed the flat shape would have
+    // been asserting against a field that never existed.
+    let purchase_id = purchase.body["purchase"]["id"]
+        .as_str()
+        .expect("purchase id")
+        .to_string();
+    let item_id = purchase.body["items"][0]["id"]
+        .as_str()
+        .expect("item id")
+        .to_string();
+
+    client
+        .post(
+            &format!("/api/purchases/{purchase_id}/supplier-returns"),
+            serde_json::json!({ "items": [{ "purchase_item_id": item_id, "quantity": 2 }] }),
+        )
+        .await
+        .expect_status(axum::http::StatusCode::CREATED);
+
+    // **The two windows are the assertion that each term is scoped by its own clock.**
+    // The expense carries `occurred_at` in March; the purchase and the return were created
+    // *now*, which is not March. So a March window must contain the expense and none of the
+    // purchases, and an unbounded window must contain all three. If `purchases` were summed
+    // by the expense's clock, or if `expenses` were scoped by `created_at`, one of the two
+    // blocks below fails.
+    let from = "2026-03-01T00:00:00Z";
+    let to = "2026-04-01T00:00:00Z";
+    let summary = client
+        .get(&format!("/api/expenses/summary?from={from}&to={to}"))
+        .await;
+    summary.expect_status(axum::http::StatusCode::OK);
+
+    assert_eq!(
+        summary.body["expenses"], "300.00",
+        "the recorded expense, scoped by occurred_at: {summary:?}"
+    );
+    assert_eq!(
+        summary.body["purchases"], "0.00",
+        "the purchase was created now, not in March: purchases are scoped by created_at, \
+         not by the expense's occurred_at"
+    );
+    assert_eq!(summary.body["supplier_returns"], "0.00");
+    assert_eq!(
+        summary.body["net"], "300.00",
+        "one expense and nothing else"
+    );
+    assert_eq!(summary.body["documents"], 1, "one expense in the window");
+
+    // And the wide window, where all three documents are in scope. This is the assertion
+    // that the purchases term is real rather than a zero-shaped placeholder.
+    let wide = client.get("/api/expenses/summary").await;
+    wide.expect_status(axum::http::StatusCode::OK);
+    assert_eq!(wide.body["expenses"], "300.00");
+    assert_eq!(
+        wide.body["purchases"], "500.00",
+        "five units at the list price"
+    );
+    assert_eq!(
+        wide.body["supplier_returns"], "200.00",
+        "two units came back"
+    );
+    assert_eq!(
+        wide.body["net"], "600.00",
+        "300 expenses + 500 purchases − 200 returned"
+    );
+}

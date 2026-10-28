@@ -27,7 +27,7 @@
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     routing::{get, patch},
 };
@@ -185,7 +185,11 @@ async fn update_expense_category(
 
 pub fn routes_with_expenses() -> Router<AppState> {
     Router::new()
-        .route("/expenses", axum::routing::post(create_expense))
+        .route(
+            "/expenses",
+            axum::routing::get(list_expenses).post(create_expense),
+        )
+        .route("/expenses/summary", axum::routing::get(expenses_summary))
         .route(
             "/expenses/{id}/advances",
             axum::routing::post(create_expense_advance),
@@ -523,4 +527,235 @@ async fn create_expense_advance(
             outstanding: total - paid - body.amount,
         }),
     ))
+}
+
+// ── The ledger ─────────────────────────────────────────────────────────────
+
+const MAX_LIST_LIMIT: i64 = 200;
+
+#[derive(Debug, serde::Deserialize)]
+pub struct ExpensesQuery {
+    #[serde(default)]
+    pub limit: Option<i64>,
+    #[serde(default)]
+    pub offset: Option<i64>,
+    /// Inclusive lower bound on `occurred_at`. Absent means no lower bound.
+    #[serde(default)]
+    pub from: Option<chrono::DateTime<chrono::Utc>>,
+    /// Exclusive upper bound, so adjacent days partition the ledger instead of
+    /// double-counting a document recorded at midnight — the contract every other ledger
+    /// in this system has.
+    #[serde(default)]
+    pub to: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// A row of the expense ledger: the document, its names by join, and the two figures that
+/// are **derived** rather than stored.
+///
+/// `paid` and `outstanding` are computed by the query — `SUM(payments)` and the subtraction
+/// — because a stored copy is a number that can disagree with the rows it summarises, which
+/// is why `sales` lost its lifecycle column in `0015`.
+#[derive(Debug, serde::Serialize)]
+pub struct ExpenseRow {
+    pub id: Uuid,
+    pub category_id: Uuid,
+    pub category_name: String,
+    pub payee: String,
+    #[serde(serialize_with = "crate::money::serialize_amount")]
+    pub amount: rust_decimal::Decimal,
+    pub occurred_at: chrono::DateTime<chrono::Utc>,
+    pub payment_method_id: Option<Uuid>,
+    pub payment_method_name: Option<String>,
+    #[serde(serialize_with = "crate::money::serialize_amount")]
+    pub paid: rust_decimal::Decimal,
+    #[serde(serialize_with = "crate::money::serialize_amount")]
+    pub outstanding: rust_decimal::Decimal,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+async fn list_expenses(
+    State(state): State<AppState>,
+    Query(params): Query<ExpensesQuery>,
+) -> Result<Json<Vec<ExpenseRow>>, StatusCode> {
+    let limit = params.limit.unwrap_or(50).clamp(1, MAX_LIST_LIMIT);
+    // A negative offset is not a page request: OFFSET refuses it in Postgres, and turning
+    // that into a 500 would blame the server for a bad query. Every other ledger clamps the
+    // same way, because a filter that behaves differently on two screens reads as a bug.
+    let offset = params.offset.unwrap_or(0).max(0);
+
+    // **One statement for the rows and their figures**, rather than a query per row: `paid`
+    // is a sum over a different table, and asking it once per document is the N+1 this
+    // ledger can avoid cheaply because expenses are few and payments fewer.
+    //
+    // `LEFT JOIN` for the method, for the reason the create readback gives: an `INNER JOIN`
+    // would drop an owed expense from the ledger with no error — the trap `purchases.rs`
+    // documents. The payments join is aggregated in a subquery so a document with two
+    // advances yields one row, not two.
+    let rows = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            Uuid,
+            String,
+            String,
+            rust_decimal::Decimal,
+            chrono::DateTime<chrono::Utc>,
+            Option<Uuid>,
+            Option<String>,
+            rust_decimal::Decimal,
+            chrono::DateTime<chrono::Utc>,
+        ),
+    >(
+        "SELECT e.id, e.category_id, c.name, e.payee, e.amount, e.occurred_at,
+                e.payment_method_id, pm.name,
+                COALESCE(p.paid, 0),
+                e.created_at
+           FROM expenses e
+           JOIN expense_categories c ON c.id = e.category_id
+           LEFT JOIN payment_methods pm ON pm.id = e.payment_method_id
+           LEFT JOIN (
+                SELECT party_id, SUM(total) AS paid
+                  FROM payments
+                 WHERE party_kind = 'expense'
+                 GROUP BY party_id
+           ) p ON p.party_id = e.id
+          WHERE ($1::timestamptz IS NULL OR e.occurred_at >= $1)
+            AND ($2::timestamptz IS NULL OR e.occurred_at < $2)
+          ORDER BY e.occurred_at DESC, e.id
+          LIMIT $3 OFFSET $4",
+    )
+    .bind(params.from)
+    .bind(params.to)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| {
+        tracing::error!(?e, "list_expenses failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let expenses = rows
+        .into_iter()
+        .map(
+            |(
+                id,
+                category_id,
+                category_name,
+                payee,
+                amount,
+                occurred_at,
+                payment_method_id,
+                payment_method_name,
+                paid,
+                created_at,
+            )| ExpenseRow {
+                id,
+                category_id,
+                category_name,
+                payee,
+                amount,
+                occurred_at,
+                payment_method_id,
+                payment_method_name,
+                paid,
+                outstanding: amount - paid,
+                created_at,
+            },
+        )
+        .collect();
+
+    Ok(Json(expenses))
+}
+
+// ── The summary ────────────────────────────────────────────────────────────
+
+/// What the shop spent in a period, in two terms plus the correction that nets them.
+///
+/// `net = expenses + purchases − supplier_returns`. The purchases term is **derived, not
+/// copied** (`D1`): a purchase keeps meaning "goods arrived and money left, with a
+/// supplier", and copying it into `expenses` would be two records of one fact. `PRODUCT.md`
+/// forbids a report justifying a new column at write time, so the purchase gains no
+/// category and enters here as one group.
+///
+/// **Payments appear in no term.** An advance is the settlement of an amount already
+/// counted at full in `expenses`; adding it would count the same coin twice, which is the
+/// sentence `routes/payments.rs` exists to keep for settlements.
+#[derive(Debug, serde::Serialize)]
+pub struct SpendingSummary {
+    #[serde(serialize_with = "crate::money::serialize_amount")]
+    pub expenses: rust_decimal::Decimal,
+    #[serde(serialize_with = "crate::money::serialize_amount")]
+    pub purchases: rust_decimal::Decimal,
+    #[serde(serialize_with = "crate::money::serialize_amount")]
+    pub supplier_returns: rust_decimal::Decimal,
+    #[serde(serialize_with = "crate::money::serialize_amount")]
+    pub net: rust_decimal::Decimal,
+    pub documents: i64,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct SummaryQuery {
+    #[serde(default)]
+    pub from: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    pub to: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+async fn expenses_summary(
+    State(state): State<AppState>,
+    Query(params): Query<SummaryQuery>,
+) -> Result<Json<SpendingSummary>, StatusCode> {
+    // **Each term is scoped by its own document's clock, and that is the decision the
+    // comments in the test call out.** An expense carries `occurred_at` — the day it
+    // belongs to, which is the whole reason an owed salary can be entered in October and
+    // paid in November. A purchase carries only `created_at`: it is a fact about the day
+    // the goods arrived. Using one clock for both would silently misdate half the answer.
+    let row = sqlx::query_as::<
+        _,
+        (
+            rust_decimal::Decimal,
+            rust_decimal::Decimal,
+            rust_decimal::Decimal,
+            i64,
+        ),
+    >(
+        "WITH recorded AS (
+             SELECT COALESCE(SUM(amount), 0) AS total, count(*) AS docs
+               FROM expenses
+              WHERE ($1::timestamptz IS NULL OR occurred_at >= $1)
+                AND ($2::timestamptz IS NULL OR occurred_at < $2)
+         ),
+         bought AS (
+             SELECT COALESCE(SUM(total), 0) AS total
+               FROM purchases
+              WHERE ($1::timestamptz IS NULL OR created_at >= $1)
+                AND ($2::timestamptz IS NULL OR created_at < $2)
+         ),
+         returned AS (
+             SELECT COALESCE(SUM(total), 0) AS total
+               FROM supplier_returns
+              WHERE ($1::timestamptz IS NULL OR created_at >= $1)
+                AND ($2::timestamptz IS NULL OR created_at < $2)
+         )
+         SELECT recorded.total, bought.total, returned.total, recorded.docs
+           FROM recorded, bought, returned",
+    )
+    .bind(params.from)
+    .bind(params.to)
+    .fetch_one(&state.db)
+    .await
+    .map_err(|e| {
+        tracing::error!(?e, "expenses_summary failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let (expenses, purchases, supplier_returns, documents) = row;
+    Ok(Json(SpendingSummary {
+        expenses,
+        purchases,
+        supplier_returns,
+        net: expenses + purchases - supplier_returns,
+        documents,
+    }))
 }
