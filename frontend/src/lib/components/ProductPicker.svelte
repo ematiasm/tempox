@@ -172,10 +172,10 @@
   }
   .match.active button {
     background: var(--ink);
-    color: #f2efe6;
+    color: var(--surface);
   }
   .match.active .meta {
-    color: rgb(242 239 230 / 0.86);
+    color: color-mix(in srgb, var(--surface) 86%, transparent);
   }
   .name {
     font-size: var(--step-2);
