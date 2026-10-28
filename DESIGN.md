@@ -126,9 +126,13 @@ Near-white surfaces and cool rules let ink carry the reading; blue is reserved f
 
 ## Layout
 
-The shell uses an 88px navigation rail as the page's margin, with the work area beside it. On the sales surface, a heading and document count sit above two work panels: the draft gets the wider column, and the day's ledger is a bounded reading column. The panels have a 24px gap and each has its own closed edge. Desktop work fits the viewport; at narrower widths the panels stack and the page scrolls. At 860px and below, the navigation becomes a horizontal bar while remaining visible.
+The shell uses an 88px navigation rail as the page's margin, with the work area beside it. On the sales surface the page is divided by a single rule into a **pad** and a **day**: the slip being written is the left column at a fixed 620px, and the day's stack of documents takes the rest, because a stack reads better wide than a form does. Desktop work fits the viewport; at 1120px and below the columns stack and the page scrolls. At 860px and below, the navigation becomes a horizontal bar while remaining visible.
 
-Within the panels, fixed headings and controls frame the content that needs to scroll. The ledger scrolls within its own frame; its running balance sits at the left of each row. The primary action remains at the foot of the draft panel, outside its scrolling middle.
+The pad is one closed surface holding the slip and, at its foot, the page's single next action — outside the slip's scrolling middle, so the action is never the thing you scroll to find. The day scrolls its own stack of documents within the column.
+
+**The Slip Composition Rule.** The day is not a table. Each document is a slip: a head carrying its number, time and the balance it inherits, and a body carrying the customer, the method, its state word and its total. The draft is the same artifact, drawn before it is printed. Nothing in this composition shares a column with anything else, which is what lets a long product name wrap without pushing every other document out of alignment. The unit price and quantity still align, because they are figures on one line, but that alignment stops at the slip's edge.
+
+**The Balance Lives in the Document Rule.** The running balance is still recomputed oldest-first and still the statement's signature, but it is now printed in each document's own head rather than in a column that spans the page. A document that contributes nothing still shows the balance it inherits, struck through, so the number never breaks.
 
 ## Elevation & Depth
 
@@ -169,11 +173,13 @@ The rail is the page's margin, not a filled slab.
 
 ### Ledger Row and Balance
 
-Rows are document figures, not generic CRUD records.
+Rows are documents, not generic CRUD records, and each is drawn as a slip rather than as a table row.
 
-- **Signature:** a recomputed, right-aligned running balance in the ledger's left margin, set in blue and tabular figures.
-- **Rows:** fine-rule separators; the balance column has a right boundary to distinguish its continuous reading column.
-- **Annulled or fully refunded:** the row's amount and inherited balance are struck through; a cancellation does not add money to the running balance.
+- **Signature:** a recomputed, right-aligned running balance in each slip's head, set in blue and tabular figures.
+- **Slip:** a closed surface with an 8px radius; its head sits on the ground with a fine-rule lower edge, and the body stays on white.
+- **Opens in place:** the whole slip is the control — a keyboard-reachable element with `aria-expanded` and `aria-controls` — and its lines, credit notes and refund form open beneath it.
+- **Annulled or fully refunded:** the slip's total and inherited balance are struck through; a cancellation does not add money to the running balance.
+- **Never a table:** a column that spans the page would force every document into one row's width, and the document is the thing being read.
 
 ### Document State
 

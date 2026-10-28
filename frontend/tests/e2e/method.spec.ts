@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { lineTotal, money, recordedDocumentId } from './unique.js';
+import { daySlip, lineTotal, money, recordedDocumentId, saleDraftLine } from './unique.js';
 import { pickFromCatalog } from './picker.js';
 
 /**
@@ -51,7 +51,7 @@ test('a sale paid by transfer lands in that account, not in the till', async ({ 
   await page.goto('/sales');
   await pickFromCatalog(page, productName);
 
-  const line = page.locator('.sheet table.lines tbody tr').first();
+  const line = saleDraftLine(page);
   await expect(line).toContainText(productName);
 
   const picker = page.getByLabel('Medio', { exact: true });
@@ -66,9 +66,9 @@ test('a sale paid by transfer lands in that account, not in the till', async ({ 
   const id = await recordedDocumentId(page);
   // The full id appears only in the row's `aria-controls`, the same selector
   // `sale.spec.ts` uses — position and total are not identities (#52).
-  const ledgerRow = page.locator(`table.docs tbody tr.doc[aria-controls="lines-${id}"]`);
+  const ledgerRow = daySlip(page, id);
   await expect(ledgerRow).toHaveCount(1);
-  await expect(ledgerRow.locator('td.method')).toHaveText(methodName);
+  await expect(ledgerRow.locator('.method')).toHaveText(methodName);
 
   // 5. The point: the bank holds it, the till does not.
   await page.goto('/accounts');
@@ -162,10 +162,10 @@ test('a sale on account says so in the ledger, instead of an empty cell', async 
   // The ledger row for that sale, found by identity — the same `aria-controls`
   // selector the other specs use, never by position or total (#52).
   await page.goto('/sales');
-  const row = page.locator(`table.docs tbody tr.doc[aria-controls="lines-${saleId}"]`);
+  const row = daySlip(page, saleId);
   await expect(row).toHaveCount(1);
 
-  const cell = row.locator('td.method');
+  const cell = row.locator('.method');
   await expect(cell).toHaveText('A cuenta');
   // The empty cell is the defect, and it is what this asserts against.
   await expect(cell).not.toBeEmpty();
@@ -186,9 +186,9 @@ test('a sale on account says so in the ledger, instead of an empty cell', async 
   ).json()) as { id: string };
 
   await page.reload();
-  const cashRow = page.locator(`table.docs tbody tr.doc[aria-controls="lines-${cashSaleId}"]`);
+  const cashRow = daySlip(page, cashSaleId);
   await expect(cashRow).toHaveCount(1);
-  const cashCell = cashRow.locator('td.method');
+  const cashCell = cashRow.locator('.method');
   await expect(cashCell).toHaveText('cash');
   await expect(cashCell).not.toHaveClass(/on-account/);
 });

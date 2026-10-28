@@ -240,24 +240,72 @@
      Ctrl/Cmd+Enter is unambiguous wherever the caret happens to be. -->
 <svelte:window onkeydown={onsheetkeydown} />
 
-<section class="sheet" aria-labelledby="draft-h">
-  <header class="head">
-    <h2 id="draft-h">{lang.t.sales_draft_title}</h2>
-    {#if justRecorded}
-      <!-- `data-doc-id` is the identity an e2e test needs. A ledger row shows the
-           time, the id, the customer, the item count, the status and the total, and
-           the product name only lives in the lines behind it -- so a spec has no
-           other field to select its own document by. A total is not unique either:
-           100.00 x 7 and 175.00 x 4 both come to 700.00. The id is. -->
-      <span class="recorded" data-doc-id={justRecorded.id}>
-        <Stamp label={lang.t.sales_confirmed} />
-        <span class="figures">{formatMoney(justRecorded.total)}</span>
-      </span>
-    {:else}
-      <span class="hint">{lang.t.sales_draft_hint}</span>
-    {/if}
+<section class="sheet slip" aria-labelledby="draft-h">
+  <!-- The slip's accessible name is a heading that is always present. It used to
+       be the visible `<h2>`; the pad draws its state word in that slot instead, so
+       the name has to survive both states or `aria-labelledby` would dangle the
+       moment a sale is recorded and the word is replaced by the stamp. -->
+  <h2 id="draft-h" class="sr-only">{lang.t.sales_draft_title}</h2>
+  <!-- The slip's own head. It carries the document's state word and the two
+       questions a sale asks about context rather than about goods — who it was
+       for and where the money went — and nothing else.
+
+       The number slot deliberately holds a word and not a number. The artboard
+       prints "0005" there because it drew a document that already existed; the
+       real draft has no number until the server assigns one, and inventing the
+       next in a sequence would print a number that is wrong the moment another
+       till records a sale. So the slot says what the slip actually is: still
+       being written, or recorded. -->
+  <header class="head slip-top">
+    <div class="slip-no">
+      {#if justRecorded}
+        <!-- `data-doc-id` is the identity an e2e test needs. A ledger slip shows
+             the time, the customer, the method, the state and the total, and the
+             product name only lives in the lines behind it — so a spec has no
+             other field to select its own document by. A total is not unique
+             either: 100.00 x 7 and 175.00 x 4 both come to 700.00. The id is. -->
+        <span class="recorded" data-doc-id={justRecorded.id}>
+          <Stamp label={lang.t.sales_confirmed} />
+          <span class="figures">{formatMoney(justRecorded.total)}</span>
+        </span>
+      {:else}
+        <span class="label draft-state">{lang.t.sales_draft_title}</span>
+        <span class="hint">{lang.t.sales_draft_hint}</span>
+      {/if}
+    </div>
+
+    <div class="slip-meta">
+      <div class="field meta-item">
+        <label class="label" for="customer">{lang.t.sales_customer}</label>
+        <select class="control compact" id="customer" bind:value={customerId}>
+          {#each customers as c (c.id)}
+            <option value={c.id}>{c.name === 'walk-in' ? lang.t.sales_walkin : c.name}</option>
+          {/each}
+        </select>
+      </div>
+      <div class="field meta-item">
+        <!-- Where the money went. It sits beside the customer because they are the
+             two questions a sale asks about context rather than about goods, and
+             omitting it means the seeded cash method — the default the server
+             already applies, so a cashier who never touches this control records
+             exactly what they did before v3 did. Only active methods are listed:
+             a retired one must not be offered. -->
+        <label class="label" for="method">{lang.t.sales_method}</label>
+        <select class="control compact" id="method" bind:value={paymentMethodId}>
+          <option value="">{lang.t.sales_method_default}</option>
+          {#each methods as m (m.id)}
+            <option value={m.id}>{m.name}</option>
+          {/each}
+        </select>
+        {#if methodsFailed}
+          <p class="method-hint" role="status">{lang.t.sales_method_failed}</p>
+        {/if}
+      </div>
+    </div>
   </header>
 
+  <!-- The entry line: where a line is added. It sits between the slip's head and
+       its printed body, the way a counter pad has a blank line to write on. -->
   <div class="entry">
     <div class="field">
       <span class="label" id="picker-label">{lang.t.sales_product}</span>
@@ -265,31 +313,6 @@
         <ProductPicker onpick={addProduct} />
         <kbd class="picker-key" aria-hidden="true">F2</kbd>
       </div>
-    </div>
-    <div class="field">
-      <label class="label" for="customer">{lang.t.sales_customer}</label>
-      <select class="control" id="customer" bind:value={customerId}>
-        {#each customers as c (c.id)}
-          <option value={c.id}>{c.name === 'walk-in' ? lang.t.sales_walkin : c.name}</option>
-        {/each}
-      </select>
-    </div>
-    <div class="field">
-      <!-- Where the money went. It sits beside the customer because they are the two
-           questions a sale asks about context rather than about goods, and omitting it
-           means the seeded cash method — the default the server already applies, so a
-           cashier who never touches this control records exactly what they did before
-           v3 did. Only active methods are listed: a retired one must not be offered. -->
-      <label class="label" for="method">{lang.t.sales_method}</label>
-      <select class="control" id="method" bind:value={paymentMethodId}>
-        <option value="">{lang.t.sales_method_default}</option>
-        {#each methods as m (m.id)}
-          <option value={m.id}>{m.name}</option>
-        {/each}
-      </select>
-      {#if methodsFailed}
-        <p class="method-hint" role="status">{lang.t.sales_method_failed}</p>
-      {/if}
     </div>
   </div>
 
@@ -318,79 +341,71 @@
   {#if lines.length === 0}
     <p class="empty">{lang.t.sales_no_lines}</p>
   {:else}
-    <!-- The lines are the one part of the draft that grows without limit, so
-         they scroll and everything around them does not: the product field, the
-         total and the action stay exactly where the cashier left them, however
-         many items the sale has. -->
+    <!-- The printed body. Each line is a row of the document, not a record in a
+         grid: the name stands on its own and its arithmetic sits beneath it, the
+         way a printed slip itemises. It is the one part of the draft that grows
+         without limit, so it scrolls and everything around it does not. -->
     <div class="lines-scroll">
-      <table class="lines">
-        <thead>
-          <tr>
-            <th scope="col">{lang.t.sales_product}</th>
-            <th scope="col" class="num">{lang.t.sales_qty}</th>
-            <th scope="col" class="num">{lang.t.sales_price}</th>
-            <th scope="col" class="num">{lang.t.sales_line}</th>
-            <th scope="col"><span class="sr">{lang.t.sales_remove_column}</span></th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each lines as line, i (line.id)}
-            {@const qty = parseQuantity(line.qtyText)}
-            {@const price = parseAmount(line.priceText)}
-            {@const lt = qty !== null && price !== null ? lineTotalAmount(qty, price) : null}
-            <tr>
-              <td class="pname">
-                {line.product.name}
-                <span class="unit-note">· {lang.fmt.unit(line.product.unit)}</span>
-              </td>
-              <td class="num">
-                <input
-                  class="control tiny"
-                  class:bad={line.qtyText.trim() !== '' && qty === null}
-                  bind:this={lastQtyEl}
-                  bind:value={line.qtyText}
-                  inputmode="numeric"
-                  aria-label="{lang.t.sales_qty} — {line.product.name}"
+      <div class="printed">
+        {#each lines as line, i (line.id)}
+          {@const qty = parseQuantity(line.qtyText)}
+          {@const price = parseAmount(line.priceText)}
+          {@const lt = qty !== null && price !== null ? lineTotalAmount(qty, price) : null}
+          <!-- `data-draft-line` is the contract an e2e test reads. A line used to
+               be a `<tr>` and twenty-three assertions pointed at
+               `table.lines tbody tr`; the selector now names the thing a test
+               means instead of the element the design happened to use. -->
+          <div class="prow" data-draft-line>
+            <div class="pname">
+              <span class="pname-v">{line.product.name}</span>
+              <span class="pname-sub">
+                <span class="unit">· {lang.fmt.unit(line.product.unit)}</span>
+              </span>
+            </div>
+
+            <div class="pfields">
+              <input
+                class="control tiny"
+                class:bad={line.qtyText.trim() !== '' && qty === null}
+                bind:this={lastQtyEl}
+                bind:value={line.qtyText}
+                inputmode="numeric"
+                aria-label="{lang.t.sales_qty} — {line.product.name}"
+              />
+              <span class="times" aria-hidden="true">×</span>
+              <span class="cur" aria-hidden="true">$</span>
+              <input
+                class="control tiny"
+                class:bad={line.priceText.trim() !== '' && price === null}
+                bind:value={line.priceText}
+                inputmode="decimal"
+                aria-label="{lang.t.sales_price} {priceHint(line.product)} — {line.product.name}"
+              />
+              <span class="per">/{lang.fmt.unit(line.product.unit)}</span>
+            </div>
+
+            <div class="pline figures">{lt === null ? '—' : formatMoney(lt)}</div>
+
+            <button
+              type="button"
+              class="remove"
+              onclick={() => removeLine(i)}
+              aria-label="{lang.t.sales_remove} — {line.product.name}"
+            >
+              <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
+                <path
+                  d="M3 3 9 9M9 3 3 9"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.8"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
                 />
-              </td>
-              <td class="num">
-                <div class="pricewrap">
-                  <span class="cur">$</span>
-                  <input
-                    class="control tiny"
-                    class:bad={line.priceText.trim() !== '' && price === null}
-                    bind:value={line.priceText}
-                    inputmode="decimal"
-                    aria-label="{lang.t.sales_price} {priceHint(line.product)} — {line.product
-                      .name}"
-                  />
-                  <span class="per">/{lang.fmt.unit(line.product.unit)}</span>
-                </div>
-              </td>
-              <td class="num figures linetotal">{lt === null ? '—' : formatMoney(lt)}</td>
-              <td class="num">
-                <button
-                  type="button"
-                  class="remove"
-                  onclick={() => removeLine(i)}
-                  aria-label="{lang.t.sales_remove} — {line.product.name}"
-                >
-                  <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
-                    <path
-                      d="M3 3 9 9M9 3 3 9"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.8"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                    />
-                  </svg>
-                </button>
-              </td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
+              </svg>
+            </button>
+          </div>
+        {/each}
+      </div>
     </div>
   {/if}
 
@@ -400,21 +415,6 @@
       {error}
     </p>
   {/if}
-
-  <div class="foot">
-    <div class="summary">
-      <span class="label">{lang.t.sales_live_total}</span>
-      <span class="words">
-        {complete.length}
-        {complete.length === 1 ? lang.t.sales_line_one : lang.t.sales_lines}
-        {#if unitCount}· {unitCount} {lang.t.sales_pieces}{/if}
-        {#if bonusCount}
-          <br />{lang.t.sales_bonus_note(formatMoney('0.00'))}
-        {/if}
-      </span>
-    </div>
-    <div class="total figures">{total === null ? '—' : formatMoney(total)}</div>
-  </div>
 
   {#if lines.length || hasInvalid}
     <div class="actions">
@@ -428,54 +428,69 @@
       {/if}
     </div>
   {/if}
+
+  <!-- The slip's foot: the arithmetic, then the total on its own rule. The action
+       is the page's, and lands directly beneath this — see the note in
+       `routes/sales/+page.svelte`, which owns it because the button must reach the
+       sheet's `record()` without the sheet keeping a second copy of it. -->
+  <div class="foot slip-foot">
+    <div class="sums">
+      <div class="summary">
+        <span class="words">
+          {complete.length}
+          {complete.length === 1 ? lang.t.sales_line_one : lang.t.sales_lines}
+          {#if unitCount}· {unitCount} {lang.t.sales_pieces}{/if}
+          {#if bonusCount}
+            <br />{lang.t.sales_bonus_note(formatMoney('0.00'))}
+          {/if}
+        </span>
+      </div>
+      <div class="sum big">
+        <span class="label">{lang.t.sales_live_total}</span>
+        <span class="total figures">{total === null ? '—' : formatMoney(total)}</span>
+      </div>
+    </div>
+  </div>
 </section>
 
 <style>
+  /* The slip: the sale being typed, drawn in the shape it will be printed in.
+     A closed sheet with a head, a printed body and a foot. It is still not a
+     modal — the day stays visible beside it — but it is now the document itself
+     rather than a form that resembles one. */
   .sheet {
-    /* The draft fills the panel it sits in, so its own foot lands on the shared
-       bottom edge rather than leaving a gap under it. */
     display: flex;
     flex-direction: column;
     height: 100%;
     min-height: 0;
     overflow: hidden;
+    background: var(--surface);
   }
 
-  /* The one region that grows without limit. It takes whatever height is left
-     after the fixed parts and scrolls inside it, so a forty-line sale never
-     pushes the total or the action off the screen. `min-height: 0` is what lets
-     a flex child actually scroll instead of stretching to its content. */
-  .lines-scroll {
-    flex: 1 1 auto;
-    min-height: 0;
-    /* `overflow: auto` on both axes, not `overflow-y` alone. The table's own
-     * minimum is 550px and it does not compress below that, so on a phone the
-     * table escaped the panel and stretched the whole document to 538px on a
-     * 390px screen — the page panned sideways with a line in the draft. The
-     * draft is a four-column table; on a narrow screen it scrolls inside its own
-     * frame, the way the ledgers already do, instead of pushing the page. */
-    overflow: auto;
-    /* The scrollbar sits in the table's own margin instead of over the price
-       column. */
-    padding-right: 2px;
-    margin-right: -2px;
-  }
+  /* The head: the state word and the two context fields. The dashed lower edge
+     marks where the provisional part begins, the same way a pad separates what
+     was written from what is still blank. */
   .head {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: space-between;
-    gap: 12px;
-    padding: 13px 18px 11px;
-    border-bottom: 1px solid var(--rule);
+    gap: 16px;
+    padding: 14px 18px 12px;
+    border-bottom: 1px dashed var(--rule-strong);
+    flex-wrap: wrap;
   }
-  .head h2 {
-    font-family: var(--font-figure);
-    font-size: var(--step-3);
-    font-weight: 600;
+  .slip-no {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+  }
+  .draft-state {
+    font-size: var(--step-0);
+    letter-spacing: 0.12em;
   }
   .hint {
     color: var(--ink-soft);
-    font-size: var(--step-0);
+    font-size: var(--step--1);
   }
   .recorded {
     display: inline-flex;
@@ -484,11 +499,24 @@
     font-size: var(--step-2);
   }
 
+  .slip-meta {
+    display: flex;
+    gap: 14px;
+    flex-wrap: wrap;
+  }
+  .meta-item {
+    display: grid;
+    gap: 5px;
+    min-width: 132px;
+  }
+
+  /* The entry line: where a line is added. Between the slip's head and its
+     printed body, the way a counter pad has a blank line to write on. */
   .entry {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 260px);
+    grid-template-columns: minmax(0, 1fr);
     gap: 12px;
-    padding: 15px 18px 0;
+    padding: 13px 18px 0;
     align-items: start;
   }
   .field {
@@ -497,13 +525,24 @@
     min-width: 0;
   }
 
-  /* A failed method read: quiet, in the pending tone, next to the control it
-     affects. It reports a degraded state rather than an error, because the sale
-     can still be recorded. */
   .method-hint {
     margin: 0;
     color: var(--state-pending);
     font-size: var(--step--1);
+  }
+
+  /* Visually hidden and still announced. `position: fixed` with no offset keeps
+     it 1px wide; an absolutely positioned one anchored to no ancestor measured
+     538px inside a 390px viewport once and stretched the whole document. */
+  .sr-only {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
   .picker-wrap {
     position: relative;
@@ -530,7 +569,7 @@
   .customer-actions {
     display: flex;
     gap: 8px;
-    padding: 10px 18px 14px;
+    padding: 10px 18px 13px;
     border-bottom: 1px solid var(--rule);
   }
   .ghost {
@@ -546,6 +585,9 @@
   }
   .ghost:hover:not(:disabled) {
     border-color: var(--ink);
+    /* The tint is derived from the ink token rather than written as the retired
+       indigo literal: `rgb(43 49 98 / 0.05)` was the previous world's colour
+       surviving as a raw value, which is exactly what DESIGN.md forbids. */
     background: color-mix(in srgb, var(--ink) 5%, transparent);
   }
   .ghost:disabled {
@@ -558,102 +600,106 @@
     padding: 9px 18px;
     background: color-mix(in srgb, var(--ink) 6%, transparent);
     border-bottom: 1px solid var(--rule);
-    color: var(--ink);
     font-size: var(--step-0);
   }
-
   .empty {
-    padding: 22px 18px;
+    margin: 0;
+    padding: 16px 18px;
     color: var(--ink-soft);
     font-size: var(--step-0);
   }
 
-  table.lines {
-    width: 100%;
-    border-collapse: collapse;
+  /* The one region that grows without limit. It takes whatever height is left
+     after the fixed parts and scrolls inside it, so a forty-line sale never
+     pushes the total or the action off the screen. `min-height: 0` is what lets
+     a flex child actually scroll instead of stretching to its content. */
+  .lines-scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    padding-right: 2px;
+    margin-right: -2px;
   }
-  .lines th {
-    font-family: var(--font-figure);
-    font-size: var(--step-1);
-    font-weight: 600;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--ink-soft);
-    text-align: left;
-    padding: 8px 10px;
-    border-bottom: 1px solid var(--rule-strong);
-    white-space: nowrap;
+
+  .printed {
+    padding: 2px 18px 0;
   }
-  .lines th:first-child {
-    padding-left: 18px;
-  }
-  .lines th:last-child {
-    padding-right: 18px;
-  }
-  .lines td {
-    padding: 8px 10px;
+
+  /* A printed line: the product stands on its own, its arithmetic sits beneath
+     it, and the line total is right-aligned against the slip's edge. No columns
+     are shared across lines, which is what lets a long name wrap without
+     pushing every other row out of alignment. */
+  .prow {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto auto;
+    gap: 12px;
+    align-items: baseline;
+    padding: 10px 0;
     border-bottom: 1px solid var(--rule);
-    vertical-align: middle;
   }
-  .lines td:first-child {
-    padding-left: 18px;
-  }
-  .lines td:last-child {
-    padding-right: 18px;
-  }
-  .num {
-    text-align: right;
+  .prow:last-child {
+    border-bottom: 0;
   }
   .pname {
-    font-size: var(--step-2);
+    min-width: 0;
   }
-  .unit-note {
+  .pname-v {
+    display: block;
+    overflow-wrap: anywhere;
+  }
+  .pname-sub {
+    display: block;
+    margin-top: 2px;
+  }
+  .unit {
     color: var(--ink-soft);
-    font-size: var(--step-0);
-  }
-  .linetotal {
-    font-size: var(--step-3);
-    font-weight: 600;
-    white-space: nowrap;
+    font-size: var(--step--1);
   }
 
-  .control.tiny {
-    width: 92px;
-    padding: 6px 8px;
-    font-family: var(--font-figure);
-    font-size: var(--step-2);
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-    text-align: right;
+  .pfields {
+    display: flex;
+    align-items: center;
+    gap: 5px;
   }
-  /* A field holding text that is not an amount says so on the field itself,
-     not in a message somewhere else on the page. */
+  .times {
+    color: var(--ink-soft);
+    font-size: var(--step--1);
+  }
+  .control.tiny {
+    width: 62px;
+    text-align: right;
+    font-family: var(--font-figure);
+    font-variant-numeric: tabular-nums;
+    padding: 5px 7px;
+  }
   .control.bad {
     border-color: var(--state-void);
     background: color-mix(in srgb, var(--state-void) 5%, var(--surface));
   }
-
-  .pricewrap {
-    display: inline-flex;
-    align-items: baseline;
-    gap: 3px;
-  }
   .cur,
   .per {
-    font-family: var(--font-figure);
     color: var(--ink-soft);
-    font-size: var(--step-1);
+    font-size: var(--step--1);
+    white-space: nowrap;
+  }
+  .pline {
+    font-family: var(--font-figure);
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    font-size: var(--step-2);
+    text-align: right;
+    min-width: 92px;
+    white-space: nowrap;
   }
 
   .remove {
-    display: inline-grid;
-    place-items: center;
     background: none;
     border: 0;
     color: var(--ink-soft);
-    padding: 5px 6px;
     cursor: pointer;
-    border-radius: 2px;
+    padding: 4px;
+    line-height: 0;
+    border-radius: var(--radius);
   }
   .remove svg {
     width: 12px;
@@ -661,48 +707,55 @@
   }
   .remove:hover {
     color: var(--state-void);
-    background: color-mix(in srgb, var(--state-void) 8%, var(--surface));
   }
 
   .error {
     margin: 0;
     padding: 10px 18px;
-    background: color-mix(in srgb, var(--state-void) 7%, var(--surface));
-    border-top: 1px solid color-mix(in srgb, var(--state-void) 35%, transparent);
-    color: var(--ink);
+    border-top: 1px solid var(--rule);
+    color: var(--state-void);
     font-size: var(--step-0);
   }
   .error strong {
-    font-family: var(--font-figure);
-    color: var(--state-void);
-    margin-right: 6px;
+    font-weight: 600;
   }
 
+  /* The foot: the arithmetic, then the total on its own rule. The action lands
+     directly beneath this and belongs to the page — it has to reach `record()`
+     without the sheet keeping a second copy of the primary button. */
   .foot {
-    display: flex;
-    margin-top: auto;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    padding: 13px 18px;
-    /* The recessed band under the draft. `--paper-sunk` was the previous world's
-       name for "a shade darker than the sheet"; this world has one ground and one
-       surface, and the strip reads as part of the page beneath the draft. */
-    background: var(--ground);
-    border-top: 1px solid var(--rule-strong);
+    flex-shrink: 0;
+    padding: 12px 18px 6px;
+    border-top: 1px dashed var(--rule-strong);
+  }
+  .sums {
+    display: grid;
+    gap: 8px;
   }
   .summary {
-    display: grid;
-    gap: 3px;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
   }
   .words {
     color: var(--ink-soft);
     font-size: var(--step-0);
   }
+  .sum.big {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding-top: 8px;
+    border-top: 1px solid var(--rule);
+  }
   .total {
-    font-size: var(--step-5);
+    font-family: var(--font-figure);
+    font-size: var(--step-4);
     font-weight: 700;
     line-height: 1;
+    letter-spacing: -0.01em;
     white-space: nowrap;
   }
 
@@ -710,7 +763,7 @@
     display: flex;
     align-items: center;
     gap: 12px;
-    padding: 13px 18px;
+    padding: 10px 18px;
     border-top: 1px solid var(--rule);
   }
   .warn {
@@ -718,30 +771,27 @@
     font-size: var(--step-0);
   }
 
-  .sr {
-    /* `clip-path` plus `position: absolute` with no offset only stays 1px wide
-     * when it is anchored to a positioned ancestor. There was none here, so the
-     * span anchored to the page and its `white-space: nowrap` label — the word
-     * "Quitar" in the column header — measured 538px inside a 390px viewport and
-     * stretched the whole document. Taking it out of flow keeps it 1px and out
-     * of the layout, which is what a screen-reader-only label is for. */
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
-
   @media (max-width: 860px) {
-    .entry {
-      grid-template-columns: minmax(0, 1fr);
-    }
-    .foot {
+    .head {
       flex-direction: column;
-      align-items: flex-start;
+      align-items: stretch;
+    }
+    .slip-meta {
+      flex-direction: column;
+    }
+    /* A narrow slip has no room for fields beside the arithmetic: the line
+       becomes a name above a row of fields, which is what a receipt does on a
+       till's own printer. */
+    .prow {
+      grid-template-columns: minmax(0, 1fr) auto;
+      row-gap: 6px;
+    }
+    .pfields {
+      grid-column: 1 / -1;
+    }
+    .pline {
+      grid-column: 2;
+      grid-row: 1;
     }
   }
 </style>

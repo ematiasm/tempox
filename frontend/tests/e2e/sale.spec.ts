@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { lineTotal, money, recordedDocumentId } from './unique.js';
+import { daySlip, lineTotal, money, recordedDocumentId, saleDraftLine } from './unique.js';
 import { pickFromCatalog } from './picker.js';
 
 /**
@@ -37,7 +37,7 @@ test('a sale is recorded from the draft sheet and wears its stamp', async ({ pag
   await page.goto('/sales');
   await pickFromCatalog(page, name);
 
-  const line = page.locator('.sheet table.lines tbody tr').first();
+  const line = saleDraftLine(page);
   await expect(line).toContainText(name);
   // The price is prefilled from the list price, written in the shop's own shape
   // so the field's parser accepts it, and stays overridable (S5).
@@ -54,7 +54,7 @@ test('a sale is recorded from the draft sheet and wears its stamp', async ({ pag
   const recorded = page.locator('.recorded');
   await expect(recorded).toContainText('Confirmada');
   await expect(recorded).toContainText(money(total));
-  await expect(page.locator('.sheet table.lines tbody tr')).toHaveCount(0);
+  await expect(page.locator('[data-draft-line]')).toHaveCount(0);
 
   // 5. And it is in the day's ledger, stamped, with its lines behind it. Selected
   //    by the id the draft reported, not by position and not by total: every spec
@@ -62,7 +62,7 @@ test('a sale is recorded from the draft sheet and wears its stamp', async ({ pag
   const saleId = await recordedDocumentId(page);
   // The row's toggle carries the full document id in `aria-controls`, which is the
   // only place the full id appears in the ledger.
-  const doc = page.locator(`table.docs tbody tr.doc[aria-controls="lines-${saleId}"]`);
+  const doc = daySlip(page, saleId);
   await expect(doc).toHaveCount(1);
   await expect(doc).toContainText('Consumidor Final');
   await expect(doc).toContainText(money(total));
@@ -87,7 +87,7 @@ test('a sale can be returned in parts with credit notes', async ({ page }) => {
 
   await page.goto('/sales');
   await pickFromCatalog(page, name);
-  const line = page.locator('.sheet table.lines tbody tr').first();
+  const line = saleDraftLine(page);
   await expect(line).toContainText(name);
   await line.locator('input[aria-label^="Cant"]').fill('4');
   await expect(page.locator('.sheet .total')).toHaveText(money(total));
@@ -95,7 +95,7 @@ test('a sale can be returned in parts with credit notes', async ({ page }) => {
 
   // This sale, by the id the draft reported (#52).
   const saleId = await recordedDocumentId(page);
-  const doc = page.locator(`table.docs tbody tr.doc[aria-controls="lines-${saleId}"]`);
+  const doc = daySlip(page, saleId);
   await expect(doc).toHaveCount(1);
   await expect(doc.locator('.state')).toContainText('Confirmada');
   await doc.click();
@@ -155,7 +155,7 @@ test('a refund of one line leaves the other lines untouched', async ({ page }) =
     [b, '3']
   ]) {
     await pickFromCatalog(page, name);
-    const line = page.locator('.sheet table.lines tbody tr', { hasText: name });
+    const line = saleDraftLine(page, name);
     await expect(line).toContainText(name);
     await line.locator('input[aria-label^="Cant"]').fill(quantity);
   }
@@ -165,7 +165,7 @@ test('a refund of one line leaves the other lines untouched', async ({ page }) =
   // Select this sale by the id the draft reported. Position is a lie in a shared
   // ledger and a total is not unique (#52).
   const saleId = await recordedDocumentId(page);
-  const doc = page.locator(`table.docs tbody tr.doc[aria-controls="lines-${saleId}"]`);
+  const doc = daySlip(page, saleId);
   await expect(doc).toHaveCount(1);
   await expect(doc.locator('.state')).toContainText('Confirmada');
   await doc.click();
@@ -216,7 +216,7 @@ test('a refund with every line excluded is refused before sending', async ({ pag
 
   // Same reason as above: selected by the id the draft reported (#52).
   const saleId = await recordedDocumentId(page);
-  const doc = page.locator(`table.docs tbody tr.doc[aria-controls="lines-${saleId}"]`);
+  const doc = daySlip(page, saleId);
   await expect(doc).toHaveCount(1);
   await doc.click();
   const document = page.locator('.lines');
@@ -243,7 +243,7 @@ test('a bonus line is recorded and moves no money', async ({ page }) => {
   await pickFromCatalog(page, name);
 
   // The line arrives priced; zeroing it is what makes it a regalo.
-  const line = page.locator('.sheet table.lines tbody tr').first();
+  const line = saleDraftLine(page);
   await line.locator('input[aria-label^="Precio"]').fill('0,00');
   await expect(page.locator('.sheet .total')).toHaveText('$ 0,00');
   // The sheet says what that line is, so a zero total is never a silent bug.
@@ -258,4 +258,66 @@ test('a bonus line is recorded and moves no money', async ({ page }) => {
   const row = page.locator('table.catalog tbody tr', { hasText: name });
   await expect(row).toBeVisible();
   await expect(row).toContainText('4');
+});
+
+/**
+ * Each slip carries the balance it inherits, computed over the documents below it.
+ *
+ * S4 of `odd/tasks/receipt-pad-sales.md`: the running balance moved out of the
+ * table's first column and into each slip's own head, and the assertion that used
+ * to cover it went with the table. There was no e2e for the balance at all after
+ * the migration — `running-balance.test.ts` proves the arithmetic, but nothing
+ * proved the screen still *prints* it, which is the half a unit test cannot see.
+ *
+ * The test records two documents it owns and reads the balances of exactly those
+ * two, by id. A balance is the sum of every document before it, so asserting on a
+ * figure in a ledger every spec writes to would need the whole suite's arithmetic
+ * — the same trap `recordedDocumentId` exists for (#52). Instead it asserts the
+ * relationship the column exists to express: the newer of two consecutive
+ * documents carries exactly the older one's balance plus its own total.
+ */
+test('each slip prints the balance it inherits from the documents below it', async ({ page }) => {
+  const stamp = Date.now().toString(36);
+  const name = `e2e-bal-${stamp}`;
+
+  await page.goto('/products');
+  await page.locator('#new-name').fill(name);
+  await page.locator('#new-price').fill('10,00');
+  await page.locator('#new-stock').fill('10');
+  await page.getByRole('button', { name: 'Crear producto' }).click();
+  await expect(page.getByRole('status')).toContainText(name);
+
+  await page.goto('/sales');
+  await pickFromCatalog(page, name);
+  const line = saleDraftLine(page);
+  await line.locator('input[aria-label^="Cant"]').fill('2');
+  await expect(page.locator('.sheet .total')).toHaveText(money('20,00'));
+  await page.getByRole('button', { name: /Registrar venta/ }).click();
+  const first = await recordedDocumentId(page);
+
+  await pickFromCatalog(page, name);
+  const lineAgain = saleDraftLine(page);
+  await lineAgain.locator('input[aria-label^="Cant"]').fill('3');
+  await expect(page.locator('.sheet .total')).toHaveText(money('30,00'));
+  await page.getByRole('button', { name: /Registrar venta/ }).click();
+  const second = await recordedDocumentId(page);
+
+  const firstSlip = daySlip(page, first);
+  const secondSlip = daySlip(page, second);
+  await expect(firstSlip).toHaveCount(1);
+  await expect(secondSlip).toHaveCount(1);
+
+  // Read the numbers the screen printed, not numbers this test computed: if the
+  // slip showed a bare total instead of an inherited balance, this comparison
+  // fails instead of agreeing with the component.
+  const read = async (text: string) => Number(text.replace(/[^\d,]/g, '').replace(',', '.'));
+  const firstBalance = await read((await firstSlip.locator('.slip-bal').textContent()) ?? '');
+  const secondBalance = await read((await secondSlip.locator('.slip-bal').textContent()) ?? '');
+
+  // The newest slip must be exactly one sale above the one below it. That is the
+  // whole claim of the column, and it is false for a slip that merely repeats its
+  // own total — which is the failure mode the artboard's head invites.
+  expect(Number.isFinite(firstBalance)).toBe(true);
+  expect(Number.isFinite(secondBalance)).toBe(true);
+  expect(secondBalance - firstBalance).toBeCloseTo(30, 2);
 });
