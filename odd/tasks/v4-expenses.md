@@ -699,3 +699,34 @@ So the arithmetic moved to `frontend/src/lib/ledgerPaging.ts` (`clampOffset`, `p
   partial notice; the sales pager not rendered; and `pageOffset` dropped from the effect's
   dependencies.
 - **Counts**: frontend unit 307 (was 292), e2e 44 (was 42). Backend untouched.
+
+L25 (three review rounds, and the honest account of why). Lineage
+`review-58ab3200d6f59c90` found 2 CRITICAL, `review-811cd5f5c6e59feb` found 3 more in the
+correction, and its validator then rejected the third-round correction while **passing**
+`R3-001` and `R3-002`. Every finding was in the same family, in the same two files:
+**pagination state that outlived the context it was captured in.**
+
+- `R3-001` (round 1): purchases passed `() => false` as its staleness predicate, so no response
+  was ever stale.
+- `R3-002` (round 1): the post-refund reload assigned rows without asking whether the reader had
+  paged.
+- `R3-001` (round 2): the clamp invalidated **its own** re-read, because it changed the offset
+  and then judged staleness by that same offset. A logical deadlock: the clamped page was never
+  fetched. **Corrected and accepted.**
+- `R3-002` (round 2): the period was not part of the comparison, so a period change at the same
+  offset was invisible. **Corrected and accepted.**
+- `R3-003` (round 2), still open: `reload` captures `requested = pageOffset` **after** `stepPage`
+  already moved it, so `offsetAfterFailedLoad(requested)` "rolls back" to the new offset. The
+  helper and its tests are honest about their own contract and useless for the defect, because
+  the previous offset was lost before `reload` was entered.
+
+**The pattern, stated so the next session does not rediscover it.** The offset lives in the
+component, and every asynchronous path has to remember to capture, compare and roll back — so
+each fix created the next finding. The rule that would close the class is one owner: a single
+function that runs a read and decides whether its result still applies, given the context
+(day, period, page) captured **where the read is issued**, not where it is consumed. Rolling
+back needs the previous value passed in, not re-read from the state it was moved from.
+
+**Recommendation carried to the maintainer**: refactor before merge, not a fourth round of
+patches. The three corrections that landed are individually sound and tested (315 unit, 44 e2e,
+lint clean); what is unsound is the shape they are patching.
