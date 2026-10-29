@@ -573,3 +573,39 @@ that output rather than a number.
   older half — the day's own list is still a page of 50 with no next-page control. That last one
   is now *sayable* rather than silent only for the older-debts list; the day's list still
   truncates without a notice, and that is the next candidate.
+
+L19 (review `review-16c84931d9274aaf`, **retired without approval, and it was my ordering
+error**, not the provider's). I applied the `R2-001` fix and **committed it before submitting
+the correction plan**, which moved the candidate out from under the reviewed target
+(`ec75b27…` → `2c0ecda…`). Every correction-plan binding I then submitted was correctly
+refused as stale, and STATUS reported `authority_target_identity: ec75b27…` beside a newer
+`target_identity` — the provider saying plainly that the authority and the target had parted.
+The order is: plan against the reviewed target, then fix, then let the provider validate. The
+fix itself was right (`2766172`) and it survived into the next candidate.
+
+L20 (review `review-045709e4682ea82c`, **approved**, authority burned; `R3-001` corrected and
+validated). A fresh lineage over the corrected tree, because the previous one's target no
+longer existed. It found one more CRITICAL, and it is the sharper lesson of this slice.
+
+- **`R3-001` — the owed ask was bounded by a day, and a day is not where debts live.** The
+  older-debts request sent `to: day.from`, reasoning that an owed document belonging to the day
+  is already in the day's own list. That reasoning covers **today only**: `expenses.occurred_at`
+  is the day the expense belongs to, and a salary entered before it is due is precisely what an
+  owed expense is for. So a future-dated owed expense was fetched by neither list — the day's
+  list stops at `day.to`, this one stopped at `day.from` — and it rendered before the change and
+  vanished after it. Corroborated by the refuter; fixed in `7324a1b` by removing the bound
+  entirely, since `mergeOlderDebts` already deduplicates by id.
+- **Why two rounds of this class**: both findings are "a page replaced a whole, and the hole
+  moved". `R2-001` narrowed the day's page; `R3-001` bounded the debt question by a day. The
+  third test is the one that should have existed first: **the union of the two asks must cover
+  every owed document, wherever its date falls** — long before the day, inside it, and after it.
+  Two unit tests and an e2e all stayed green while the document disappeared because none of
+  them asked the question in those terms.
+- The correction plan was 120 diff lines against a frozen budget of 200, accepted; the validator
+  confirmed the fix and the review closed `approved`.
+
+L21 (advisory findings of `review-045709e4682ea82c`, all non-blocking, recorded so they are not
+rediscovered as surprises): `R2-001` `expenseLedger.ts:101-102`; `R2-002` `en.ts:314-317`;
+`R2-003` `expenseLedger.ts:65-71`; `R2-004` `expenseLedger.ts:83-86`; `R2-005`
+`v4-expenses.md:571-575`; `R3-002` `expenseLedger.ts:102`; `R3-003`
+`backend/src/routes/expenses.rs:761`. None opened a correction and none reopens the review.
