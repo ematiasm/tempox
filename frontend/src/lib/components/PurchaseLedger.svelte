@@ -34,6 +34,7 @@
   import {
     canStepPage,
     clampOffset,
+    isSamePageResponse,
     pageCount,
     pageIsPartial,
     pageNumber
@@ -219,7 +220,10 @@
     // quickly leaves the slower response writing rows for a page the reader has left — the
     // same defect as the constant predicate above, reachable through the write path too.
     const requestedPage = pageOffset;
-    await loadDay(at, () => seq !== loadSeq || scopeInstant !== at || pageOffset !== requestedPage);
+    await loadDay(
+      at,
+      () => seq !== loadSeq || scopeInstant !== at || !isSamePageResponse(requestedPage, pageOffset)
+    );
   }
 
   $effect(() => {

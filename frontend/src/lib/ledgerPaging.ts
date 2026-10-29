@@ -74,3 +74,26 @@ export function canStepPage(offset: number, size: number, total: number, delta: 
 export function pageIsPartial(rowsHeld: number, total: number): boolean {
   return rowsHeld < total;
 }
+
+/**
+ * Whether a page response still describes the page the reader is looking at.
+ *
+ * **Both CRITICAL findings of `review-58ab3200d6f59c90` were this rule missing**, and the
+ * validator's follow-up was that the test asserting it defined its own copy instead of calling
+ * production code — indirect coverage of a rule the components implement separately, which is
+ * the decoration class in a subtler costume.
+ *
+ * The rule is one comparison, and it exists as a named function because two components need it
+ * and both got it wrong in different ways:
+ *
+ * * purchases passed `() => false` as its staleness predicate from `stepPage`, which reads like
+ *   a delegation to the generation counter and means *nothing is ever stale*;
+ * * sales assigned a post-refund reload to `rows` without comparing the page it was requested
+ *   for against the page now on screen.
+ *
+ * `requested` is captured **before** the request is sent and compared **after** it returns.
+ * Anything else — reading the current offset at both ends — compares a value with itself.
+ */
+export function isSamePageResponse(requested: number, current: number): boolean {
+  return requested === current;
+}

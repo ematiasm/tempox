@@ -31,6 +31,7 @@
   import {
     canStepPage,
     clampOffset,
+    isSamePageResponse,
     pageCount,
     pageIsPartial,
     pageNumber
@@ -571,27 +572,36 @@
         limit: PAGE,
         offset: requestedPage
       });
-      // The reader has moved on: this reload describes a page they are not looking at, and
-      // the read that owns the screen is theirs. Only the stale notice is left to retire,
-      // because the *note* did land — that fact does not depend on which page is on screen.
-      if (pageOffset !== requestedPage) {
+      // **The totals are re-read with the page, and that is what `R3-CORR-001` was about.**
+      // `clampOffset` needs the period's count *after* the write: a note shrinks the period, so
+      // the clamp computed from the pre-write `pageTotal` was clamping against a number the
+      // write had already invalidated. The validator caught this as a partial correction, and
+      // it was right — the count was never refreshed on this path.
+      const [totals, c] = await Promise.all([getSalesSummary(range.from, range.to), getCash()]);
+      summary = totals;
+      // **The cash refresh happens on every path, including the ones that return early.** The
+      // validator recorded its absence as `R3-CORR-001`: the first version of this fix returned
+      // before `getCash()`, so a successful write followed by a page step or a clamp left the
+      // displayed balance stale — a worse defect than the one the early return was avoiding.
+      // The note landed; the money moved. Neither fact depends on which page is on screen.
+      cash = c.total;
+      const clamped = clampOffset(requestedPage, PAGE, totals.documents);
+      if (!isSamePageResponse(requestedPage, pageOffset)) {
+        // The reader has moved on: this reload describes a page they are not looking at, and
+        // the read that owns the screen is theirs. Nothing is assigned to `rows`.
         refundStale.retireAll();
         refunding = null;
         return;
       }
-      // And the clamp the old comment promised: a note can shrink the period, which can leave
-      // the remembered offset past the new end. Nudging it re-runs the effect, which reads the
-      // page that now exists.
-      const clamped = clampOffset(pageOffset, PAGE, pageTotal);
       if (clamped !== pageOffset) {
+        // The period shrank under the page being shown. Nudging the offset re-runs the effect,
+        // which reads the page that now exists — with the *refreshed* total that decided it.
         pageOffset = clamped;
         refundStale.retireAll();
         refunding = null;
         return;
       }
       rows = reloaded;
-      const c = await getCash();
-      cash = c.total;
       // This is a successful reload of the whole day, so the same rule applies as
       // in the effect above: nothing on this screen is stale any more. The rule
       // lives in one place (`screenTrust.ts`) precisely so both success paths

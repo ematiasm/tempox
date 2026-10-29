@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import {
   canStepPage,
   clampOffset,
+  isSamePageResponse,
   pageCount,
   pageIsPartial,
   pageNumber
@@ -139,45 +142,54 @@ describe('pageIsPartial', () => {
   });
 });
 
-describe('a page is stale when the reader has moved to another one', () => {
+describe('isSamePageResponse: the rule both CRITICAL findings were missing', () => {
   /**
-   * **The rule both CRITICAL findings of `review-58ab3200d6f59c90` were missing.**
+   * **`R3-001` and `R3-002` of `review-58ab3200d6f59c90`.**
    *
    * A page request carries the offset it was made for. When the response arrives, that offset
    * is the only thing that says whether the answer still describes what the reader is looking
-   * at. Both ledgers got this wrong in the same way:
+   * at. Both ledgers got it wrong, in different ways:
    *
-   * - purchases passed `() => false` as its staleness predicate from `stepPage`, so **no**
-   *   response was ever stale and two steps in flight both wrote;
+   * - purchases passed `() => false` as `progress`'s staleness predicate from `stepPage`, so
+   *   **no** response was ever stale and two steps in flight both wrote;
    * - sales assigned the post-refund reload to `rows` without comparing the page it was made
    *   for against the page now on screen.
    *
-   * The predicate is one comparison, so it lives here where it can be asserted rather than
-   * inside two components where it was asserted by nobody.
+   * The first version of this test defined its own local copy of the comparison and asserted
+   * that — which is what the validator's follow-up called out: indirect coverage of a rule the
+   * components implement themselves. It calls the production function now.
    */
-  const stillTheSamePage = (requested: number, current: number): boolean => requested === current;
-
   it('accepts a response for the page the reader is still on', () => {
-    expect(stillTheSamePage(0, 0)).toBe(true);
-    expect(stillTheSamePage(200, 200)).toBe(true);
+    expect(isSamePageResponse(0, 0)).toBe(true);
+    expect(isSamePageResponse(200, 200)).toBe(true);
   });
 
   it('discards a response for a page the reader has left', () => {
     // The measured defect: step once, then again before the first response lands. Without
     // this the slower answer overwrites the newer page's rows while the pager names the new
     // page — a table contradicting its own label.
-    expect(stillTheSamePage(0, 200)).toBe(false);
-    expect(stillTheSamePage(200, 0)).toBe(false);
-    expect(stillTheSamePage(200, 400)).toBe(false);
+    expect(isSamePageResponse(0, 200)).toBe(false);
+    expect(isSamePageResponse(200, 0)).toBe(false);
+    expect(isSamePageResponse(200, 400)).toBe(false);
   });
 
-  it('never treats "no predicate" as "never stale"', () => {
-    // The exact shape of the defect: a constant-false predicate means every response is
-    // accepted forever. It reads like a delegation to the generation counter and is the
-    // opposite of one.
-    const constantFalse = () => false;
-    expect(constantFalse()).toBe(false);
-    // Which is why the guard has to be the comparison, not this:
-    expect(stillTheSamePage(0, 200) || constantFalse()).toBe(false);
+  it('is what the purchases component and the sales component both call', async () => {
+    // The follow-up was that the rule lived in the test rather than in the components. Assert
+    // the call sites so a future refactor that inlines the comparison again is visible here.
+    const [purchases, sales] = await Promise.all([
+      readFile(resolve(process.cwd(), 'src/lib/components/PurchaseLedger.svelte'), 'utf8'),
+      readFile(resolve(process.cwd(), 'src/lib/components/Ledger.svelte'), 'utf8')
+    ]);
+    // **A call, not a mention.** The first version asserted the identifier appears anywhere in
+    // the file, which a comment satisfies — so removing the actual call still passed. The
+    // assertion has to be on the invocation.
+    expect(purchases).toMatch(/isSamePageResponse\(/);
+    expect(sales).toMatch(/isSamePageResponse\(/);
+    // And the call has to reach the imported function, not a local helper wearing its name:
+    // the import block and the invocation are both required.
+    for (const source of [purchases, sales]) {
+      const importBlock = /import\s*\{[^}]*\}\s*from '#lib\/ledgerPaging\.js'/.exec(source);
+      expect(importBlock?.[0]).toContain('isSamePageResponse');
+    }
   });
 });
