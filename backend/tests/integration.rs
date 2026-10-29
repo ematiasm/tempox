@@ -13758,3 +13758,107 @@ async fn v4_expenses_the_summary_counts_expenses_and_purchases_and_nets_returns(
         "300 expenses + 500 purchases − 200 returned"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// R3-002 of review-1e9c4c74ced6d94b — a day is the shop's day, not UTC's
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[sqlx::test]
+async fn v4_expenses_a_day_is_the_shops_day_and_a_full_instant_is_taken_as_given(
+    pool: sqlx::PgPool,
+) {
+    // **The defect, measured.** A browser reading `2026-03-15` from a date input and calling
+    // `toISOString()` produces `2026-03-15T00:00:00Z`, which in the shop's zone (UTC-3) is
+    // the **14th**: the expense lands on the wrong day and is missing from the ledger the
+    // cashier is looking at. The server now resolves a bare date in `SHOP_TIMEZONE`.
+    let client = common::client(pool.clone());
+    let category = category_named(&pool, "Servicios").await;
+
+    client
+        .post(
+            "/api/expenses",
+            serde_json::json!({
+                "category_id": category, "payee": "Edenor", "amount": "10.00",
+                "occurred_at": "2026-03-15"
+            }),
+        )
+        .await
+        .expect_status(axum::http::StatusCode::CREATED);
+
+    let stored: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT occurred_at FROM expenses WHERE payee = 'Edenor'")
+            .fetch_one(&pool)
+            .await
+            .expect("the stored instant");
+
+    // The shop's day, through the server's own arithmetic. Hardcoding `T03:00:00Z` would
+    // pass while the zone was wrong and the offset coincidentally right.
+    let zone = chrono_tz::America::Argentina::Buenos_Aires;
+    let shop_day = tempox::day::day_range(zone, stored);
+    assert_eq!(
+        stored.with_timezone(&zone).date_naive().to_string(),
+        "2026-03-15",
+        "a bare 2026-03-15 must be the 15th in the shop, not the 14th — stored {stored}"
+    );
+    assert_eq!(
+        stored, shop_day.from,
+        "the expense lands on the first instant of the shop's day"
+    );
+
+    // The consequence a cashier sees: the document is in the day they are looking at.
+    // `Z`, not `+00:00`: a literal `+` in a query string is a space, and the request would
+    // be answered 400 before the route saw it — measured.
+    let listed = client
+        .get(&format!(
+            "/api/expenses?from={}&to={}",
+            shop_day
+                .from
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            shop_day
+                .to
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        ))
+        .await;
+    listed.expect_status(axum::http::StatusCode::OK);
+    assert_eq!(listed.json().as_array().expect("an array").len(), 1);
+
+    // **The other half of the contract**: an older client that sends a complete instant
+    // keeps today's behaviour exactly, and a string that is neither shape is a 400 rather
+    // than the 422 serde would produce.
+    client
+        .post(
+            "/api/expenses",
+            serde_json::json!({
+                "category_id": category, "payee": "Alquiler", "amount": "10.00",
+                "occurred_at": "2026-03-15T12:34:56Z"
+            }),
+        )
+        .await
+        .expect_status(axum::http::StatusCode::CREATED);
+
+    let exact: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT occurred_at FROM expenses WHERE payee = 'Alquiler'")
+            .fetch_one(&pool)
+            .await
+            .expect("the stored instant");
+    assert_eq!(
+        exact.to_rfc3339(),
+        "2026-03-15T12:34:56+00:00",
+        "a full instant is stored as given, never re-interpreted"
+    );
+
+    let refused = client
+        .post(
+            "/api/expenses",
+            serde_json::json!({
+                "category_id": category, "payee": "Algo", "amount": "10.00",
+                "occurred_at": "el martes"
+            }),
+        )
+        .await;
+    assert_eq!(
+        refused.status(),
+        axum::http::StatusCode::BAD_REQUEST,
+        "an unparseable date is the caller's mistake, and the field's contract says 400"
+    );
+}

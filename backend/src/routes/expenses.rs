@@ -202,8 +202,23 @@ pub struct NewExpense {
     pub payee: String,
     /// A decimal string, not a JSON number: a float would lose the cent.
     pub amount: rust_decimal::Decimal,
+    /// **The day the expense belongs to, and a bare `YYYY-MM-DD` is accepted on
+    /// purpose.** A date-only string is not an instant: `new Date('2026-03-15')` in a
+    /// browser reads it as UTC midnight, which in the shop's zone (UTC-3) is the *14th*,
+    /// so the expense lands on the wrong day and is absent from the ledger the cashier is
+    /// looking at. `R3-002` of `review-1e9c4c74ced6d94b`, measured:
+    ///
+    /// - `new Date('2026-03-15').toISOString()` gives `2026-03-15T00:00:00Z`
+    /// - that instant, rendered in America/Argentina/Buenos_Aires, is `14/3/2026`
+    ///
+    /// Written as a list rather than an indented block on purpose: an indented block in a
+    /// doc comment is a Rust **doctest**, and the quoted JavaScript broke the parser.
+    ///
+    /// Resolving it here, in `SHOP_TIMEZONE`, keeps one clock in the system — the same one
+    /// `GET /api/day` already owns — instead of letting the browser's guess decide which
+    /// day a document belongs to. A full instant is still accepted and taken as given.
     #[serde(default)]
-    pub occurred_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub occurred_at: Option<String>,
     /// Read raw, so the field's own contract decides the status code. Kept as
     /// `Option<serde_json::Value>` because `Option<Uuid>` cannot tell an absent key from
     /// an explicit `null`, and the difference is the whole point of the grammar.
@@ -241,6 +256,23 @@ async fn create_expense(
         Some(Destination::OnAccount) => None,
         // Omitted keeps every older client's behaviour: the seeded till.
         None => Some(crate::models::account::CASH_PAYMENT_METHOD_ID),
+    };
+
+    // **The day is resolved before the first write.** A bare date becomes the first
+    // instant of that day *in the shop's zone*, using the same helper `/api/day` uses — so
+    // an ambiguous midnight (clocks going back) and a nonexistent one (clocks jumping over
+    // it) are answered once, in one place, rather than re-derived here.
+    let occurred_at: Option<chrono::DateTime<chrono::Utc>> = match body.occurred_at.as_deref() {
+        None => None,
+        Some(raw) => Some(match crate::day::parse_instant(raw) {
+            Some(instant) => instant,
+            None => match chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d") {
+                Ok(date) => crate::day::first_instant_of(date, state.shop_timezone),
+                // A string that is neither an instant nor a date is the caller's mistake,
+                // and the field's contract promises a 400 rather than a 422 from serde.
+                Err(_) => return Err(StatusCode::BAD_REQUEST),
+            },
+        }),
     };
 
     let mut tx = state.db.begin().await.map_err(|e| {
@@ -286,7 +318,7 @@ async fn create_expense(
     .bind(body.category_id)
     .bind(&payee)
     .bind(body.amount)
-    .bind(body.occurred_at)
+    .bind(occurred_at)
     .bind(destination)
     .fetch_one(&mut *tx)
     .await
@@ -308,7 +340,7 @@ async fn create_expense(
         .bind(expense_id)
         .bind(method)
         .bind(body.amount)
-        .bind(body.occurred_at)
+        .bind(occurred_at)
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| {
@@ -327,7 +359,7 @@ async fn create_expense(
         .bind(method)
         .bind(payment_id)
         .bind(body.amount)
-        .bind(body.occurred_at)
+        .bind(occurred_at)
         .execute(&mut *tx)
         .await
         .map_err(|e| {

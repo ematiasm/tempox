@@ -166,7 +166,7 @@ pub fn month_range(zone: Tz, at: DateTime<Utc>) -> DayRange {
 ///   the day starts at the first instant that does exist — found by walking
 ///   forward. The walk cannot run long: a gap is at most a couple of hours, and
 ///   the loop is bounded at a day.
-fn first_instant_of(date: NaiveDate, zone: Tz) -> DateTime<Utc> {
+pub fn first_instant_of(date: NaiveDate, zone: Tz) -> DateTime<Utc> {
     let midnight = date.and_time(NaiveTime::MIN);
     match midnight.and_local_timezone(zone) {
         LocalResult::Single(dt) => dt.with_timezone(&Utc),
