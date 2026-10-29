@@ -811,3 +811,54 @@ Sales now has **one reader** — its effect — and a write moves `page.revision
 reader to race.
 
 Counts: unit 321 / component 2 / e2e 44, backend untouched, `make lint` clean.
+
+L29 (the two independent CRITICALs, closed in one PR; and the one scope decision the owner stated).
+`#122` and `#123` are the batch the issue comments predicted would be independent — different files,
+no shared state — so they share one branch and one PR (`fix/ledger-superseded-load-and-refund-order`)
+and each keeps its own commit, so each can be read alone.
+
+**The owner's constraint, verbatim:** "este PR no toca ledgerPage.svelte.ts". It is honoured, and it
+turned out to be load-bearing rather than a preference. Both fixes are component-side:
+
+- `#122` — `PurchaseLedger`'s effect lost the `isStale` predicate when the screen moved onto the page
+  owner, so a superseded load published its error and cleared `loading`: `readDay(at).catch((e) =>
+  (error = describe(e))).finally(() => (loading = false))`. `LedgerPage` decides whether an *answer*
+  is applied; a rejected read never reaches it, so it structurally cannot decide whether a *failure*
+  belongs on screen. The guard that was deleted is restored in the component, where the question
+  actually lives.
+- `#123` — `getCash()` was made unconditional to close `R3-CORR-001` and placed **before** the
+  refresh, so a failing balance read threw past `page.refresh()`: the note existed on the server and
+  the row never showed it. The refresh is now issued first and not awaited (it only moves
+  `revision`), the cash figure refreshes after it, and the two failures are separate again.
+
+**What the constraint deferred, stated rather than silently dropped.** The `stepPage` path has the
+same shape of question as `#122` — a page read that fails has no way to ask the owner whether a newer
+read superseded it — and it is **not** patched here. Answering it needs the owner to say whether a
+*failed* read was superseded, which is `#120`/`#121`'s design question (`L25`'s "one owner" answer,
+taken one level further: the owner owns the failure as well as the answer). Patching it from the
+component would be the fourth hand-written generation comparison in a file `L25` records as having
+failed five times that way.
+
+**Three tests, and each was proven to bite** by deleting the code it covers, measured:
+
+| test | deleted | failed |
+| --- | --- | --- |
+| `purchase-ledger-superseded-load.test.ts` › does not publish its error | `if (!cancelled) error = …` → `error = …` | 2 tests |
+| … › does not clear the loading state | `if (!cancelled) loading = false` → `loading = false` | 1 test |
+| `refund-cash-failure.test.ts` › still reloads the rows | `page.refresh()` moved back below `getCash()` | 1 test |
+| … | `refundStale.mark(…)` → `refundStale.retireAll()` | 1 test |
+
+**Both are against the real components, not a harness.** The first draft of the refund test defined
+its own copy of the sequence in a harness and asserted that — which is exactly `R3-CORR-002` of an
+earlier round, the validator's sharpest follow-up ("the unit test defined its own local copy and so
+exercised nothing the components implement"). Extracting the sequence into a module was rejected for
+the same reason it was there: the shared thing is two calls in an order, and a module that owned the
+order would exist only to be testable while the component kept doing whatever it liked. Both tests
+now mount the component against a mocked client and drive the real interaction.
+
+The first harness also hung, and the reason is worth keeping: its fetcher wrote `$state` from inside
+the reader's effect, which re-ran the effect, which read again — an infinite flush that surfaced as
+Svelte's DEV warning `[updated at]` repeating forever, not as a timeout. The narration is plain now.
+
+Counts: unit 327 / component 6 / e2e 44; backend untouched, `make lint` clean, `svelte-check`
+0 errors.
