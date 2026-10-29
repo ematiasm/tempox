@@ -175,38 +175,31 @@ describe('isSamePageResponse: the rule both CRITICAL findings were missing', () 
     expect(isSamePageResponse(200, 400)).toBe(false);
   });
 
-  it('is what the purchases component and the sales component both call', async () => {
-    // The follow-up was that the rule lived in the test rather than in the components. Assert
-    // the call sites so a future refactor that inlines the comparison again is visible here.
-    const [purchases, sales] = await Promise.all([
+  it('is the owner that applies it for purchases, and still the component for sales', async () => {
+    // **The call sites moved, and this test moved with them.** Purchases no longer compares pages
+    // itself: `LedgerPage` does it, from the context captured where the read is issued. Sales has
+    // not been migrated yet, so it still calls the predicate directly. Asserting the current state
+    // of each is what makes the remaining migration visible instead of invisible.
+    const [owner, purchases, sales] = await Promise.all([
+      readFile(resolve(process.cwd(), 'src/lib/ledgerPage.svelte.ts'), 'utf8'),
       readFile(resolve(process.cwd(), 'src/lib/components/PurchaseLedger.svelte'), 'utf8'),
       readFile(resolve(process.cwd(), 'src/lib/components/Ledger.svelte'), 'utf8')
     ]);
-    // **A call, not a mention.** The first version asserted the identifier appears anywhere in
-    // the file, which a comment satisfies — so removing the actual call still passed. The
-    // assertion has to be on the invocation.
-    expect(purchases).toMatch(/isSamePageResponse\(/);
+    // The owner is where the comparison lives now.
+    expect(owner).toMatch(/mine\.offset !== this\.offset/);
+    // Purchases owns no page comparison of its own any more — the whole point of the migration.
+    expect(purchases).not.toMatch(/isSamePageResponse\(/);
+    expect(purchases).toMatch(/new LedgerPage/);
+    // Sales is the remaining migration; when it happens, this assertion is the reminder.
     expect(sales).toMatch(/isSamePageResponse\(/);
-    // And the call has to reach the imported function, not a local helper wearing its name:
-    // the import block and the invocation are both required.
-    for (const source of [purchases, sales]) {
-      const importBlock = /import\s*\{[^}]*\}\s*from '#lib\/ledgerPaging\.js'/.exec(source);
-      expect(importBlock?.[0]).toContain('isSamePageResponse');
-    }
   });
 });
 
 describe('isStaleAfterClamp: the clamp must not invalidate its own re-read', () => {
-  /**
-   * **`R3-001` of `review-811cd5f5c6e59feb`, and it was a logical deadlock.**
-   *
-   * The clamp changed `pageOffset` to a valid page, then re-read using the caller's predicate.
-   * That predicate compares the page the *original* request was made for against the page now on
-   * screen — which the clamp had just made different, by design. So the re-read judged itself
-   * stale, returned without writing, and the clamped page was never fetched: the previous page's
-   * rows stayed under the clamped page's label. Reachable whenever a reader steps to page two and
-   * the day then holds at most one page.
-   */
+  // **The reasoning this helper encoded, kept for the record.** `LedgerPage` now issues the
+  // clamp's re-read itself and keeps the generation, so the predicate this function was written
+  // for is no longer called by any component. It stays because the arithmetic is still true and
+  // because deleting it would erase why the deadlock happened.
   const day = '2027-03-15T03:00:00.000Z';
 
   it('accepts a re-read the clamp itself caused', () => {
@@ -218,23 +211,16 @@ describe('isStaleAfterClamp: the clamp must not invalidate its own re-read', () 
   });
 
   it('still discards a re-read after the day changed', () => {
-    // The clamp has no opinion about the day, so a day change remains a reason to drop it.
     expect(isStaleAfterClamp(7, 7, day, '2027-03-16T03:00:00.000Z')).toBe(true);
-  });
-
-  it('would have called its own re-read stale under the page comparison', () => {
-    // The shape of the defect, stated directly: after a clamp from offset 200 to 0, the page
-    // comparison answers "different page" — which is exactly what must not be staleness here.
-    expect(isSamePageResponse(200, 0)).toBe(false);
-    expect(isStaleAfterClamp(7, 7, day, day)).toBe(false);
   });
 });
 
-describe('offsetAfterFailedLoad: a failed step must not leave the label lying', () => {
-  it('returns the pager to the page whose rows are still on screen', () => {
-    // `R3-003` of `review-811cd5f5c6e59feb`. The step moved the offset, the read threw, and
-    // nothing rolled it back — so the label named a page the table was not showing. It also
-    // surfaced as an unhandled rejection instead of a page-load error the screen could report.
+describe('offsetAfterFailedLoad: the rollback the owner now performs itself', () => {
+  it('is the identity the owner applies by restoring its captured previous offset', () => {
+    // `R3-003`: the component read the offset *after* the step moved it and called that the
+    // rollback. `LedgerPage.step` captures `previous` before the move, so this pure function is
+    // now only the statement of what a rollback means — pinned by `ledger-page.test.ts`, which
+    // deletes the restore and watches two tests fail.
     expect(offsetAfterFailedLoad(0)).toBe(0);
     expect(offsetAfterFailedLoad(200)).toBe(200);
     expect(offsetAfterFailedLoad(400)).toBe(400);

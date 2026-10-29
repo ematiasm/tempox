@@ -31,16 +31,8 @@
     returnableOf,
     returnedByLine
   } from '#lib/supplierReturns.js';
-  import {
-    canStepPage,
-    clampOffset,
-    isSamePageResponse,
-    isStaleAfterClamp,
-    offsetAfterFailedLoad,
-    pageCount,
-    pageIsPartial,
-    pageNumber
-  } from '#lib/ledgerPaging.js';
+  import { canStepPage, pageCount, pageIsPartial, pageNumber } from '#lib/ledgerPaging.js';
+  import { LedgerPage, type PageApply } from '#lib/ledgerPage.svelte.js';
   import { lang } from '#lib/i18n/index.svelte.js';
   import { isOnAccount, methodLabel } from '#lib/methodLabel.js';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
@@ -76,18 +68,57 @@
    * `ledgerPaging.ts` owns the arithmetic now, shared with the other two ledgers.
    */
   const PAGE = 200;
-  let pageOffset = $state(0);
+
+  /**
+   * The page, owned by `LedgerPage`.
+   *
+   * **Four of the five CRITICAL findings in this family lived in the code this replaces.** The
+   * component used to keep `pageOffset` in a `$state` local and ask, on four separate paths,
+   * whether an answer still applied. It now reads `page.offset` and calls `page.step`; every
+   * capture, comparison and rollback happens inside the owner, where the previous value cannot
+   * be misread (`R3-003` of `review-811cd5f5c6e59feb`).
+   */
+  const page = new LedgerPage<PurchaseListItem, PurchasePageExtra>(PAGE);
+
+  /** What a page read carries beyond its rows: the day, the suppliers, the totals. */
+  type PurchasePageExtra = {
+    day: DayRange;
+    suppliers: Supplier[];
+    summary: PurchasesSummary;
+  };
 
   // Tell the page how many documents the period holds, whenever that changes.
   const periodDocuments = $derived(summary?.documents ?? null);
-  /** The period's exact document count, so the last page is a known address. */
-  const total = $derived(periodDocuments ?? 0);
+  /**
+   * The period's exact document count, as of the last read the owner applied.
+   *
+   * **From the owner, not from `summary`.** A summary that arrives from a read which was
+   * discarded must not move the pager: that is the same staleness the owner exists to prevent,
+   * and reading it here would reintroduce it through the back door.
+   */
+  const total = $derived(page.total);
   $effect(() => {
     oncount?.(periodDocuments);
   });
   let loading = $state(true);
   let error = $state<string | null>(null);
   let open = new SvelteSet<string>();
+
+  /**
+   * The day is read whenever the scope or the refresh token changes.
+   *
+   * The staleness question this used to answer by hand — a local generation counter compared in
+   * four places — is now the owner's, so the effect only has to say *what* to read.
+   */
+  $effect(() => {
+    const at = scopeInstant;
+    void refreshToken;
+    loading = true;
+    error = null;
+    readDay(at)
+      .catch((e) => (error = describe(e)))
+      .finally(() => (loading = false));
+  });
   // The list endpoint carries `supplier_id`, not a name: one purchase does not
   // need a joined row, and the suppliers are a short list the picker already
   // loads. Resolving here keeps the document's shape free of a denormalized
@@ -135,150 +166,49 @@
    * have moved — the defect the expenses pager shipped with.
    */
   function stepPage(delta: number) {
-    const next = clampOffset(pageOffset + delta * PAGE, PAGE, total);
-    if (next === pageOffset) return;
-    pageOffset = next;
-    // An expanded row from the previous page is not on screen any more; leaving it open
-    // would reopen a stranger's form on return.
+    // **The owner moves the offset, reads, and rolls back if the read fails.** It captured the
+    // previous offset before moving it, so the rollback cannot restore the value it was meant to
+    // undo — which is what this component did when it read `pageOffset` after the step changed it.
     open.clear();
-    // **Through `reload`, and that is the fix for `R3-001` of `review-58ab3200d6f59c90`.**
-    // This called `loadDay(scopeInstant, () => false)`, and a constant-false predicate is not
-    // "the counter owns staleness" — it is "nothing is ever stale". `loadDay` gates every
-    // write with `if (isStale()) return false`, so two page steps in flight both wrote: the
-    // slower response overwrote `rows` and `summary` after the newer one had landed, leaving
-    // the table on a different page from the one the pager names. `reload` takes the counter
-    // and bumps it, so the older response is discarded, and it carries the same guard a day
-    // change has.
-    void reload(scopeInstant);
+    void page.step(delta, scopeInstant, pageFetcher, applyPage, (e) => (error = describe(e)));
   }
 
   /**
-   * A generation counter for day loads.
+   * The fetcher: what is on the page at `offset` for the day `at`.
    *
-   * Every load takes a number and every load checks it before writing. Without
-   * this, a reload still in flight when the user pages would write the old day
-   * over the new one -- measured: paging to the previous day while a slow reload
-   * ran flipped the label back to today with today's purchase on screen.
+   * **This is all that is left of a four-branch loader.** It answers the request; whether the
+   * answer still applies is the owner's question, decided from the context captured where the
+   * read was issued — not from a predicate each caller has to construct correctly.
    */
-  let loadSeq = 0;
-
-  /**
-   * Reads one shop day and applies it, unless the caller says it went stale.
-   *
-   * The one place a day is read. The `$effect` and a recorded return both call
-   * it, so the two cannot drift apart -- they used to be the same three lines
-   * written twice, and only the effect had a cancellation guard.
-   *
-   * Returns false when the read was discarded, so a caller can tell "reloaded"
-   * from "superseded": a return must not claim the day is current when the user
-   * has already paged away from it.
-   */
-  async function loadDay(at: Date, isStale: () => boolean): Promise<boolean> {
-    const day = await fetchDay(at);
-    // The totals come from the database, not from the rows this page happens to
-    // hold: `listPurchases` caps at its own page size, so anything summed here
-    // omits the rest of the period. One request covers the whole day.
+  const pageFetcher = async (offset: number) => {
+    const day = await fetchDay(scopeInstant);
     const [list, supplierList, totals] = await Promise.all([
-      listPurchases({ from: day.from, to: day.to, limit: PAGE, offset: pageOffset }),
+      listPurchases({ from: day.from, to: day.to, limit: PAGE, offset }),
       listSuppliers(),
       getPurchasesSummary(day.from, day.to)
     ]);
-    if (isStale()) return false;
-    range = day;
-    // **A remembered offset can outlive the rows it addressed.** A day left open while a
-    // purchase is returned elsewhere shrinks, and the page a reader is on can end up past the
-    // end — an empty table under a foot that reports documents, which is the contradiction
-    // this whole class of fix exists to remove. Re-reading once is safe because the clamp is
-    // idempotent, so the second pass falls through.
-    const clamped = clampOffset(pageOffset, PAGE, totals.documents);
-    if (clamped !== pageOffset) {
-      // **`R3-001` of `review-811cd5f5c6e59feb`: the clamp used to invalidate its own reload.**
-      // It changed `pageOffset`, then re-entered `loadDay` with the *caller's* predicate — which
-      // for a page step compares against the offset the caller captured before the request. The
-      // clamp had just made them differ, so the predicate answered "stale" and the reload of the
-      // clamped page was discarded: page two's rows stayed on screen under page one's label.
-      //
-      // The re-read now carries a predicate that knows the offset is *expected* to have changed,
-      // and still guards the day and the generation — so a newer day or a newer load still wins.
-      const seqAtClamp = loadSeq;
-      const dayAtClamp = `${at.getTime()}`;
-      pageOffset = clamped;
-      if (isStale()) return false;
-      return loadDay(at, () =>
-        // Not "is the page the same": the clamp changed it, deliberately. Only a newer load or a
-        // different day can invalidate this re-read.
-        isStaleAfterClamp(seqAtClamp, loadSeq, dayAtClamp, `${at.getTime()}`)
-      );
-    }
-    rows = list;
-    suppliers = supplierList;
-    summary = totals;
-    // The figures are current again, so nothing on this screen is stale. The
-    // first version only ever retired a notice on a click that happened to touch
-    // that same row, so a warning survived every successful reload.
-    reloadNotice.retireAll();
-    return true;
-  }
-
-  /**
-   * Re-reads the day already on screen, keeping the scope the user chose.
-   *
-   * Throws if the read fails, so a return can tell its own operator what
-   * happened. Discards its own result silently if a newer load started, or if the
-   * user paged while it was in flight -- that load is the one that owns the
-   * screen now.
-   */
-  async function reload(at: Date): Promise<void> {
-    const seq = ++loadSeq;
-    // **`R3-003` of `review-811cd5f5c6e59feb`: a failed page step left the pager lying.** The
-    // step moved `pageOffset`, the reload threw, and nothing rolled the offset back — so the
-    // label named a page whose rows were never fetched, over the previous page's table. It also
-    // surfaced as an unhandled rejection rather than a page-load failure the screen could show.
-    const requested = pageOffset;
-    // **The page the request was made for is part of staleness.** Without it, stepping twice
-    // quickly leaves the slower response writing rows for a page the reader has left — the
-    // same defect as the constant predicate above, reachable through the write path too.
-    const requestedPage = pageOffset;
-    try {
-      await loadDay(
-        at,
-        () =>
-          seq !== loadSeq || scopeInstant !== at || !isSamePageResponse(requestedPage, pageOffset)
-      );
-    } catch (e) {
-      // The offset goes back to the page whose rows are still on screen, so the label and the
-      // table agree again — and the failure is reported through the screen's own error channel.
-      if (seq === loadSeq) {
-        pageOffset = offsetAfterFailedLoad(requested);
-        error = describe(e);
-      }
-    }
-  }
-
-  $effect(() => {
-    const at = scopeInstant;
-    // Reading refreshToken here is what makes a recorded purchase reload the day.
-    void refreshToken;
-    let cancelled = false;
-    const seq = ++loadSeq;
-    const isStale = () => cancelled || seq !== loadSeq;
-    loading = true;
-    error = null;
-
-    (async () => {
-      try {
-        await loadDay(at, isStale);
-      } catch (e) {
-        if (!isStale()) error = describe(e);
-      } finally {
-        if (!isStale()) loading = false;
-      }
-    })();
-
-    return () => {
-      cancelled = true;
+    return {
+      page: { rows: list, total: totals.documents },
+      extra: { day, suppliers: supplierList, summary: totals }
     };
-  });
+  };
+
+  /** Applies an accepted page. Never called for a discarded read. */
+  const applyPage: PageApply<PurchaseListItem, PurchasePageExtra> = (list, extra) => {
+    range = extra.day;
+    rows = list;
+    suppliers = extra.suppliers;
+    summary = extra.summary;
+    // The figures are current again, so nothing on this screen is stale. The first version only
+    // ever retired a notice on a click that happened to touch that same row, so a warning
+    // survived every successful reload.
+    reloadNotice.retireAll();
+  };
+
+  /** Reads the day already on screen at the page the owner says. */
+  function readDay(at: Date): Promise<boolean> {
+    return page.read(at, pageFetcher, applyPage);
+  }
 
   function toggle(id: string) {
     if (open.has(id)) open.delete(id);
@@ -354,7 +284,7 @@
     clearReturnDraft(rowId);
     confirming.delete(rowId);
     try {
-      await reload(scopeInstant);
+      await readDay(scopeInstant);
     } catch (e) {
       reloadNotice.mark(
         rowId,
@@ -643,17 +573,17 @@
       <button
         type="button"
         onclick={() => stepPage(1)}
-        disabled={!canStepPage(pageOffset, PAGE, total, 1)}
+        disabled={!canStepPage(page.offset, PAGE, total, 1)}
       >
         ← {lang.t.sales_older}
       </button>
       <span class="page-of figures">
-        {lang.t.ledger_page_of(pageNumber(pageOffset, PAGE), pageCount(total, PAGE))}
+        {lang.t.ledger_page_of(pageNumber(page.offset, PAGE), pageCount(total, PAGE))}
       </span>
       <button
         type="button"
         onclick={() => stepPage(-1)}
-        disabled={!canStepPage(pageOffset, PAGE, total, -1)}
+        disabled={!canStepPage(page.offset, PAGE, total, -1)}
       >
         {lang.t.sales_newer} →
       </button>

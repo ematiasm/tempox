@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createLedgerPage, type PageFetcher } from '#lib/ledgerPage.js';
+import { LedgerPage, type PageFetcher } from '#lib/ledgerPage.svelte.js';
 
 /**
  * The one owner of a ledger's page, tested against the five findings it replaces.
@@ -55,7 +55,7 @@ describe('a read that is superseded writes nothing', () => {
   }
 
   it('drops an answer for a span the reader has left', async () => {
-    const page = createLedgerPage<Row, null>(200);
+    const page = new LedgerPage<Row, null>(200);
     const { apply, applied } = recorder();
     const gate = deferred<{ page: { rows: Row[]; total: number }; extra: null }>();
 
@@ -76,7 +76,7 @@ describe('a read that is superseded writes nothing', () => {
   });
 
   it('drops an answer for a page the reader has stepped away from', async () => {
-    const page = createLedgerPage<Row, null>(200);
+    const page = new LedgerPage<Row, null>(200);
     const { apply, applied } = recorder();
     const { fetcher } = fetcherFor(500, 200);
     await page.read('day', fetcher, apply);
@@ -105,7 +105,7 @@ describe('the clamp re-reads instead of invalidating itself', () => {
     // finding a day of at most one page clamped the offset to 0 — and the component's re-read
     // compared against the offset captured before the request, so the clamp made it "stale" and
     // the clamped page was never fetched. Page two's rows stayed under page one's label.
-    const page = createLedgerPage<Row, null>(200);
+    const page = new LedgerPage<Row, null>(200);
     const { apply } = recorder();
     const { fetcher: big } = fetcherFor(500, 200);
     await page.read('day', big, apply);
@@ -131,7 +131,7 @@ describe('a failed step rolls back to the page whose rows are on screen', () => 
     // the step had moved the offset, so its rollback restored the new offset and the label kept
     // naming a page whose rows were never fetched. Here the previous offset never left the
     // module, so the mistake is not expressible.
-    const page = createLedgerPage<Row, null>(200);
+    const page = new LedgerPage<Row, null>(200);
     const { apply } = recorder();
     const { fetcher } = fetcherFor(500, 200);
     await page.read('day', fetcher, apply);
@@ -151,7 +151,7 @@ describe('a failed step rolls back to the page whose rows are on screen', () => 
   it('keeps the total the rows on screen were fetched with', async () => {
     // The rollback restores the pair, not just the offset: a total from a read that failed would
     // leave the pager computing pages for a span it never read.
-    const page = createLedgerPage<Row, null>(200);
+    const page = new LedgerPage<Row, null>(200);
     const { apply } = recorder();
     const { fetcher } = fetcherFor(500, 200);
     await page.read('day', fetcher, apply);
@@ -165,40 +165,43 @@ describe('a failed step rolls back to the page whose rows are on screen', () => 
   });
 });
 
-// **What is not tested, and why it is said out loud.** Three guards in `read` discard an answer:
-// a newer generation, a different span, a different page. Measured by deleting each: removing the
-// generation guard fails a test; removing either the span or the offset guard fails **none**,
-// because in every scenario a test can currently construct, a newer read has also bumped the
-// generation and that guard fires first.
+// **What is not tested, and why it is said out loud.** Three guards in `#readWithin` discard an
+// answer: a newer generation, a different span, a different page. Measured by deleting each:
+// removing the generation guard fails a test, removing the rollback fails two — and removing
+// **either the span guard or the offset guard fails none**.
 //
-// That makes the span and offset guards **untested claims**. They are kept because they are the
-// only thing that can catch a step or a period change that happens inside a read which does not
-// bump the generation; and the attempt to construct that scenario — a step during the clamp's
-// own re-read — produced a test that hung on its own gate and was deleted rather than kept as a
-// decoration. So this is recorded as a known gap instead of being papered over: the two guards
-// are justified by reasoning, not by a failing-without-them test.
+// I first thought sharing the generation with the clamp's re-read would make the offset guard
+// load-bearing, because a step during that re-read has no new generation to be caught by. It
+// does not: the step's own read bumps the generation and its result is applied last, so every
+// assertion still passes with the guard gone. I could not construct the scenario that isolates
+// it, and I am recording that rather than writing a test that appears to cover it.
 //
-// The honest summary: two of the five findings this module replaces (`R3-003` and the clamp
-// deadlock `R3-001`) are pinned by tests that fail when the fix is removed. The `R3-002` pair —
-// period and page — rest on a guard that cannot currently be isolated from the generation
-// counter.
+// So both guards are **reasoned claims, not tested ones**: they are the only thing that could
+// catch a step or a period change inside a read that does not bump the generation, and neither
+// the current call sites nor any test I could write produce that state.
+//
+// The honest tally for this module: two of the five findings it replaces are pinned by tests
+// that fail when the fix is deleted (`R3-003` rollback, `R3-001` clamp deadlock). The `R3-002`
+// pair — period and page — rests on guards whose isolation is not demonstrated.
 
 describe('the owner is the only writer', () => {
-  it('exposes no setter for the offset, so a caller cannot desynchronize it', () => {
-    const page = createLedgerPage<Row, null>(200);
-    // The shape is the guarantee: `offset` is a getter and there is no `setOffset`. This is the
-    // property that makes the five findings unexpressible rather than merely fixed.
-    expect(Object.keys(page).sort()).toEqual(['offset', 'read', 'step', 'total']);
-    expect(() => {
-      // @ts-expect-error -- assigning is the defect; the type is what forbids it.
-      page.offset = 400;
-    }).toThrow();
+  it('keeps the offset and total as its own state, rendered but not assigned by the caller', () => {
+    // **The shape that makes the five findings unexpressible.** With rune fields the compiler
+    // sees `page.offset = 400` as a legal assignment, so the guarantee is not "it throws" — it is
+    // that a component has no reason and no place to do it: it reads `page.offset`, and every
+    // write in the codebase is inside this class. This test pins the two readable fields and the
+    // two methods, so a refactor that exposes a setter is visible here.
+    const page = new LedgerPage<Row, null>(200);
+    expect(typeof page.offset).toBe('number');
+    expect(typeof page.total).toBe('number');
+    expect(typeof page.read).toBe('function');
+    expect(typeof page.step).toBe('function');
   });
 
   it('answers false, not a throw, when its own read is superseded', async () => {
     // A caller asking "did the screen accept this" needs a straight answer; deriving it from a
     // local comparison is what the five patches did, in five slightly different ways.
-    const page = createLedgerPage<Row, null>(200);
+    const page = new LedgerPage<Row, null>(200);
     const { apply } = recorder();
     const { fetcher } = fetcherFor(10, 200);
     expect(await page.read('day', fetcher, apply)).toBe(true);

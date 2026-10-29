@@ -761,3 +761,23 @@ happens to be first. Releasing the stale answer *last* is what makes the defect 
 mistake, in the test this time, as the round before.
 
 Counts: frontend unit 322 (was 315), e2e 44 unchanged, backend untouched, `make lint` clean.
+
+L27 (the owner is a class with runes, and `PurchaseLedger` is migrated). The first version of
+`ledgerPage.ts` was a plain closure and **could not be wired**: `let offset` inside a function is
+not Svelte state, so reading `page.offset` from a template created no reactive dependency — the
+pager would have rendered once and never updated. Svelte 5 tracks runes only, and runes only work
+in `.svelte.ts`. It is `ledgerPage.svelte.ts` now, a class whose `offset` and `total` are `$state`
+and whose generation counter deliberately is not (a counter that is rendered would re-run every
+effect on every read).
+
+`PurchaseLedger` uses it. What was deleted: `pageOffset`, `loadSeq`, the four-branch `loadDay`
+with its own clamp and its own predicate, `reload` with its captured `requested`, and the three
+comparisons written by hand. What replaced them: a fetcher that answers one request, an `apply`,
+and `page.read`/`page.step`. `R3-003` is now unexpressible there — the owner captures the previous
+offset before moving it, so the rollback cannot restore the value it means to undo.
+
+`R3-001` (the clamp deadlock) and `R3-002` (page and period) are the owner's, in one place, for the
+two ledgers still to migrate. `Ledger` (sales) still calls `isSamePageResponse` itself; a test
+asserts both states so the remaining migration is visible rather than forgotten.
+
+Counts: frontend unit 321, e2e 44, backend untouched, `make lint` clean. `svelte-check` 0 errors.

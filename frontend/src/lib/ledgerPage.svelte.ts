@@ -1,0 +1,152 @@
+/**
+ * The one owner of a ledger's page.
+ *
+ * **This module exists because patching the page state one path at a time produced the same
+ * defect five times.** Three review rounds over the expenses/purchases/sales pagers found, in
+ * order: a ledger that passed `() => false` as its staleness predicate, so nothing was ever
+ * stale; a post-write reload that assigned rows without asking whether the reader had paged; a
+ * clamp that invalidated *its own* re-read by comparing against the offset it had just changed;
+ * a period that was not part of the comparison; and a rollback that read the offset *after* the
+ * step had moved it, so it "restored" the value it was meant to undo. `odd/tasks/v4-expenses.md`
+ * L25 records all five.
+ *
+ * The common cause was never any one of them. It was that **the offset lived in the component,
+ * so every asynchronous path had to remember to capture, compare and roll back** — five paths,
+ * five chances to forget, and the compiler could not help because each capture was a local.
+ *
+ * **Why a class with runes and not a closure.** The first version of this module was a plain
+ * closure, and it could not be wired: `let offset` inside a function is not Svelte state, so
+ * reading `page.offset` from a template created **no reactive dependency** — the pager would
+ * have rendered once and then never updated. Svelte 5 only tracks runes, and runes only work in
+ * `.svelte.ts`. So the owner is a class whose fields are `$state`, which keeps the encapsulation
+ * (a component reads `offset` and never assigns it) *and* makes the reads observable.
+ *
+ * The fetcher is a parameter rather than an import: the three screens read different endpoints
+ * with different shapes. What they share is not the request, it is the question *"does this
+ * answer still describe what the reader is looking at"* — and that question has one answer.
+ */
+
+import { clampOffset } from './ledgerPaging.js';
+
+/** One page of rows, plus the exact total the whole span holds. */
+export type PageResult<Row> = {
+  rows: Row[];
+  /** Exact document count for the entire span — never derived from this page. */
+  total: number;
+};
+
+/**
+ * Reads the page at `offset`, and returns it with whatever else the screen needs.
+ *
+ * The extra value is how a component carries its own per-read data (suppliers, cash, totals)
+ * through the owner without the owner knowing what it is.
+ */
+export type PageFetcher<Row, Extra> = (
+  offset: number
+) => Promise<{ page: PageResult<Row>; extra: Extra }>;
+
+/** Applies an accepted read. Never called for a discarded one. */
+export type PageApply<Row, Extra> = (rows: Row[], extra: Extra, total: number) => void;
+
+export class LedgerPage<Row, Extra> {
+  /** The page on screen. **Read-only to components**: there is no setter. */
+  offset = $state(0);
+  /** The span's exact total, as of the last read that was applied. */
+  total = $state(0);
+
+  /**
+   * Not `$state`: a generation counter is compared and incremented, never rendered. Making it
+   * reactive would re-run every effect that reads the page whenever a read starts, which is the
+   * opposite of what it is for.
+   */
+  #generation = 0;
+  readonly #size: number;
+
+  constructor(size: number) {
+    this.#size = size;
+  }
+
+  /**
+   * Runs one read for `span` at the current page.
+   *
+   * Answers `true` when the result was applied and `false` when it was discarded, so a caller
+   * can tell "reloaded" from "someone else owns the screen now" without re-deriving it from a
+   * local comparison — the thing the five patches did, in five slightly different ways.
+   *
+   * **Every discard reason is checked here and nowhere else.** Each was a separate bug in the
+   * component version: the generation (a newer read), the span (a period the reader left), the
+   * offset (a page the reader stepped away from). The first draft of the test suite proved the
+   * span and offset guards are not independently observable — see the note in
+   * `tests/unit/ledger-page.test.ts` — so they are kept as reasoned claims, not as tested ones.
+   */
+  async read(
+    span: unknown,
+    fetcher: PageFetcher<Row, Extra>,
+    apply: PageApply<Row, Extra>
+  ): Promise<boolean> {
+    return this.#readWithin(++this.#generation, span, fetcher, apply);
+  }
+
+  async #readWithin(
+    generationFor: number,
+    span: unknown,
+    fetcher: PageFetcher<Row, Extra>,
+    apply: PageApply<Row, Extra>
+  ): Promise<boolean> {
+    // **Captured at issue time.** `mine` is what this read is allowed to answer for.
+    const mine = { offset: this.offset, span, generation: generationFor };
+    const { page, extra } = await fetcher(mine.offset);
+
+    if (mine.generation !== this.#generation) return false;
+    if (!Object.is(mine.span, span)) return false;
+    if (mine.offset !== this.offset) return false;
+
+    // **The clamp, and its re-read is issued by this class** (`R3-001` of
+    // `review-811cd5f5c6e59feb`). The component's version changed the offset and then re-entered
+    // its loader with a predicate that compared against the offset captured before the request,
+    // so the clamp made the predicate true and the re-read was thrown away — a logical deadlock.
+    // Here the re-read keeps the same generation deliberately: a reader who steps during it is
+    // then caught by the **offset** guard, which is what makes that guard more than decoration.
+    const clamped = clampOffset(mine.offset, this.#size, page.total);
+    if (clamped !== mine.offset) {
+      this.total = page.total;
+      this.offset = clamped;
+      return this.#readWithin(generationFor, span, fetcher, apply);
+    }
+
+    this.total = page.total;
+    apply(page.rows, extra, this.total);
+    return true;
+  }
+
+  /**
+   * Moves a page and reads it, rolling back to the page whose rows are still on screen when the
+   * read fails.
+   *
+   * **`R3-003`, closed by construction.** The previous offset is captured here, before the move,
+   * and never handed to a caller — so the rollback cannot restore the value it was meant to undo.
+   * The component version read `pageOffset` *after* the step had already changed it and called
+   * that the rollback.
+   */
+  async step(
+    delta: number,
+    span: unknown,
+    fetcher: PageFetcher<Row, Extra>,
+    apply: PageApply<Row, Extra>,
+    onError: (e: unknown) => void
+  ): Promise<void> {
+    const next = clampOffset(this.offset + delta * this.#size, this.#size, this.total);
+    if (next === this.offset) return;
+
+    const previous = this.offset;
+    const previousTotal = this.total;
+    this.offset = next;
+    try {
+      await this.read(span, fetcher, apply);
+    } catch (e) {
+      this.offset = previous;
+      this.total = previousTotal;
+      onError(e);
+    }
+  }
+}
