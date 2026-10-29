@@ -447,3 +447,46 @@ recorded here so they are not lost):
   `"\u{a0}".trim().is_empty()` → **true**. So a name of one non-breaking space still passes the
   database guard and is refused by the route — the same disagreement `R3-001` fixed for ASCII,
   left standing for Unicode. Both are informational and neither blocks delivery.
+
+L15 (review `review-1e9c4c74ced6d94b`, CRITICALs found on the delivered UI): the first
+review that saw the screen found three, and **all three were mine, on code the tests had
+already declared green**.
+
+- **`R3-002` — a date-only value was read in UTC.** `new Date('2026-03-15')` is
+  `2026-03-15T00:00:00Z`, which in the shop's zone (UTC-3) is **the 14th**. Measured, and
+  the first fix I attempted was itself wrong: sending the bare `YYYY-MM-DD` to the server is
+  a 422, because the field is a `DateTime<Utc>`. The real fix resolves the date in
+  `SHOP_TIMEZONE` on the **server**, through `day::first_instant_of` — the same helper
+  `/api/day` already uses, so DST is answered once.
+- **`R3-003` — an owed expense outside today could never be paid.** The ledger was scoped to
+  the current shop day by `occurred_at`, so an owed salary from an earlier day rendered no
+  row and no advance form. The feature's reason for existing was unreachable from the screen.
+- **`R3-001` — editing an applied migration is silent, and that is worse than failing.**
+  Measured: `sqlx` keys by version, so a database that had recorded version 4 kept the **old
+  trigger body** with no checksum error, no re-run, and exit 0 — while that body refused
+  every advance. `0006` re-creates the functions and triggers idempotently and asserts their
+  **bodies**, because a trigger with the right name and the wrong body is what a stale
+  database holds.
+
+The correction measured **351 diff lines against a frozen budget of 200**, so the provider
+classified it as a scope change rather than a bounded correction and offered `RECOVER` with
+`scope_changed`. The owner authorized it; the predecessor lineage closed and
+`review-0e3269a3a9623ddc` was opened over the same base, reviewed, **approved**, and its
+authority burned.
+
+L16 (debt: what that review left, and one it found that this slice does not fix):
+
+- **`R3-004` of `review-1e9c4c74ced6d94b`** — the ledger requests the default page size and
+  never paginates, so a day with more than 50 expenses silently omits the rest while the
+  summary foot still covers the whole day. Not admitted to the correction plan.
+- **`R3-003` of `review-0e3269a3a9623ddc`, and it is the sharper one** — the fix for
+  `R3-003` above introduced an **unscoped** `listExpenses({ limit: 200 })` and filters in the
+  client. Two queries for one screen, and the unscoped one grows with the shop's whole
+  history: past 200 documents an owed expense older than that is invisible again — the same
+  defect, merely pushed further out, and the cap is not surfaced. **The correct shape is a
+  server-side filter for "owes something", not a bigger page size.**
+- **`R3-001` of that review** — `day::first_instant_of` became `pub` for this slice and has
+  no unit test of its own; its behaviour is pinned only transitively through the route tests.
+- **`R3-002` of that review** — the advance route's `409` is advisory; the trigger is the real
+  enforcement. Recorded because a future change that dropped the trigger would leave a `409`
+  that no longer holds.

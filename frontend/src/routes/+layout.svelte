@@ -29,6 +29,10 @@
   const tabs = $derived([
     { href: '/sales', label: lang.t.nav_sales },
     { href: '/purchases', label: lang.t.nav_purchases },
+    // `/expenses` joins the rail with v4-expenses: what the shop spent is a job it does,
+    // and it sits beside the purchase because both are money going out — one for goods,
+    // one for everything else.
+    { href: '/expenses', label: lang.t.nav_expenses },
     { href: '/products', label: lang.t.nav_products },
     { href: '/accounts', label: lang.t.nav_accounts },
     // The two parties enter the rail in v5. They come after the money screens
@@ -60,7 +64,7 @@
       <button class="lang" onclick={() => lang.toggle()} aria-label={lang.t.lang_toggle}>
         {lang.other}
       </button>
-      <span class="version">v3</span>
+      <span class="version">v4</span>
     </div>
   </nav>
 

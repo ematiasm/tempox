@@ -293,7 +293,45 @@ const es: Dict = {
   purchases_return_recorded:
     'La devolución quedó registrada — no se pudo releer el día, así que lo que resta arriba puede estar desactualizado. Recargá la página para verla.',
   purchases_return_invalid: 'Una cantidad a devolver no es válida — corregila antes de devolver.',
-  purchases_return_line: (name) => `Cantidad a devolver de ${name}`
+  purchases_return_line: (name) => `Cantidad a devolver de ${name}`,
+
+  // ── Gastos (v4-expenses) ────────────────────────────────────────────────
+  nav_expenses: 'Gastos',
+  expenses_title: 'Registrar gasto',
+  expenses_tagline: 'Sale plata, no entra mercadería',
+  expenses_ledger_title: 'Los gastos del día',
+  expenses_payee: 'Pagado a',
+  expenses_payee_placeholder: 'Edenor, Juan Pérez, la ferretería',
+  expenses_category: 'Categoría',
+  expenses_amount: 'Monto',
+  expenses_method: 'Pagado con',
+  expenses_on_account: 'A cuenta (la tienda debe)',
+  expenses_occurred_at: 'El día al que pertenece',
+  expenses_action: 'Registrar gasto',
+  expenses_action_hint: 'Un pagano y un monto',
+  expenses_recorded: 'Gasto registrado',
+  expenses_empty: 'Todavía no hay gastos',
+  expenses_empty_day: 'No se gastó nada este día',
+  expenses_spent: 'Gastado',
+  expenses_purchases: 'Compras',
+  expenses_returned: 'Devuelto',
+  expenses_net: 'Neto',
+  expenses_paid: 'Pagado',
+  expenses_outstanding: 'Debido',
+  expenses_amount_advanced: 'Monto del adelanto',
+  expenses_advance_action: 'Registrar adelanto',
+  expenses_advanced: 'Adelanto registrado',
+  expenses_advance_only_owed: 'Sólo un gasto a cuenta acepta adelantos',
+  expenses_category_new: 'Nueva categoría',
+  expenses_category_new_action: 'Agregar',
+  documents_one: 'documento',
+  documents_other: 'documentos',
+
+  expenses_read_failed: 'No se pudieron leer los gastos',
+  expenses_write_failed: 'No se pudo registrar. Revisá los datos e intentá de nuevo.',
+  expenses_method_till: 'Efectivo (la caja)',
+
+  expenses_loading: 'Leyendo los gastos del día…'
 };
 
 export default es;

@@ -868,3 +868,103 @@ export async function collectFromCustomer(id: string, body: NewCollection): Prom
 export async function paySupplier(id: string, body: NewCollection): Promise<Collection> {
   return request<Collection>(new URL(`/api/suppliers/${id}/payments`, base()), json('POST', body));
 }
+
+// ── Expenses ─────────────────────────────────────────────────────────────
+//
+// Money leaving that touches no stock. The shapes mirror `routes/expenses.rs` field for
+// field, and the two figures the ledger carries are **derived by the server** — a client
+// that computed them would be a second implementation of one rule.
+
+export type ExpenseCategory = {
+  id: string;
+  name: string;
+  is_active: boolean;
+  created_at: string;
+};
+
+export type Expense = {
+  id: string;
+  category_id: string;
+  category_name: string;
+  payee: string;
+  /** A two-decimal string, never a JSON number: a float would lose the cent. */
+  amount: string;
+  occurred_at: string;
+  payment_method_id: string | null;
+  payment_method_name: string | null;
+  /** Derived: what has been paid against this document so far. */
+  paid: string;
+  /** Derived: `amount − paid`. Never stored, so it cannot disagree with its sources. */
+  outstanding: string;
+  created_at: string;
+};
+
+export type NewExpense = {
+  category_id: string;
+  payee: string;
+  amount: string;
+  occurred_at?: string;
+  /** A uuid, `"on_account"`, or omitted for the till. */
+  payment_method_id?: string;
+};
+
+export type Advance = {
+  id: string;
+  expense_id: string;
+  amount: string;
+  payment_method_id: string;
+  direction: 'out';
+  occurred_at: string;
+  outstanding: string;
+};
+
+export type SpendingSummary = {
+  expenses: string;
+  purchases: string;
+  supplier_returns: string;
+  net: string;
+  documents: number;
+};
+
+export async function listExpenseCategories(): Promise<ExpenseCategory[]> {
+  return request<ExpenseCategory[]>(new URL('/api/expense-categories', base()));
+}
+
+export async function createExpenseCategory(name: string): Promise<ExpenseCategory> {
+  return request<ExpenseCategory>(
+    new URL('/api/expense-categories', base()),
+    json('POST', { name })
+  );
+}
+
+export type ExpenseListParams = { from?: string; to?: string; limit?: number; offset?: number };
+
+export async function listExpenses(params: ExpenseListParams = {}): Promise<Expense[]> {
+  const url = new URL('/api/expenses', base());
+  if (params.from) url.searchParams.set('from', params.from);
+  if (params.to) url.searchParams.set('to', params.to);
+  if (params.limit !== undefined) url.searchParams.set('limit', String(params.limit));
+  if (params.offset !== undefined) url.searchParams.set('offset', String(params.offset));
+  return request<Expense[]>(url);
+}
+
+export async function createExpense(expense: NewExpense): Promise<Expense> {
+  return request<Expense>(new URL('/api/expenses', base()), json('POST', expense));
+}
+
+/** One advance against an owed expense. Answers `409` when it would pass the amount. */
+export async function advanceExpense(
+  id: string,
+  body: { amount: string; payment_method_id?: string }
+): Promise<Advance> {
+  return request<Advance>(new URL(`/api/expenses/${id}/advances`, base()), json('POST', body));
+}
+
+export async function getSpendingSummary(
+  params: { from?: string; to?: string } = {}
+): Promise<SpendingSummary> {
+  const url = new URL('/api/expenses/summary', base());
+  if (params.from) url.searchParams.set('from', params.from);
+  if (params.to) url.searchParams.set('to', params.to);
+  return request<SpendingSummary>(url);
+}
