@@ -114,7 +114,7 @@
       shopZone = bounds.zone;
       const [todays, older, foot] = await Promise.all([
         listExpenses({ from: bounds.from, to: bounds.to, limit: PAGE }),
-        listExpenses(unsettledQuery(bounds, OLDER_DEBTS_PAGE)),
+        listExpenses(unsettledQuery(OLDER_DEBTS_PAGE)),
         getSpendingSummary({ from: bounds.from, to: bounds.to })
       ]);
       // The day first in the server's own order, then the older debts it cannot hold. Both

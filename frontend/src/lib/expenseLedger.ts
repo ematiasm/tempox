@@ -40,13 +40,17 @@ export type DayBounds = { from: string; to: string };
  * server, and so `api.ts` keeps owning how a query is serialized (one place that knows
  * `location`, which is what keeps the module importable during SSR).
  */
-export function unsettledQuery(
-  day: DayBounds,
-  limit: number
-): { unsettled: true; to: string; limit: number } {
-  // `day.from`, never `day.to`: see the header. The test that pins this calls it
-  // "never sends the day bound it was given for the end of the day".
-  return { unsettled: true, to: day.from, limit };
+export function unsettledQuery(limit: number): { unsettled: true; limit: number } {
+  // **No `from` and no `to`, deliberately** (`R3-001` of `review-045709e4682ea82c`). The
+  // first version bounded this ask by `to: day.from` so the day's documents would not be
+  // asked for twice — and that reasoning covered *today only*. An owed expense dated after
+  // the shop day ends was fetched by neither list: the day's own list stops at `day.to`, and
+  // this one stopped at `day.from`. It rendered before this change and disappeared after it,
+  // which is the single defect this whole slice exists to end.
+  //
+  // The overlap the bound was avoiding is already handled where it belongs: `mergeOlderDebts`
+  // deduplicates by id, so a document that answers both questions renders once.
+  return { unsettled: true, limit };
 }
 
 /** The documents of a day, given its half-open `[from, to)` bounds. */

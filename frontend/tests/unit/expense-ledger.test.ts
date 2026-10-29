@@ -47,20 +47,25 @@ function expense(over: Partial<Expense> & { id: string }): Expense {
 }
 
 describe('unsettledQuery', () => {
-  it('asks for what owes, below the day, in one page of its own', () => {
-    // The `to` bound is the day's own first instant: an owed document that belongs to the
-    // day being read is already in the day's list, and asking for it twice would render it
-    // twice or count it twice.
-    const query = unsettledQuery({ from: '2026-03-15T03:00:00Z', to: '2026-03-16T03:00:00Z' }, 50);
-    expect(query).toEqual({ unsettled: true, to: '2026-03-15T03:00:00Z', limit: 50 });
+  it('asks for what owes with no day bound at all', () => {
+    // **`R3-001` of `review-045709e4682ea82c`, and the second regression I introduced.**
+    // The first version bounded this ask by `to: day.from`, reasoning that an owed document
+    // belonging to the day is already in the day's list. That reasoning covers *today* and
+    // nothing else: an owed expense dated after the shop day ends is fetched by neither
+    // list — the day's own list stops at `day.to`, and this one stopped at `day.from`. The
+    // baseline rendered it, so it was a silent disappearance of exactly the kind this whole
+    // change exists to end.
+    //
+    // No bound is the answer, and the overlap is not a problem: `mergeOlderDebts`
+    // deduplicates by id, so a document in both answers renders once.
+    const query = unsettledQuery(50);
+    expect(query).toEqual({ unsettled: true, limit: 50 });
   });
 
-  it('never sends the day bound it was given for the end of the day', () => {
-    // A regression guard with a reason: sending `to` instead of `from` would make the
-    // question "owed documents *in* this day", which is the set the merge already has.
-    const query = unsettledQuery({ from: 'from-instant', to: 'to-instant' }, 10);
-    expect(query.to).toBe('from-instant');
-    expect(query.to).not.toBe('to-instant');
+  it('carries no lower bound either, because an owed document can be dated anywhere', () => {
+    const query = unsettledQuery(10) as Record<string, unknown>;
+    expect(query.to).toBeUndefined();
+    expect(query.from).toBeUndefined();
   });
 });
 
@@ -148,5 +153,42 @@ describe('the day\u2019s page size, and the notice it owes', () => {
     for (const held of [0, 1, 49, 50, 199]) {
       expect(dayIsTruncated(held, 200)).toBe(false);
     }
+  });
+});
+
+describe('the two asks between them cover every owed document', () => {
+  /**
+   * **The property `R3-001` of `review-045709e4682ea82c` violated, stated directly.**
+   *
+   * Whatever day it is, the union of "the day's documents" and "the documents that owe"
+   * must contain every owed document — no matter where its date falls. The regression is
+   * exactly a hole in that union: a future-dated owed expense fell between the two lists,
+   * and no test was asking the question in those terms, which is why two unit tests and an
+   * e2e all stayed green while the document vanished.
+   */
+  const bounds = { from: '2026-03-15T03:00:00Z', to: '2026-03-16T03:00:00Z' };
+  const owed = (id: string, occurredAt: string): Expense =>
+    expense({ id, occurred_at: occurredAt });
+
+  it('covers an owed document dated long before the day', () => {
+    const row = owed('old', '2025-01-10T12:00:00Z');
+    const seen = [...expensesInDay([], bounds), ...mergeOlderDebts([], [row])].map((r) => r.id);
+    expect(seen).toEqual(['old']);
+  });
+
+  it('covers an owed document dated inside the day', () => {
+    const row = owed('today', '2026-03-15T15:00:00Z');
+    const seen = mergeOlderDebts(expensesInDay([row], bounds), [row]).map((r) => r.id);
+    expect(seen).toEqual(['today']);
+  });
+
+  it('covers an owed document dated AFTER the day, which is the hole that was there', () => {
+    // `occurred_at` is the day the expense belongs to, and nothing forbids a future one —
+    // October's salary can be entered before it is due. The first version of
+    // `unsettledQuery` bounded the ask by the day's own start, so this document was in
+    // neither list and rendered nowhere.
+    const row = owed('next-month', '2026-04-01T12:00:00Z');
+    const seen = [...expensesInDay([row], bounds), ...mergeOlderDebts([], [row])].map((r) => r.id);
+    expect(seen).toEqual(['next-month']);
   });
 });
