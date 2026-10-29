@@ -6,6 +6,7 @@ pub mod accounts;
 pub mod collections;
 pub mod customers;
 pub mod day;
+pub mod expenses;
 pub mod health;
 pub mod hello;
 pub mod ledger;
@@ -29,6 +30,7 @@ pub fn router() -> Router<AppState> {
             .merge(suppliers::routes())
             .merge(purchases::routes())
             .merge(day::routes())
+            .merge(expenses::routes())
             .merge(accounts::routes())
             .merge(ledger::routes())
             .merge(payments::routes())
