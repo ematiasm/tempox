@@ -316,6 +316,9 @@ const en: Dict = {
       ? '1 older debt is not shown — the list holds a page'
       : `${count} older debts are not shown — the list holds a page`,
   expenses_day_truncated: 'This day holds more documents than fit here',
+  expenses_page_older: 'Older',
+  expenses_page_newer: 'Newer',
+  expenses_page_of: (page, pages) => `Page ${page} of ${pages}`,
   expenses_category_new: 'New category',
   expenses_category_new_action: 'Add',
   documents_one: 'document',

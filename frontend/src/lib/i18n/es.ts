@@ -327,6 +327,9 @@ const es: Dict = {
       ? 'Hay 1 deuda anterior que no se muestra — la lista entra en una página'
       : `Hay ${count} deudas anteriores que no se muestran — la lista entra en una página`,
   expenses_day_truncated: 'Este día tiene más documentos de los que entran acá',
+  expenses_page_older: 'Anterior',
+  expenses_page_newer: 'Siguiente',
+  expenses_page_of: (page, pages) => `Página ${page} de ${pages}`,
   expenses_category_new: 'Nueva categoría',
   expenses_category_new_action: 'Agregar',
   documents_one: 'documento',
