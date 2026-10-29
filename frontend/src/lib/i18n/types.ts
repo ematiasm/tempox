@@ -355,6 +355,18 @@ export interface Dict {
    * cannot see in full (`R2-001` of `review-16c84931d9274aaf`).
    */
   expenses_day_truncated: string;
+  /** The pager's back step, on the day's own stack. */
+  expenses_page_older: string;
+  /** The pager's forward step. */
+  expenses_page_newer: string;
+  /**
+   * Which page of the day is shown, out of how many.
+   *
+   * A function rather than a string because both numbers are the point: "page 2 of 5" tells a
+   * reader where they are in a day they cannot see at once, which is what the notice above it
+   * cannot say on its own.
+   */
+  expenses_page_of: (page: number, pages: number) => string;
   expenses_category_new: string;
   expenses_category_new_action: string;
   documents_one: string;

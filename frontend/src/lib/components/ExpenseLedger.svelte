@@ -17,7 +17,11 @@
     type Expense
   } from '#lib/api.js';
   import {
+    canStepPage,
     dayIsTruncated,
+    dayOffset,
+    dayPageCount,
+    dayPageNumber,
     expensesInDay,
     mergeOlderDebts,
     unsettledQuery
@@ -75,6 +79,17 @@
    * exactly the case where more may exist and the server said nothing more about it.
    */
   let dayNotShown = $state(0);
+  /**
+   * Which page of the day the stack is showing, as a row offset.
+   *
+   * A day can hold more documents than one page, and until this existed the notice below
+   * the stack said so and left the operator nowhere to go. The offset is clamped by
+   * `dayOffset` against the summary's exact `documents` count, so it can never address a
+   * page that holds nothing (`R3-004` of `review-1e9c4c74ced6d94b`).
+   */
+  let dayPageOffset = $state(0);
+  /** The day's exact document count, from the summary — not from the page that is shown. */
+  let dayTotal = $state(0);
   /** The shop's zone, from `GET /api/day`. A browser's own clock is not the shop's. */
   let shopZone = $state<string | undefined>(undefined);
   let summary = $state<{
@@ -113,7 +128,12 @@
       const bounds = await fetchDay(new Date());
       shopZone = bounds.zone;
       const [todays, older, foot] = await Promise.all([
-        listExpenses({ from: bounds.from, to: bounds.to, limit: PAGE }),
+        listExpenses({
+          from: bounds.from,
+          to: bounds.to,
+          limit: PAGE,
+          offset: dayPageOffset
+        }),
         listExpenses(unsettledQuery(OLDER_DEBTS_PAGE)),
         getSpendingSummary({ from: bounds.from, to: bounds.to })
       ]);
@@ -125,7 +145,27 @@
       // owes, so a satisfied day would report zero no matter how much it truncated; the
       // endpoint's `cap` is the honest signal, and `PAGE` is now the baseline's 200 so this
       // notice is reachable only on a day nobody could read in one screen anyway.
-      dayNotShown = dayIsTruncated(todays.rows.length, todays.cap) ? 1 : 0;
+      // The summary answered alongside this page, so its count is the day's own — exact,
+      // and the address the pager clamps against.
+      dayTotal = foot.documents;
+      // **The page is re-validated against the count on every load, and that is not
+      // bookkeeping.** A day grows and shrinks while the screen is open — a document recorded
+      // in another tab, or this screen's own `refreshToken` reload after an advance — and a
+      // remembered offset can end up past the new last page. Without this clamp the screen
+      // would show an empty stack for a day whose foot reports documents, which is the
+      // contradiction this whole slice exists to remove. Measured in the e2e: the component
+      // kept its third page across a reload of a day that had shrunk to two.
+      // The request above used the *old* offset, so when the clamp moves it the page on screen
+      // is not the page that was asked for. Re-reading once is enough and cannot recurse: the
+      // clamp is idempotent, so the second pass finds `clamped === dayPageOffset` and falls
+      // through.
+      const clamped = dayOffset(dayPageOffset, PAGE, dayTotal);
+      if (clamped !== dayPageOffset) {
+        dayPageOffset = clamped;
+        await load();
+        return;
+      }
+      dayNotShown = dayIsTruncated(todays.rows.length, dayTotal) ? 1 : 0;
       // **The day's count, not the merged list's.** The header sits above a foot that
       // reports the day's spending; counting the merge made a day with two expenses display
       // seven documents because five unrelated old debts were rendered under them.
@@ -163,6 +203,24 @@
     } finally {
       advancing = false;
     }
+  }
+
+  /**
+   * Moves to the neighbouring page of the day, clamped by `dayOffset`.
+   *
+   * `stepPage` rather than assigning the offset directly, because the clamp is the rule that
+   * keeps the pager from ever addressing a page that holds nothing.
+   */
+  function stepPage(delta: number) {
+    const next = dayOffset(dayPageOffset + delta * PAGE, PAGE, dayTotal);
+    if (next === dayPageOffset) return;
+    dayPageOffset = next;
+    // The stack is a new page: an expanded row from the previous one is not on screen any
+    // more, and leaving `expanded` pointing at it would reopen a stranger's form on return.
+    expanded = null;
+    advanceText = '';
+    advanceError = null;
+    load();
   }
 
   function toggle(id: string) {
@@ -260,10 +318,37 @@
        truth is "there are more documents", and only the second one means the figures below
        describe a day the stack does not show in full. Reachable only at the endpoint's cap
        (`R2-001` of `review-16c84931d9274aaf`). -->
-  {#if dayNotShown > 0}
-    <p class="truncated" role="status">
-      {lang.t.expenses_day_truncated}
-    </p>
+  {#if dayNotShown || dayPageOffset > 0}
+    <!-- **The pager, and it is the answer to the notice rather than a second complaint.**
+         The notice above says part of the day is off screen; this says which page is shown
+         and offers the way to the next one, so a busy day stops being a wall. It renders on
+         any page but the first as well, because a reader on page three needs to know that
+         and to get back. -->
+    <!-- **The labels follow the ordering, not the offset.** The stack is newest-first and
+         offset 0 is the newest page, so "Older" is the *forward* offset and "Newer" is back
+         towards zero. The first version of this markup paired `stepPage(-1)` with "Older",
+         which read correctly and did the opposite: pressing it moved towards today's newest
+         documents while the button promised yesterday's, and on the first page it was the
+         one that was disabled. Measured while writing the e2e, which is what caught it. -->
+    <div class="pager">
+      <button
+        type="button"
+        onclick={() => stepPage(1)}
+        disabled={!canStepPage(dayPageOffset, PAGE, dayTotal, 1)}
+      >
+        ← {lang.t.expenses_page_older}
+      </button>
+      <span class="page-of figures">
+        {lang.t.expenses_page_of(dayPageNumber(dayPageOffset, PAGE), dayPageCount(dayTotal, PAGE))}
+      </span>
+      <button
+        type="button"
+        onclick={() => stepPage(-1)}
+        disabled={!canStepPage(dayPageOffset, PAGE, dayTotal, -1)}
+      >
+        {lang.t.expenses_page_newer} →
+      </button>
+    </div>
   {/if}
 
   {#if summary}
@@ -302,6 +387,34 @@
   .state {
     margin: 24px;
     font-size: 13px;
+    color: var(--ink-soft);
+  }
+
+  .pager {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 24px;
+    border-bottom: 1px solid var(--rule);
+  }
+  .pager button {
+    background: none;
+    border: 1px solid var(--rule-strong);
+    border-radius: var(--radius);
+    padding: 6px 12px;
+    font: inherit;
+    font-size: var(--step--1);
+    color: var(--ink);
+    cursor: pointer;
+  }
+  .pager button:disabled {
+    color: var(--ink-soft);
+    border-color: var(--rule);
+    cursor: default;
+  }
+  .page-of {
+    font-size: var(--step--1);
     color: var(--ink-soft);
   }
 

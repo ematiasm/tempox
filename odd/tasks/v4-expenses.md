@@ -638,3 +638,36 @@ was no RED to observe and the proof is the inverse: break each branch and watch 
 - **Counts**: backend unit 73 (was 67). No other suite touches `day.rs`, so integration, e2e and
   the frontend are unaffected — and that is worth stating because it is exactly why the gap
   survived this long.
+
+L23 (the other half of `R3-004`, delivered). The day's stack was a page with a notice and
+nowhere to go: #116 made it *say* when part of the day was off screen, which was honest and left
+201 documents a wall. This adds the pager, and the four things measuring it taught:
+
+- **The arithmetic lives in `expenseLedger.ts`** (`dayOffset`, `dayPageCount`, `dayPageNumber`,
+  `canStepPage`) for the reason the rest of that module does: a `$effect` is not a place
+  anything can be asserted. The clamp is the rule that matters — `total` comes from the
+  summary's exact `documents`, so the last page is a known address and the pager cannot ask for
+  one that holds nothing.
+- **`dayIsTruncated` changed meaning, and the old semantics were the bug.**
+  `rowsHeld >= cap` asked "is this page full", which is not the question once a pager exists:
+  the *second* page of a 300-document day also compares false. `rowsHeld < total` answers "is
+  part of the day off screen", which is true on every page that is not the whole. The two
+  disagree exactly where it matters, and three tests that had been green under the old
+  semantics were rewritten rather than kept.
+- **The pager's labels were inverted, and the e2e found it.** The stack is newest-first, so
+  offset 0 is the *newest* page: "Older" is the forward offset and "Newer" steps back towards
+  zero. The first markup paired `stepPage(-1)` with "Older", read correctly, and did the
+  opposite. The code comment records it so the next reader does not "fix" it back.
+- **Three defects were in the test, and each one was a decoration test in disguise.** The e2e
+  first asserted only that pages were non-empty, which passed with the request's offset
+  hard-wired to `0` — the pager rendered, the label advanced, and every page showed the same
+  rows. It now asserts each page leads with a different document, and that assertion is what
+  fails when the offset is broken (measured). The second and third were a duplicated backward
+  click and a stale `isDisabled` read, each of which left the walk a page short.
+- **The shared, append-only e2e database is why the count is never asserted.** An earlier draft
+  asserted "de 2" and failed with "Página 1 de 3"; a later one asserted the oldest document was
+  absent from page one and failed once the day held a thousand documents from previous runs. The
+  test now claims what is true regardless of history: the pager names more than one page, every
+  page it reaches leads with a different document, and walking forward returns to page one.
+- **Counts**: frontend unit 292 (was 280), e2e 42 (was 41), backend unchanged at 73/182/6.
+  `make lint` clean.

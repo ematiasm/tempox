@@ -90,18 +90,61 @@ export function ledgerDocumentCount(dayCount: number | null, _mergedCount: numbe
 }
 
 /**
- * Whether the day's own page left documents out.
+ * Whether the page being shown leaves part of the day out.
  *
  * **A page with no way to say "there is more" is the same silent truncation the older-debts
- * notice closes, one list over** (`R2-001` of `review-16c84931d9274aaf`). The signals are
- * different on purpose: `unsettled_older` counts only debts, so a day whose documents are all
- * paid would report zero however much it truncated. `cap` is the endpoint's own largest page,
- * so a day that returned fewer rows than the cap is the whole day **by construction**, and a
- * day that returned exactly the cap may have more.
+ * notice closes, one list over** (`R2-001` of `review-16c84931d9274aaf`).
  *
- * The name says "truncated" rather than "may have more" because that is what the notice tells
- * the operator; the function is deliberately optimistic only in the case it can prove.
+ * Its first version compared the rows held against the endpoint's `cap`, which was the honest
+ * question while there was no pager: fewer rows than the cap meant the whole day by
+ * construction. **It is the wrong question now**, and the difference is worth stating because
+ * the two answers disagree exactly where it matters. With a pager, a full first page of a
+ * 300-document day holds 200 rows and `200 >= 200` is true — but so does the *second* page,
+ * whose 100 remaining rows also compare as `100 >= 200 == false`. The cap cannot tell "the
+ * day is longer than a page" from "this page is short", and the second is not a warning.
+ *
+ * The count that answers it is the summary's `documents`, which is an **exact** count over
+ * the day rather than a capped one. `rowsHeld < total` is then true precisely when some part
+ * of the day is not on screen, whichever page is being shown.
  */
-export function dayIsTruncated(rowsHeld: number, cap: number): boolean {
-  return rowsHeld >= cap;
+export function dayIsTruncated(rowsHeld: number, total: number): boolean {
+  return rowsHeld < total;
+}
+
+/**
+ * Where the day's next page starts, clamped to the pages that actually hold something.
+ *
+ * **The day's list has always been a page, and until now the screen could only say so.**
+ * `dayIsTruncated` above tells the operator "this day holds more documents than fit here",
+ * which is honest and leaves them nowhere to go: 200 documents was a wall. This is the
+ * arithmetic the pager needs, and it lives here rather than in the component for the reason
+ * every other rule in this module does — a `$effect` is not a place anything can be asserted.
+ *
+ * The clamp at the end is the one that matters. `total` comes from the summary's `documents`,
+ * which is an **exact** count over the day rather than a capped one, so the last page is a
+ * known address. Without the clamp, a pager could ask for offset 250 of a 201-document day,
+ * receive an empty `rows`, and render an empty stack underneath a foot reporting 201
+ * documents — a screen contradicting its own figures, which is the failure this whole slice
+ * exists to remove.
+ */
+export function dayOffset(current: number, page: number, total: number): number {
+  const lastPage = Math.max(0, (dayPageCount(total, page) - 1) * page);
+  return Math.min(Math.max(0, current), lastPage);
+}
+
+/** How many pages a day needs. Never zero: every day has a first page, even an empty one. */
+export function dayPageCount(total: number, page: number): number {
+  if (total <= 0 || page <= 0) return 1;
+  return Math.ceil(total / page);
+}
+
+/** The page a label shows, numbered from one — an offset is an index, a label is not. */
+export function dayPageNumber(offset: number, page: number): number {
+  if (page <= 0) return 1;
+  return Math.floor(Math.max(0, offset) / page) + 1;
+}
+
+/** Whether a pager step is possible in that direction, so a button can be disabled honestly. */
+export function canStepPage(offset: number, page: number, total: number, delta: number): boolean {
+  return dayOffset(offset + delta * page, page, total) !== dayOffset(offset, page, total);
 }
