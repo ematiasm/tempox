@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import {
+  dayIsTruncated,
   expensesInDay,
   ledgerDocumentCount,
   mergeOlderDebts,
@@ -110,5 +113,40 @@ describe('ledgerDocumentCount', () => {
 
   it('is null before the day has been read, so the header shows nothing rather than a zero', () => {
     expect(ledgerDocumentCount(null, 0)).toBeNull();
+  });
+});
+
+describe('the day\u2019s page size, and the notice it owes', () => {
+  it('asks for the day with the page size the baseline used, not a narrower one', async () => {
+    // **`R2-001` of `review-16c84931d9274aaf`, and it was a regression I introduced.** The
+    // baseline fetched `limit: 200` for the day and filtered to the day in the browser, so
+    // 200 was how many of a day's documents reached the screen. The first version of this
+    // fix narrowed it to 50 while adding the older-debts ask, which quietly shrank what a
+    // busy day shows -- a behaviour change nobody asked for, in a fix whose whole subject was
+    // documents going missing from a page.
+    const source = await readFile(
+      resolve(process.cwd(), 'src/lib/components/ExpenseLedger.svelte'),
+      'utf8'
+    );
+    const page = /const PAGE = (\d+);/.exec(source);
+    expect(page, 'the component declares its day page size').not.toBeNull();
+    expect(Number(page?.[1])).toBe(200);
+  });
+
+  it('says so when the day is longer than its page', async () => {
+    // The notice itself is the other half of the finding: a page with no way to say "there is
+    // more" is the same silent truncation the older-debts notice closes, one list over.
+    // Asserted through the rule rather than the markup, because the rule is what was missing.
+    expect(dayIsTruncated(200, 200)).toBe(true);
+    expect(dayIsTruncated(51, 200)).toBe(false);
+    expect(dayIsTruncated(0, 200)).toBe(false);
+  });
+
+  it('can never truncate a day it holds entirely', async () => {
+    // The cap is what makes the notice honest: the endpoint answers at most `cap` rows, so
+    // fewer rows than the cap means the page is the whole day by construction.
+    for (const held of [0, 1, 49, 50, 199]) {
+      expect(dayIsTruncated(held, 200)).toBe(false);
+    }
   });
 });

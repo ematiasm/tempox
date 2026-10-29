@@ -84,3 +84,20 @@ export function ledgerDocumentCount(dayCount: number | null, _mergedCount: numbe
   if (dayCount === null) return null;
   return dayCount;
 }
+
+/**
+ * Whether the day's own page left documents out.
+ *
+ * **A page with no way to say "there is more" is the same silent truncation the older-debts
+ * notice closes, one list over** (`R2-001` of `review-16c84931d9274aaf`). The signals are
+ * different on purpose: `unsettled_older` counts only debts, so a day whose documents are all
+ * paid would report zero however much it truncated. `cap` is the endpoint's own largest page,
+ * so a day that returned fewer rows than the cap is the whole day **by construction**, and a
+ * day that returned exactly the cap may have more.
+ *
+ * The name says "truncated" rather than "may have more" because that is what the notice tells
+ * the operator; the function is deliberately optimistic only in the case it can prove.
+ */
+export function dayIsTruncated(rowsHeld: number, cap: number): boolean {
+  return rowsHeld >= cap;
+}

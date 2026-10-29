@@ -346,6 +346,15 @@ export interface Dict {
    * alternative — silently truncating — is exactly the defect this message closes.
    */
   expenses_older_owed_notice: (count: number) => string;
+  /**
+   * Said when **the day itself** is longer than one page.
+   *
+   * A different sentence from the one above on purpose: that one says there are older debts
+   * this screen did not render, this one says the day holds more documents than the stack
+   * below it — and only the second means the day's own figures describe a day the reader
+   * cannot see in full (`R2-001` of `review-16c84931d9274aaf`).
+   */
+  expenses_day_truncated: string;
   expenses_category_new: string;
   expenses_category_new_action: string;
   documents_one: string;

@@ -16,7 +16,12 @@
     listExpenses,
     type Expense
   } from '#lib/api.js';
-  import { expensesInDay, mergeOlderDebts, unsettledQuery } from '#lib/expenseLedger.js';
+  import {
+    dayIsTruncated,
+    expensesInDay,
+    mergeOlderDebts,
+    unsettledQuery
+  } from '#lib/expenseLedger.js';
   import { formatMoney, formatTime, parseAmount } from '#lib/money.js';
   import { lang } from '#lib/i18n/index.svelte.js';
   import { fetchDay } from '#lib/api.js';
@@ -28,8 +33,18 @@
     oncount?: (count: number | null) => void;
   }
 
-  /** The day's own page. A day with more than this says so — see the foot's notice. */
-  const PAGE = 50;
+  /**
+   * The day's own page, and it is **the size the baseline used**.
+   *
+   * The baseline asked for `limit: 200` and filtered to the day in the browser, so 200 was
+   * how many of a day's documents reached the screen. Narrowing it to 50 while fixing the
+   * older-debts question would have quietly shrunk what a busy day shows, and the notice
+   * this component deserves for that case is the day-truncation one below the stack — which
+   * only exists because the endpoint answers `cap` and `unsettled_older` (`R2-001` of
+   * `review-16c84931d9274aaf`, measured: the earlier comment promised a foot notice that did
+   * not exist, and `PAGE = 50` was a behaviour change nobody asked for).
+   */
+  const PAGE = 200;
   /**
    * The page asked for older debts.
    *
@@ -51,6 +66,15 @@
    * than visibly pending (`R3-003` of `review-0e3269a3a9623ddc`, issue #115).
    */
   let olderOwedNotShown = $state(0);
+  /**
+   * How many of the day's own documents the server did not return.
+   *
+   * The day's list is a page too, and a page with no way to say "there is more" is the same
+   * silent truncation the older-debts notice closes, one list over (`R2-001` of
+   * `review-16c84931d9274aaf`). `cap` is the endpoint's own largest page, so `rows == cap` is
+   * exactly the case where more may exist and the server said nothing more about it.
+   */
+  let dayNotShown = $state(0);
   /** The shop's zone, from `GET /api/day`. A browser's own clock is not the shop's. */
   let shopZone = $state<string | undefined>(undefined);
   let summary = $state<{
@@ -97,6 +121,11 @@
       // halves already arrive newest-first, so nothing is re-sorted here.
       expenses = mergeOlderDebts(todays.rows, older.rows);
       olderOwedNotShown = older.unsettled_older;
+      // **The day's own page says when it is a page.** `unsettled_older` counts only what
+      // owes, so a satisfied day would report zero no matter how much it truncated; the
+      // endpoint's `cap` is the honest signal, and `PAGE` is now the baseline's 200 so this
+      // notice is reachable only on a day nobody could read in one screen anyway.
+      dayNotShown = dayIsTruncated(todays.rows.length, todays.cap) ? 1 : 0;
       // **The day's count, not the merged list's.** The header sits above a foot that
       // reports the day's spending; counting the merge made a day with two expenses display
       // seven documents because five unrelated old debts were rendered under them.
@@ -222,6 +251,18 @@
   {#if olderOwedNotShown > 0}
     <p class="truncated" role="status">
       {lang.t.expenses_older_owed_notice(olderOwedNotShown)}
+    </p>
+  {/if}
+
+  <!-- **The day's own page, and it is a different sentence.** The notice above is about debts
+       this screen found and did not render; this one is about the day itself being longer
+       than a page. Collapsing them would tell the operator "there are more debts" when the
+       truth is "there are more documents", and only the second one means the figures below
+       describe a day the stack does not show in full. Reachable only at the endpoint's cap
+       (`R2-001` of `review-16c84931d9274aaf`). -->
+  {#if dayNotShown > 0}
+    <p class="truncated" role="status">
+      {lang.t.expenses_day_truncated}
     </p>
   {/if}
 

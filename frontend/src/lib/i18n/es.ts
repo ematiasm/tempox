@@ -326,6 +326,7 @@ const es: Dict = {
     count === 1
       ? 'Hay 1 deuda anterior que no se muestra — la lista entra en una página'
       : `Hay ${count} deudas anteriores que no se muestran — la lista entra en una página`,
+  expenses_day_truncated: 'Este día tiene más documentos de los que entran acá',
   expenses_category_new: 'Nueva categoría',
   expenses_category_new_action: 'Agregar',
   documents_one: 'documento',
