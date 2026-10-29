@@ -781,3 +781,33 @@ two ledgers still to migrate. `Ledger` (sales) still calls `isSamePageResponse` 
 asserts both states so the remaining migration is visible rather than forgotten.
 
 Counts: frontend unit 321, e2e 44, backend untouched, `make lint` clean. `svelte-check` 0 errors.
+
+L28 (browser mode, and the two bugs it found in ten minutes). Adopted
+`@vitest/browser` + `@vitest/browser-playwright` after six failed attempts at migrating sales by
+reasoning alone. `vite.config.ts` now has two projects: `unit` (jsdom, 321 tests, unchanged speed)
+and `component` (Chromium, for anything that needs to mount Svelte).
+
+**The first thing it settled was that I had been blaming the wrong thing.** A probe that mounts a
+component whose effect reads a class rune and then writes it from outside proved the effect *does*
+re-run — including with an `await` in the body. So `await_reactivity_loss`, the hypothesis I had
+been working from, **did not apply**. The docs name it for state read *after* an await; the ledger
+reads synchronously. Six attempts were spent on a cause that was not there.
+
+**Two real bugs, both found by measuring rather than arguing:**
+
+1. **`expanded.clear()` ran on every read.** Correct while the effect only fired on a scope or day
+   change; after the owner was introduced a recorded credit note refreshed the page, the effect ran
+   again, and the open row collapsed — and the credit-note block lives inside that row, so the note
+   vanished from the screen while existing on the server. Pinned by
+   `tests/component/expanded-survives-refresh.test.ts`, which shows the row surviving after the fix
+   and collapsing with an unconditional clear.
+2. **`const pageTotal = periodDocuments;` captured once and froze.** Not a `$derived`, so it held
+   the initial 0 forever. The symptom was precise and misleading: the summary said 74 documents,
+   the table showed 50, and the note still claimed "the whole period". Found by a probe e2e that
+   printed both numbers, after three wrong guesses.
+
+Sales now has **one reader** — its effect — and a write moves `page.revision` instead of reading.
+`stepTo` moves the offset and the revision together for the same reason: one trigger, no second
+reader to race.
+
+Counts: unit 321 / component 2 / e2e 44, backend untouched, `make lint` clean.

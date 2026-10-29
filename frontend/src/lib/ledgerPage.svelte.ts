@@ -120,6 +120,42 @@ export class LedgerPage<Row, Extra> {
   }
 
   /**
+   * Marks the page as needing a re-read, without reading it.
+   *
+   * **For a screen whose only reader is its own effect.** Sales is one: the effect fetches the
+   * period, so a write that lands while the screen is open must not start a second read — the two
+   * would race for the generation and the discarded one might be the one carrying the new rows.
+   * `refresh` bumps `revision`, the effect depends on `revision`, and the screen has exactly one
+   * reader.
+   */
+  refresh(): void {
+    this.revision += 1;
+  }
+
+  /**
+   * The signal a screen's effect reads to know it should re-fetch.
+   *
+   * Written **only** by `refresh` and `stepTo`. It is deliberately the single trigger: a screen
+   * whose effect depended on both the offset and a token would run for two reasons and could not
+   * tell which, which is how a stale read slipped past the previous attempt.
+   */
+  revision = $state(0);
+
+  /**
+   * Moves the page **without reading it**.
+   *
+   * For a screen whose effect drives the read: moving is the whole interaction, and the reactive
+   * read that follows fetches. `step` is for screens that read imperatively — as purchases does.
+   * Both clamp through the same function, so they cannot drift into two notions of a valid page.
+   */
+  stepTo(delta: number): void {
+    const next = clampOffset(this.offset + delta * this.#size, this.#size, this.total);
+    if (next === this.offset) return;
+    this.offset = next;
+    this.revision += 1;
+  }
+
+  /**
    * Moves a page and reads it, rolling back to the page whose rows are still on screen when the
    * read fails.
    *

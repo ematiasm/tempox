@@ -28,14 +28,8 @@
     refundableOf as saleRefundableOf,
     refundedByLine as saleRefundedByLine
   } from '#lib/salesRefund.js';
-  import {
-    canStepPage,
-    clampOffset,
-    isSamePageResponse,
-    pageCount,
-    pageIsPartial,
-    pageNumber
-  } from '#lib/ledgerPaging.js';
+  import { canStepPage, pageCount, pageIsPartial, pageNumber } from '#lib/ledgerPaging.js';
+  import { LedgerPage, type PageApply, type PageFetcher } from '#lib/ledgerPage.svelte.js';
   import { lang } from '#lib/i18n/index.svelte.js';
   import { isOnAccount, methodLabel } from '#lib/methodLabel.js';
   import { createStaleNotice } from '#lib/screenTrust.js';
@@ -61,15 +55,18 @@
   let { refreshToken = 0, oncount }: Props = $props();
 
   const PAGE = 50;
+  /** What a sales page read carries beyond its rows. */
+  type SalesPageExtra = { day: DayRange; todayFrom: string; summary: PeriodSummary };
+
   /**
-   * Which page of the period is on screen.
+   * The page, owned by `LedgerPage`.
    *
-   * **This ledger used to announce the truncation and offer nowhere to go.** `pageIsPartial`
-   * drove a note under the footings saying the table showed part of the period — honest, and
-   * useless to a cashier who needed the rest. The arithmetic is `ledgerPaging.ts`, shared with
-   * the purchases and expenses ledgers.
+   * **This ledger has exactly one reader: the effect below.** A write that needs fresh rows calls
+   * `page.refresh()`, which moves `page.revision` and nothing else. The previous attempt issued a
+   * second read from the refund path and the two raced — both bumped the generation, one was
+   * discarded, and the discarded one carried the credit note's rows. Two e2e caught it.
    */
-  let pageOffset = $state(0);
+  const page = new LedgerPage<SaleListItem, SalesPageExtra>(PAGE);
 
   // Keep the instant the page is scoped to; the server resolves its span.
   let scopeInstant = $state(new Date());
@@ -158,9 +155,17 @@
    */
   const shownTotal = $derived(summary?.net ?? null);
   const refundedTotal = $derived(summary?.refunded ?? '0.00');
-  const periodDocuments = $derived(summary?.documents ?? null);
-  /** The period's exact document count, so the last page is a known address. */
-  const pageTotal = $derived(periodDocuments ?? 0);
+  /** The period's count, from the owner — one source, so the header and the table agree. */
+  const periodDocuments = $derived(page.total);
+  /**
+   * The pager's view of the same number.
+   *
+   * **`$derived`, not a plain alias** — and that distinction was a real bug. `const pageTotal =
+   * periodDocuments;` captures the value at initialisation, when `page.total` is still 0, and
+   * freezes there: the summary said 74 documents, the table showed 50, and the note still claimed
+   * "the whole period". Measured by a probe that printed both numbers.
+   */
+  const pageTotal = $derived(periodDocuments);
   /** True when the period holds more documents than this page shows. */
   const pageIsPartialNote = $derived(pageIsPartial(rows.length, pageTotal));
 
@@ -258,79 +263,73 @@
     oncount?.(periodDocuments);
   });
 
+  /**
+   * Applies an accepted sales page.
+   *
+   * **It does not clear `expanded`, and that is the fix for the credit-note symptom.** Clearing
+   * was right while this only ran on a scope or day change; now it also runs after every recorded
+   * write, so an unconditional clear collapsed the row the cashier had open — and the credit-note
+   * block lives inside that row, so the note disappeared from the screen while existing on the
+   * server. Pinned by `tests/component/expanded-survives-refresh.test.ts`, which shows the row
+   * surviving without the clear and collapsing with it.
+   */
+  const applySalesPage: PageApply<SaleListItem, SalesPageExtra> = (list, extra) => {
+    range = extra.day;
+    todayFrom = extra.todayFrom;
+    rows = list;
+    summary = extra.summary;
+  };
+
   $effect(() => {
     // Read the reactive inputs so the effect re-runs when the span, the scope or
     // the refresh token changes.
     const at = scopeInstant;
     void scope;
     void refreshToken;
-    // **`pageOffset` is an input to this read, so it has to be a dependency.** Without it the
-    // pager moved the offset, the label changed, and the table above kept showing the page it
-    // had — a control that reports a page the reader is not looking at. Found by the e2e: after
-    // pressing the step, the document at the top of page one was still on screen.
-    const offset = pageOffset;
-    void offset;
+    // **`page.revision` is the one trigger.** The step moves it and a post-write refresh moves
+    // it, so this effect has a single reason to run and exactly one reader owns the period.
+    void page.revision;
     let cancelled = false;
 
     loading = true;
     error = null;
-    // Both reads have to succeed before this screen counts as current, and they
-    // are independent requests that run in parallel: retiring the notice on the
-    // sales read alone cleared the warning while the cash figure was still stale.
-    // A retry where `listSales` succeeds and `getCash` fails is exactly that case.
+    // Both reads have to succeed before this screen counts as current, and they are independent
+    // requests that run in parallel: retiring the notice on the sales read alone cleared the
+    // warning while the cash figure was still stale.
     let salesFresh = false;
     let cashFresh = false;
     const retireIfCurrent = () => {
       if (cancelled || !salesFresh || !cashFresh) return;
       refundStale.retireAll();
     };
-    // Resolve the scoped span and the *same* span ending now, both through the
-    // server. The second read uses the same scope on purpose: comparing a week's
-    // start against a day's start is never equal, so "is this the current
-    // period?" was false on every day but the first — and the pager happily
-    // walked forward into the future. One scope, one comparison, all three
-    // widths.
-    Promise.all([fetchDay(at, scope), fetchDay(new Date(), scope)])
-      .then(async ([day, today]) => {
+
+    void (async () => {
+      try {
+        const [day, today] = await Promise.all([fetchDay(at, scope), fetchDay(new Date(), scope)]);
         if (cancelled) return;
-        range = day;
-        todayFrom = today.from;
         shopZone = day.zone;
-        // The totals come from the database, not from the rows this page
-        // happens to hold: `listSales` caps at PAGE, so anything summed here
-        // omits the rest of the period. One request covers the whole span.
-        const [sales, totals] = await Promise.all([
-          listSales({ from: day.from, to: day.to, limit: PAGE, offset: pageOffset }),
-          getSalesSummary(day.from, day.to)
-        ]);
+        const fetcher: PageFetcher<SaleListItem, SalesPageExtra> = async (offset) => {
+          const [sales, totals] = await Promise.all([
+            listSales({ from: day.from, to: day.to, limit: PAGE, offset }),
+            getSalesSummary(day.from, day.to)
+          ]);
+          return {
+            page: { rows: sales, total: totals.documents },
+            extra: { day, todayFrom: today.from, summary: totals }
+          };
+        };
+        const applied = await page.read(day.from, fetcher, applySalesPage);
         if (cancelled) return;
-        // **A remembered offset can outlive the rows it addressed.** A period left open while a
-        // note lands elsewhere shrinks, and the page a reader is on can end up past the end —
-        // an empty table under footings that report documents. The clamp is idempotent, so
-        // nudging the offset here is enough: the effect re-runs on it and the next read lands
-        // on a page that exists.
-        const clamped = clampOffset(pageOffset, PAGE, totals.documents);
-        if (clamped !== pageOffset) {
-          pageOffset = clamped;
-          return;
-        }
-        rows = sales;
-        summary = totals;
-        expanded.clear();
-        // The figures are current again, so nothing on this screen is stale. A
-        // warning here would contradict the data beside it, and an operator who
-        // learns to ignore it will not read it on the day it is true. This is the
-        // rule the first implementation was missing: it only ever retired a
-        // notice on a click that happened to touch that same row.
-        salesFresh = true;
+        // A discarded read is not a fresh one: the rows on screen are not the ones it fetched, so
+        // the stale notice must stand.
+        if (applied) salesFresh = true;
         retireIfCurrent();
-      })
-      .catch((e: unknown) => {
+      } catch (e) {
         if (!cancelled) error = e instanceof ApiError ? `${e.message} (${e.status})` : String(e);
-      })
-      .finally(() => {
+      } finally {
         if (!cancelled) loading = false;
-      });
+      }
+    })();
 
     // The cash figure is the shop's balance across every confirmed sale, not
     // the day's: it is labelled as such rather than implying a daily total.
@@ -378,15 +377,12 @@
    * was disabled and the reader was stranded one page short.
    */
   function stepPage(delta: number) {
-    const next = clampOffset(pageOffset + delta * PAGE, PAGE, pageTotal);
-    if (next === pageOffset) return;
-    pageOffset = next;
-    // A refund armed on the page being left is not on screen any more, and leaving it armed
-    // would write against a document the cashier can no longer see.
+    // **No read here.** `stepTo` moves the offset and bumps `revision`; the effect is the only
+    // reader and re-fetches. A read here would be the second reader that raced it before.
+    if (!canStepPage(page.offset, PAGE, pageTotal, delta)) return;
     confirming = null;
-    // The expanded set is a `SvelteSet` of documents; the ones on the page being left are no
-    // longer on screen, and keeping them open would reopen a stranger's row on return.
     expanded.clear();
+    page.stepTo(delta);
   }
 
   /**
@@ -559,62 +555,16 @@
     // wrote is the record, and the derived stamped state has to come from it, not
     // from what this component believes it sent.
     try {
-      // **The page this request was made for, captured before it is sent** (`R3-002` of
-      // `review-58ab3200d6f59c90`). The reload below used to assign whatever came back to
-      // `rows` without asking whether the reader had paged in the meantime: a step taken while
-      // this was in flight would have its page replaced by the previous one's rows, with the
-      // pager still naming the new page. The comment claiming "the same clamp as the effect
-      // read" was worse than useless — there was no clamp there at all.
-      const requestedPage = pageOffset;
-      // **`R3-002` of `review-811cd5f5c6e59feb`: the period was not part of the comparison.**
-      // The offset alone cannot tell "same page" from "same offset of a different period", so a
-      // cashier changing scope while this was in flight could have the old period's financial
-      // totals written over the new one's. The bounds are captured here and required to match.
-      const requested = { from: range.from, to: range.to };
-      const stillSamePeriod = () =>
-        range !== null && range.from === requested.from && range.to === requested.to;
-      const reloaded = await listSales({
-        from: requested.from,
-        to: requested.to,
-        limit: PAGE,
-        offset: requestedPage
-      });
-      // **The totals are re-read with the page, and that is what `R3-CORR-001` was about.**
-      // `clampOffset` needs the period's count *after* the write: a note shrinks the period, so
-      // the clamp computed from the pre-write `pageTotal` was clamping against a number the
-      // write had already invalidated. The validator caught this as a partial correction, and
-      // it was right — the count was never refreshed on this path.
-      const [totals, c] = await Promise.all([
-        getSalesSummary(requested.from, requested.to),
-        getCash()
-      ]);
-      // The summary belongs to the period it was asked for, so it is assigned only when that
-      // period is still the one on screen. Cash is the shop's balance and belongs to no period,
-      // which is why it is assigned unconditionally below.
-      if (stillSamePeriod()) summary = totals;
-      // **The cash refresh happens on every path, including the ones that return early.** The
-      // validator recorded its absence as `R3-CORR-001`: the first version of this fix returned
-      // before `getCash()`, so a successful write followed by a page step or a clamp left the
-      // displayed balance stale — a worse defect than the one the early return was avoiding.
-      // The note landed; the money moved. Neither fact depends on which page is on screen.
+      // **The reload is a signal, not a read.** Reading here made this a second reader of the
+      // period: it and the effect both bumped the generation, and the discarded one was the one
+      // carrying the note's rows — the credit note existed and its block never appeared.
+      // `refresh()` moves `revision`, the effect re-reads once, and the period has one reader.
+      //
+      // **Cash is refreshed unconditionally**, because it is the shop's balance and belongs to no
+      // period or page — the regression the validator recorded as `R3-CORR-001`.
+      const c = await getCash();
       cash = c.total;
-      const clamped = clampOffset(requestedPage, PAGE, totals.documents);
-      if (!stillSamePeriod() || !isSamePageResponse(requestedPage, pageOffset)) {
-        // The reader has moved on: this reload describes a page they are not looking at, and
-        // the read that owns the screen is theirs. Nothing is assigned to `rows`.
-        refundStale.retireAll();
-        refunding = null;
-        return;
-      }
-      if (clamped !== pageOffset) {
-        // The period shrank under the page being shown. Nudging the offset re-runs the effect,
-        // which reads the page that now exists — with the *refreshed* total that decided it.
-        pageOffset = clamped;
-        refundStale.retireAll();
-        refunding = null;
-        return;
-      }
-      rows = reloaded;
+      page.refresh();
       // This is a successful reload of the whole day, so the same rule applies as
       // in the effect above: nothing on this screen is stale any more. The rule
       // lives in one place (`screenTrust.ts`) precisely so both success paths
@@ -976,17 +926,17 @@
         <button
           type="button"
           onclick={() => stepPage(1)}
-          disabled={!canStepPage(pageOffset, PAGE, pageTotal, 1)}
+          disabled={!canStepPage(page.offset, PAGE, pageTotal, 1)}
         >
           ← {lang.t.sales_older}
         </button>
         <span class="page-of figures">
-          {lang.t.ledger_page_of(pageNumber(pageOffset, PAGE), pageCount(pageTotal, PAGE))}
+          {lang.t.ledger_page_of(pageNumber(page.offset, PAGE), pageCount(pageTotal, PAGE))}
         </span>
         <button
           type="button"
           onclick={() => stepPage(-1)}
-          disabled={!canStepPage(pageOffset, PAGE, pageTotal, -1)}
+          disabled={!canStepPage(page.offset, PAGE, pageTotal, -1)}
         >
           {lang.t.sales_newer} →
         </button>

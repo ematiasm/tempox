@@ -175,23 +175,23 @@ describe('isSamePageResponse: the rule both CRITICAL findings were missing', () 
     expect(isSamePageResponse(200, 400)).toBe(false);
   });
 
-  it('is the owner that applies it for purchases, and still the component for sales', async () => {
-    // **The call sites moved, and this test moved with them.** Purchases no longer compares pages
-    // itself: `LedgerPage` does it, from the context captured where the read is issued. Sales has
-    // not been migrated yet, so it still calls the predicate directly. Asserting the current state
-    // of each is what makes the remaining migration visible instead of invisible.
+  it('is the owner that applies it, for all three migrated ledgers', async () => {
+    // **The comparison left the components.** Purchases migrated first, sales second, and both now
+    // read their page from `LedgerPage`, which captures the context where the read is issued.
+    // Asserting that neither calls the predicate is what keeps a re-added hand comparison from
+    // becoming a sixth round of the same finding.
     const [owner, purchases, sales] = await Promise.all([
       readFile(resolve(process.cwd(), 'src/lib/ledgerPage.svelte.ts'), 'utf8'),
       readFile(resolve(process.cwd(), 'src/lib/components/PurchaseLedger.svelte'), 'utf8'),
       readFile(resolve(process.cwd(), 'src/lib/components/Ledger.svelte'), 'utf8')
     ]);
-    // The owner is where the comparison lives now.
     expect(owner).toMatch(/mine\.offset !== this\.offset/);
-    // Purchases owns no page comparison of its own any more — the whole point of the migration.
-    expect(purchases).not.toMatch(/isSamePageResponse\(/);
-    expect(purchases).toMatch(/new LedgerPage/);
-    // Sales is the remaining migration; when it happens, this assertion is the reminder.
-    expect(sales).toMatch(/isSamePageResponse\(/);
+    for (const component of [purchases, sales]) {
+      expect(component).toMatch(/new LedgerPage/);
+      expect(component).not.toMatch(/isSamePageResponse\(/);
+      // And neither keeps its own offset: that state is the owner's.
+      expect(component).not.toMatch(/let pageOffset = \$state/);
+    }
   });
 });
 
