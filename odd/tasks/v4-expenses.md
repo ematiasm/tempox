@@ -730,3 +730,34 @@ back needs the previous value passed in, not re-read from the state it was moved
 **Recommendation carried to the maintainer**: refactor before merge, not a fourth round of
 patches. The three corrections that landed are individually sound and tested (315 unit, 44 e2e,
 lint clean); what is unsound is the shape they are patching.
+
+L26 (the single owner, and what it did and did not prove). `refactor/ledger-paging-owner`, branched
+from `f0fae7a` so it starts on the three fixes that passed two validations rather than on `main`.
+
+`frontend/src/lib/ledgerPage.ts` owns the offset in one closure. A component reads `offset` and
+`total` through getters and calls `read`/`step`; there is no setter, so the five findings' cause —
+"the offset lives in the component and every async path must remember to capture, compare and roll
+back" — is not expressible rather than merely fixed. `read` captures `{offset, span, generation}`
+at issue time and discards its own answer when any of them moved; the clamp re-read is issued
+inside the owner so it cannot judge itself stale; `step` captures the previous offset before moving
+it, so the rollback cannot restore the value it was meant to undo.
+
+**What is proven, and what is not.** Seven tests, and each was verified by deleting the code it
+covers:
+
+- deleting the rollback's offset restore fails 2 tests (`R3-003`);
+- deleting the clamp re-read fails 1 (`R3-001`, the deadlock);
+- **deleting the span guard fails none**, and deleting the offset guard fails none — because a
+  newer read also bumps the generation, and that guard fires first. Those two are therefore
+  **untested claims**: kept because they are the only thing that can catch a step or a period
+  change inside a read that does not bump the generation, and justified by reasoning, not by a
+  test that fails without them. An attempt to construct that scenario hung on its own gate and
+  was deleted rather than kept as a decoration.
+
+Also corrected in this pass: the first version of the two staleness tests **passed with the guard
+deleted**, because they released the stale answer before the newer one and the newer one's apply
+landed last. A test whose conclusion is "the last write wins" cannot see a stale write that
+happens to be first. Releasing the stale answer *last* is what makes the defect visible; the same
+mistake, in the test this time, as the round before.
+
+Counts: frontend unit 322 (was 315), e2e 44 unchanged, backend untouched, `make lint` clean.
