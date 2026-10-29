@@ -91,3 +91,49 @@ test('an owed expense takes an advance and the row reports what is left', async 
   await expect(reloaded).toContainText('200,00');
   await expect(reloaded).toContainText('Pagado');
 });
+
+test('an owed expense from an older day stays payable, and the header still counts the day', async ({
+  page
+}) => {
+  await page.goto('/expenses');
+  await expect(page.getByRole('heading', { level: 1, name: 'Registrar gasto' })).toBeVisible();
+
+  // The day's own count, read before anything older exists. It is the figure the header
+  // shows above a foot that reports the day's spending, so it must describe the day.
+  const countBefore = await page.locator('.count-n').textContent();
+
+  const payee = `Sueldo viejo e2e ${Date.now()}`;
+
+  await page.getByLabel('Pagado a').fill(payee);
+  await page.getByLabel('Monto').fill('300,00');
+  await page.getByLabel('Pagado con').selectOption('__on_account__');
+  // **A day in the past, which is the whole point.** An owed salary belongs to the month
+  // it was earned, and the screen used to be scoped to the current shop day — so this
+  // document rendered no row and, with it, no advance form: the feature's reason for
+  // existing was unreachable (#115, `R3-003` of `review-1e9c4c74ced6d94b`).
+  await page.getByLabel('El día al que pertenece').fill('2024-05-05');
+  await page.getByRole('button', { name: 'Registrar gasto', exact: true }).click();
+
+  await recordedDocumentId(page);
+
+  // It is on the stack even though today is not its day. This is the assertion the bug
+  // failed: the row was absent, silently, with nothing on screen to say anything was left
+  // out.
+  const row = page.locator('.slip').filter({ hasText: payee });
+  await expect(row).toHaveCount(1);
+  await expect(row).toContainText('Debido');
+  await expect(row).toContainText('300,00');
+
+  // **And the header still counts the day.** It used to count the merged list — the day
+  // plus every older debt rendered under it — so a day with two expenses could display
+  // seven documents over a foot that covered two.
+  await expect(page.locator('.count-n')).toHaveText(countBefore ?? '0');
+
+  // The action that was unreachable: open the older document and advance against it.
+  await row.getByRole('button', { expanded: false }).click();
+  await page.getByLabel('Monto del adelanto').fill('100,00');
+  await page.getByRole('button', { name: 'Registrar adelanto' }).click();
+
+  const reloaded = page.locator('.slip').filter({ hasText: payee });
+  await expect(reloaded).toContainText('200,00');
+});

@@ -937,15 +937,49 @@ export async function createExpenseCategory(name: string): Promise<ExpenseCatego
   );
 }
 
-export type ExpenseListParams = { from?: string; to?: string; limit?: number; offset?: number };
+export type ExpenseListParams = {
+  from?: string;
+  to?: string;
+  limit?: number;
+  offset?: number;
+  /**
+   * Ask the server for the documents that still owe something, instead of a slice of the
+   * newest ones. Composes with every other parameter.
+   *
+   * **This is the fix for issue #115**, and it is the point of sending it rather than a
+   * larger `limit`: the screen used to fetch the newest 200 documents in the shop's whole
+   * history and filter them in the browser, so an owed salary older than that page rendered
+   * no row and no advance form. A bigger page is the same defect with a later horizon.
+   */
+  unsettled?: boolean;
+};
 
-export async function listExpenses(params: ExpenseListParams = {}): Promise<Expense[]> {
+/**
+ * One page of the expense ledger, with the two facts that tell a page from the whole.
+ *
+ * `unsettled_older` is non-zero only when `unsettled` was asked for; it is a **bounded**
+ * count (capped like the list), so a screen can say "showing 5 of 12 older debts" without
+ * the server running an exact count over a history that grows forever. It is not a number
+ * the screen can compute from `rows`, which is why it is on the envelope.
+ */
+export type ExpensePage = {
+  rows: Expense[];
+  unsettled_older: number;
+  /** The largest page the endpoint will answer, so a client never hard-codes the server's limit. */
+  cap: number;
+};
+
+export async function listExpenses(params: ExpenseListParams = {}): Promise<ExpensePage> {
   const url = new URL('/api/expenses', base());
-  if (params.from) url.searchParams.set('from', params.from);
-  if (params.to) url.searchParams.set('to', params.to);
-  if (params.limit !== undefined) url.searchParams.set('limit', String(params.limit));
-  if (params.offset !== undefined) url.searchParams.set('offset', String(params.offset));
-  return request<Expense[]>(url);
+  setIfPresent(url, 'from', params.from);
+  setIfPresent(url, 'to', params.to);
+  setIfPresent(url, 'limit', params.limit);
+  setIfPresent(url, 'offset', params.offset);
+  // `true` is the only value sent: `unsettled=false` would be a parameter with no meaning,
+  // and an absent flag already means "the ledger, paginated" — the plain list every other
+  // caller has always got.
+  if (params.unsettled) url.searchParams.set('unsettled', 'true');
+  return request<ExpensePage>(url);
 }
 
 export async function createExpense(expense: NewExpense): Promise<Expense> {

@@ -16,6 +16,12 @@
     listExpenses,
     type Expense
   } from '#lib/api.js';
+  import {
+    dayIsTruncated,
+    expensesInDay,
+    mergeOlderDebts,
+    unsettledQuery
+  } from '#lib/expenseLedger.js';
   import { formatMoney, formatTime, parseAmount } from '#lib/money.js';
   import { lang } from '#lib/i18n/index.svelte.js';
   import { fetchDay } from '#lib/api.js';
@@ -24,12 +30,51 @@
     /** Bumped by the page when a document is recorded, so the day reloads. */
     refreshToken?: number;
     /** Reports how many documents the day holds, for the page's count. */
-    oncount?: (count: number) => void;
+    oncount?: (count: number | null) => void;
   }
+
+  /**
+   * The day's own page, and it is **the size the baseline used**.
+   *
+   * The baseline asked for `limit: 200` and filtered to the day in the browser, so 200 was
+   * how many of a day's documents reached the screen. Narrowing it to 50 while fixing the
+   * older-debts question would have quietly shrunk what a busy day shows, and the notice
+   * this component deserves for that case is the day-truncation one below the stack — which
+   * only exists because the endpoint answers `cap` and `unsettled_older` (`R2-001` of
+   * `review-16c84931d9274aaf`, measured: the earlier comment promised a foot notice that did
+   * not exist, and `PAGE = 50` was a behaviour change nobody asked for).
+   */
+  const PAGE = 200;
+  /**
+   * The page asked for older debts.
+   *
+   * Larger than a day's page on purpose: this list is the shop's whole pending past, and
+   * when it is not enough the count below says so rather than the screen pretending. 200 is
+   * the endpoint's own cap, so asking for more would be clamped silently.
+   */
+  const OLDER_DEBTS_PAGE = 200;
 
   let { refreshToken = 0, oncount }: Props = $props();
 
   let expenses = $state<Expense[]>([]);
+  /**
+   * How many owed documents the server says exist **outside** the page it answered.
+   *
+   * Non-zero means the stack below is not the whole story, and saying so is the difference
+   * between this fix and the one it replaces: the old screen could not tell a complete list
+   * from a truncated one, so an owed document beyond its page was silently absent rather
+   * than visibly pending (`R3-003` of `review-0e3269a3a9623ddc`, issue #115).
+   */
+  let olderOwedNotShown = $state(0);
+  /**
+   * How many of the day's own documents the server did not return.
+   *
+   * The day's list is a page too, and a page with no way to say "there is more" is the same
+   * silent truncation the older-debts notice closes, one list over (`R2-001` of
+   * `review-16c84931d9274aaf`). `cap` is the endpoint's own largest page, so `rows == cap` is
+   * exactly the case where more may exist and the server said nothing more about it.
+   */
+  let dayNotShown = $state(0);
   /** The shop's zone, from `GET /api/day`. A browser's own clock is not the shop's. */
   let shopZone = $state<string | undefined>(undefined);
   let summary = $state<{
@@ -51,6 +96,15 @@
    * The bounds come from `GET /api/day` rather than from the browser's clock: the day is
    * the shop's, computed server-side from `SHOP_TIMEZONE`, which is what makes the ledger
    * and the documents the same day for a cashier whose machine is set elsewhere.
+   *
+   * **Two asks, and neither of them is a page hoping it is enough.** The day's own
+   * documents come from a day-scoped list; the older documents that still owe come from the
+   * server's `unsettled` filter, which is a question about documents rather than a bigger
+   * `limit` (`R3-003` of `review-0e3269a3a9623ddc`, issue #115). The browser no longer
+   * decides which documents are owed — it used to, over the newest 200 in the shop's whole
+   * history, so an owed salary older than that page rendered no row and could never be paid
+   * from the screen: the defect an earlier fix had already closed once, moved one page size
+   * out, with nothing on screen to say anything was missing.
    */
   async function load() {
     loading = true;
@@ -58,27 +112,25 @@
     try {
       const bounds = await fetchDay(new Date());
       shopZone = bounds.zone;
-      // **Unscoped on purpose, and merged rather than shown twice** (`R3-003` of
-      // `review-1e9c4c74ced6d94b`). The day list is scoped by `occurred_at`, so an owed
-      // salary from an earlier day rendered no row — and with it, no advance form. The
-      // feature's reason for existing was unreachable from the screen.
-      //
-      // One list, sorted by day: the day's documents first is what `listExpenses` already
-      // orders by, and a second section would be a second place to keep in step.
-      const [unsettled, foot] = await Promise.all([
-        listExpenses({ limit: 200 }),
+      const [todays, older, foot] = await Promise.all([
+        listExpenses({ from: bounds.from, to: bounds.to, limit: PAGE }),
+        listExpenses(unsettledQuery(OLDER_DEBTS_PAGE)),
         getSpendingSummary({ from: bounds.from, to: bounds.to })
       ]);
-      const inDay = new Set(
-        unsettled
-          .filter((row) => row.occurred_at >= bounds.from && row.occurred_at < bounds.to)
-          .map((row) => row.id)
-      );
-      // Today's ledger, plus every older document that still owes — which is the only set
-      // whose absence would hide an action the shop needs.
-      expenses = unsettled.filter((row) => inDay.has(row.id) || row.outstanding !== '0.00');
+      // The day first in the server's own order, then the older debts it cannot hold. Both
+      // halves already arrive newest-first, so nothing is re-sorted here.
+      expenses = mergeOlderDebts(todays.rows, older.rows);
+      olderOwedNotShown = older.unsettled_older;
+      // **The day's own page says when it is a page.** `unsettled_older` counts only what
+      // owes, so a satisfied day would report zero no matter how much it truncated; the
+      // endpoint's `cap` is the honest signal, and `PAGE` is now the baseline's 200 so this
+      // notice is reachable only on a day nobody could read in one screen anyway.
+      dayNotShown = dayIsTruncated(todays.rows.length, todays.cap) ? 1 : 0;
+      // **The day's count, not the merged list's.** The header sits above a foot that
+      // reports the day's spending; counting the merge made a day with two expenses display
+      // seven documents because five unrelated old debts were rendered under them.
+      oncount?.(expensesInDay(todays.rows, bounds).length);
       summary = foot;
-      oncount?.(expenses.length);
     } catch (e) {
       error = e instanceof ApiError ? e.message : lang.t.expenses_read_failed;
     } finally {
@@ -191,6 +243,29 @@
     </ul>
   {/if}
 
+  <!-- **A page that is not the whole says so.** The older-debts ask is capped like every
+       other page, and a shop with more than a page of pending debts used to see the list as
+       if it ended — the defect this fix exists for, one layer up. The debt itself is not
+       lost: the answer names the count, so the figure here is a fact rather than an
+       estimate, and the page is bounded so the count stays affordable. -->
+  {#if olderOwedNotShown > 0}
+    <p class="truncated" role="status">
+      {lang.t.expenses_older_owed_notice(olderOwedNotShown)}
+    </p>
+  {/if}
+
+  <!-- **The day's own page, and it is a different sentence.** The notice above is about debts
+       this screen found and did not render; this one is about the day itself being longer
+       than a page. Collapsing them would tell the operator "there are more debts" when the
+       truth is "there are more documents", and only the second one means the figures below
+       describe a day the stack does not show in full. Reachable only at the endpoint's cap
+       (`R2-001` of `review-16c84931d9274aaf`). -->
+  {#if dayNotShown > 0}
+    <p class="truncated" role="status">
+      {lang.t.expenses_day_truncated}
+    </p>
+  {/if}
+
   {#if summary}
     <!-- The foot names its three terms rather than showing one netted figure: a shop that
          spent 300 on expenses and 500 on purchases is two facts, and a single total would
@@ -228,6 +303,14 @@
     margin: 24px;
     font-size: 13px;
     color: var(--ink-soft);
+  }
+
+  .truncated {
+    margin: 0;
+    padding: 10px 24px;
+    font-size: var(--step--1);
+    color: var(--ink-soft);
+    border-bottom: 1px solid var(--rule);
   }
 
   .error {

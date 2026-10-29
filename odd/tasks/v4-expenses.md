@@ -264,6 +264,24 @@ carrying category name, payee, method name (or null, meaning on account), `amoun
 figure that is a subtraction of other rows can disagree with them, which is why `sales` lost
 its lifecycle in `0015`.
 
+S8a **The ledger answers a page, and the page says what it left out.** (`L17`.) The response is
+`{rows, unsettled_older, cap}`, not a bare array. **`unsettled=true` narrows the page to the
+documents that still owe something** — `amount − SUM(payments) > 0`, composed with every other
+parameter rather than replacing them — and it is the only filter here that asks a question
+instead of slicing an order. `unsettled_older` counts what falls outside the page, **capped
+like the list itself** so the count stays affordable, and it is `0` when the flag was not sent;
+`cap` names the largest page the endpoint will answer, so no client hard-codes the server's
+limit.
+
+**The filter exists because the alternative was measured to fail twice.** `R3-003` of
+`review-0e3269a3a9623ddc` found the screen deciding which documents owed something in the
+browser, over the newest 200 in the shop's whole history: past that, an owed salary rendered no
+row and no advance form — the same defect the previous fix had closed, pushed one page size
+further out, with the cap unsurfaced. **A larger page is not the fix**; it moves the horizon
+and leaves the class behind it. The browser's only remaining arithmetic is combining two
+answers that are already true: the day's own list and the older debts the server found (see
+`frontend/src/lib/expenseLedger.ts`).
+
 S9 **The summary answers "what did the shop spend", and `net` has two terms.**
 `GET /api/expenses/summary?from=&to=` answers
 `{expenses, purchases, supplier_returns, net, documents}` where
@@ -331,6 +349,8 @@ group** (S9), which is the small version. When the shop wants goods split by rub
 | E2-T1 | S1, S8 | `/expenses`: the draft sheet (payee, category picker, amount, method picker with "on account"), the day's ledger, the rail destination, the version chip, both dictionaries | inline | item 3 | — |
 | E2-T2 | S7, S9 | the advance action inside an expanded expense, the spending foot with its two terms and the purchases term, and one e2e that records a paid expense and finds it by identity | inline | item 3 | — |
 | E3-T1 | S9 | **deferred by the owner (L7)** — `GET /api/spending`: the period's spending grouped by category with purchases as one derived group | inline | — | — |
+| E4-T1 | S8a | the ledger's page envelope and the server-side `unsettled` filter: `{rows, unsettled_older, cap}`, the shared predicate, the bounded count, and `frontend/src/lib/expenseLedger.ts` with the component asking the server instead of filtering a page | inline | item 3 | — |
+| E4-T2 | S8a, S11 | RED-first proof in both levels: the integration test against a small page, the component's arithmetic unit-tested, the e2e whose older-day debt renders and takes an advance — each guard neutered once and watched to fail | inline | — | — |
 
 **E3 is deferred, not dropped.** The owner's answer to classifying purchases by rubro was
 *"pir ahora no, dejamos una versión chica y lo vemos mas adelante"* (L7). So the **small version
@@ -490,3 +510,102 @@ L16 (debt: what that review left, and one it found that this slice does not fix)
 - **`R3-002` of that review** — the advance route's `409` is advisory; the trigger is the real
   enforcement. Recorded because a future change that dropped the trigger would leave a `409`
   that no longer holds.
+
+L17 (owner, verbatim, on `L16`'s sharpest item): "Lo que queda abierto ... El más accionable lo
+encontró la review sobre mi propio fix: el arreglo de R3-003 usa una lista sin scopear topada en
+200, así que un gasto adeudado más viejo vuelve a ser invisible — el mismo defecto que ese fix
+cerraba, empujado más lejos. La forma correcta es un filtro del servidor por 'debe algo', no un
+page size más grande. abri un issue y trabajemos sobre esto" — tracked as issue #115, and E4 is
+its work.
+
+L18 (evidence, E4-T1 and E4-T2 delivered together). **Measured before claiming anything**: the
+report on #115 was reproduced first, in `tempox_test` inside a rolled-back transaction, by
+inserting two recent paid expenses and one owed expense dated `now() - interval '400 days'` and
+running `list_expenses`' own statement with `LIMIT 2` standing in for `LIMIT 200`. The owed row
+was absent from the page — the same shape the review described, and the reason the report quotes
+that output rather than a number.
+
+- **The endpoint.** `GET /api/expenses` answers `{rows, unsettled_older, cap}` and gained
+  `unsettled=true`, which composes with `from`/`to`/`limit`/`offset` instead of replacing them.
+  The predicate is `e.amount - COALESCE(p.paid, 0) > 0`, and it is deliberately **not**
+  `payment_method_id IS NULL`: an owed document with one advance still owes, and the older
+  filter would have printed it as settled and hidden its form. The page and its remainder are
+  read under one `REPEATABLE READ READ ONLY` snapshot, so the pair cannot describe two
+  different ledgers.
+- **`unsettled_older` is bounded, and that is the design rather than an optimisation.** It
+  counts the remainder up to `MAX_LIST_LIMIT`; an exact count over the shop's whole history
+  grows with it, and a figure nobody can act on is not worth an unbounded query. It is `0` when
+  the flag was not sent — absent, not a lie about a count nobody asked for.
+- **RED observed in both levels.** The integration test failed first with `invalid type: map,
+  expected a sequence` while the endpoint still answered a bare array. The frontend's arithmetic
+  failed first with the module missing. `frontend/src/lib/expenseLedger.ts` is new because that
+  arithmetic lived inside a `$effect` and was the wrong arithmetic.
+- **Both guards neutered once and watched to fail.** Replacing the `unsettled` predicate with
+  `TRUE` returned the paid documents (`left: 5, right: 1`); disabling the remainder count
+  returned `left: 0, right: 1`. The e2e was proven the same way: with the older-debts ask
+  stubbed to an empty page — the pre-fix decision, day-scoped only — the row vanished
+  (`toHaveCount` resolved to 0 elements fourteen times) and passed again when restored.
+- **The header's count was wrong too, and it is a separate assertion.** `oncount` received
+  `expenses.length` of the merged list — the day plus every older debt rendered under it — while
+  the foot beside it reported the day's figures. A day with two expenses could display seven
+  documents over a foot covering two. It now receives the day's own count,
+  `expensesInDay(todays.rows, bounds).length`, and `Props.oncount` became `number | null` to
+  match the purchases ledger. The e2e asserts the figure is unchanged by recording an older-day
+  debt.
+- **What the envelope costs, stated.** One extra bound query per `unsettled` request, and the
+  day's screen now makes three reads instead of two (day, older debts, foot) — up from two, and
+  every one of them is bounded rather than "everything recent and hope". The three compose no
+  snapshot, which is why the merge deduplicates by id: a document created between the two
+  answers can legitimately appear in both, and rendering it twice would put two advance forms
+  over one debt.
+- **A second test exists because the first would pass with the shortcut predicate**, and that
+  is the trap the review named: `payment_method_id IS NULL` is *almost* "owes something", and
+  diverges exactly where an owed document has taken an advance (the advance names its own rail,
+  the document keeps its null). `v4_expenses_a_partially_advanced_debt_still_answers_unsettled`
+  pins both edges: a debt with one advance still answers, a fully advanced debt does not. Proven
+  by swapping the predicate for the shortcut — the settled document reappeared as owed and the
+  assertion failed on `left: [.., ..], right: [..]`.
+- **Counts**: 182 backend integration (was 180), 67 unit, 6 limits, 274 frontend unit (was 266),
+  41 e2e (was 40). `docs/en/architecture.md` gained the envelope's route row and the invariant
+  "a ledger is a page, and a page that is not the whole says so".
+- **Still open from L16, unchanged by this**: `R3-001` (`day::first_instant_of` pinned only
+  transitively), `R3-002` (the advance `409` is advisory; the trigger enforces), and `R3-004`'s
+  older half — the day's own list is still a page of 50 with no next-page control. That last one
+  is now *sayable* rather than silent only for the older-debts list; the day's list still
+  truncates without a notice, and that is the next candidate.
+
+L19 (review `review-16c84931d9274aaf`, **retired without approval, and it was my ordering
+error**, not the provider's). I applied the `R2-001` fix and **committed it before submitting
+the correction plan**, which moved the candidate out from under the reviewed target
+(`ec75b27…` → `2c0ecda…`). Every correction-plan binding I then submitted was correctly
+refused as stale, and STATUS reported `authority_target_identity: ec75b27…` beside a newer
+`target_identity` — the provider saying plainly that the authority and the target had parted.
+The order is: plan against the reviewed target, then fix, then let the provider validate. The
+fix itself was right (`2766172`) and it survived into the next candidate.
+
+L20 (review `review-045709e4682ea82c`, **approved**, authority burned; `R3-001` corrected and
+validated). A fresh lineage over the corrected tree, because the previous one's target no
+longer existed. It found one more CRITICAL, and it is the sharper lesson of this slice.
+
+- **`R3-001` — the owed ask was bounded by a day, and a day is not where debts live.** The
+  older-debts request sent `to: day.from`, reasoning that an owed document belonging to the day
+  is already in the day's own list. That reasoning covers **today only**: `expenses.occurred_at`
+  is the day the expense belongs to, and a salary entered before it is due is precisely what an
+  owed expense is for. So a future-dated owed expense was fetched by neither list — the day's
+  list stops at `day.to`, this one stopped at `day.from` — and it rendered before the change and
+  vanished after it. Corroborated by the refuter; fixed in `7324a1b` by removing the bound
+  entirely, since `mergeOlderDebts` already deduplicates by id.
+- **Why two rounds of this class**: both findings are "a page replaced a whole, and the hole
+  moved". `R2-001` narrowed the day's page; `R3-001` bounded the debt question by a day. The
+  third test is the one that should have existed first: **the union of the two asks must cover
+  every owed document, wherever its date falls** — long before the day, inside it, and after it.
+  Two unit tests and an e2e all stayed green while the document disappeared because none of
+  them asked the question in those terms.
+- The correction plan was 120 diff lines against a frozen budget of 200, accepted; the validator
+  confirmed the fix and the review closed `approved`.
+
+L21 (advisory findings of `review-045709e4682ea82c`, all non-blocking, recorded so they are not
+rediscovered as surprises): `R2-001` `expenseLedger.ts:101-102`; `R2-002` `en.ts:314-317`;
+`R2-003` `expenseLedger.ts:65-71`; `R2-004` `expenseLedger.ts:83-86`; `R2-005`
+`v4-expenses.md:571-575`; `R3-002` `expenseLedger.ts:102`; `R3-003`
+`backend/src/routes/expenses.rs:761`. None opened a correction and none reopens the review.

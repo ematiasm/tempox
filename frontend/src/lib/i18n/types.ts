@@ -338,6 +338,23 @@ export interface Dict {
   expenses_advance_action: string;
   expenses_advanced: string;
   expenses_advance_only_owed: string;
+  /**
+   * Said when the older-debts page is not the whole list (issue #115).
+   *
+   * A function rather than a string because the count is the point: "there are more" is a
+   * shrug, and "12 older debts are not shown" is something the operator can act on. The
+   * alternative — silently truncating — is exactly the defect this message closes.
+   */
+  expenses_older_owed_notice: (count: number) => string;
+  /**
+   * Said when **the day itself** is longer than one page.
+   *
+   * A different sentence from the one above on purpose: that one says there are older debts
+   * this screen did not render, this one says the day holds more documents than the stack
+   * below it — and only the second means the day's own figures describe a day the reader
+   * cannot see in full (`R2-001` of `review-16c84931d9274aaf`).
+   */
+  expenses_day_truncated: string;
   expenses_category_new: string;
   expenses_category_new_action: string;
   documents_one: string;
