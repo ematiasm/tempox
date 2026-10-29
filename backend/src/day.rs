@@ -164,8 +164,11 @@ pub fn month_range(zone: Tz, at: DateTime<Utc>) -> DayRange {
 ///   day quietly starts an hour late.
 /// * **Nonexistent** (the clocks jump over midnight): no instant maps to it, so
 ///   the day starts at the first instant that does exist — found by walking
-///   forward. The walk cannot run long: a gap is at most a couple of hours, and
-///   the loop is bounded at a day.
+///   forward. The loop is bounded at a day, which **a date-line move can exhaust**:
+///   Samoa skipped 30 Dec 2011 entirely, and the first instant that exists after it
+///   is the next day's midnight, ten hours on rather than the two a DST gap
+///   explains. Measured, and pinned by
+///   `a_day_the_calendar_skipped_entirely_answers_the_next_real_midnight`.
 pub fn first_instant_of(date: NaiveDate, zone: Tz) -> DateTime<Utc> {
     let midnight = date.and_time(NaiveTime::MIN);
     match midnight.and_local_timezone(zone) {
@@ -179,10 +182,14 @@ pub fn first_instant_of(date: NaiveDate, zone: Tz) -> DateTime<Utc> {
                     return dt.with_timezone(&Utc);
                 }
             }
-            // Unreachable for any real zone: a gap shorter than a full day
-            // always has an instant after it. Falling back to reading the wall
-            // clock as UTC keeps the endpoint answering instead of panicking,
-            // and the unit tests below pin the real behaviour.
+            // Unreachable in practice, and **not** for the reason this comment
+            // used to give. A gap shorter than a day always has an instant after
+            // it, so the walk finds one; even the largest gap the tz database
+            // holds — Samoa's move across the date line in 2011, which deleted
+            // 30 December entirely — is only 1440 minutes, so the loop's last
+            // step still lands on the next real midnight. The fallback is a guard
+            // against a tz entry that is wrong in a way no entry has been, and it
+            // keeps the endpoint answering instead of panicking if one ever is.
             Utc.from_utc_datetime(&midnight)
         }
     }
@@ -333,6 +340,168 @@ mod tests {
         assert_eq!(autumn.from, utc(2027, 11, 7, 4, 0)); // 00:00 CDT, the first of two
         assert_eq!((spring.to - spring.from).num_hours(), 23);
         assert_eq!((autumn.to - autumn.from).num_hours(), 25);
+    }
+
+    // ── `first_instant_of` on its own ──────────────────────────────────
+    //
+    // Every test above reaches this function **through** `day_range`, which is
+    // the right way to pin the endpoint's behaviour and was, until now, the only
+    // way it was pinned at all (`R3-001` of `review-1e9c4c74ced6d94b`, carried in
+    // `v4-expenses.md` L16 as debt). The consequence of that indirection is not
+    // theoretical: three of the four branches are covered only in the specific
+    // zones and dates the `day_range` tests happen to use, and the fourth — the
+    // bounded walk — had no test reaching it *and* a fallback that no zone was
+    // known to trigger. Both of those are closed here.
+    //
+    // These tests call it directly, and they are the reason the branches can be
+    // enumerated at all: a branch reached only as a side effect of another
+    // function's fixtures is a branch nobody can say is covered.
+
+    #[test]
+    fn first_instant_of_a_normal_day_is_local_midnight() {
+        assert_eq!(
+            first_instant_of(
+                NaiveDate::from_ymd_opt(2026, 10, 16).unwrap(),
+                buenos_aires()
+            ),
+            utc(2026, 10, 16, 3, 0)
+        );
+    }
+
+    #[test]
+    fn first_instant_of_utc_is_midnight_itself() {
+        // The identity every other assertion is measured against: in UTC, local
+        // midnight *is* the instant, so a wrong sign or a doubled offset shows up
+        // here first.
+        assert_eq!(
+            first_instant_of(NaiveDate::from_ymd_opt(2026, 10, 16).unwrap(), Tz::UTC),
+            utc(2026, 10, 16, 0, 0)
+        );
+    }
+
+    #[test]
+    fn first_instant_of_a_gapped_midnight_walks_forward_to_the_real_one() {
+        // The `None` branch, named directly. Santiago skips 00:00 on 5 Sep 2027,
+        // so the day begins at 01:00 -03 — one minute past the nominal midnight,
+        // which is exactly where the bounded walk stops.
+        let tz: Tz = "America/Santiago".parse().unwrap();
+        let first = first_instant_of(NaiveDate::from_ymd_opt(2027, 9, 5).unwrap(), tz);
+        assert_eq!(first, utc(2027, 9, 5, 4, 0));
+        assert_eq!(
+            first.with_timezone(&tz).format("%H:%M").to_string(),
+            "01:00"
+        );
+    }
+
+    #[test]
+    fn first_instant_of_an_ambiguous_midnight_takes_the_earlier_of_the_two() {
+        // The `Ambiguous` branch, in the zone that repeats midnight rather than
+        // 02:00: Havana on 7 Nov 2027 has local 00:00 twice, and starting an hour
+        // late would drop everything sold in that first hour.
+        let tz: Tz = "America/Havana".parse().unwrap();
+        let first = first_instant_of(NaiveDate::from_ymd_opt(2027, 11, 7).unwrap(), tz);
+        assert_eq!(first, utc(2027, 11, 7, 4, 0));
+        // And the later reading really does exist, an hour afterwards: without
+        // this the assertion above would pass for a zone that had only one.
+        let later = first + Duration::hours(1);
+        assert_eq!(
+            later.with_timezone(&tz).format("%H:%M").to_string(),
+            "00:00",
+            "the hour after the first midnight reads as midnight again"
+        );
+    }
+
+    #[test]
+    fn a_day_the_calendar_skipped_entirely_answers_the_next_real_midnight() {
+        // **A whole missing calendar day, which no test could reach before.** Samoa
+        // skipped 30 Dec 2011 completely: the country crossed the date line and that
+        // day never happened, so *every* local time on it is nonexistent and the
+        // bounded walk runs its full 1440 minutes.
+        //
+        // The walk then finds 31 Dec 00:00 +14, which is 30 Dec 10:00Z — an answer,
+        // not the fallback. **I predicted the fallback and was wrong**, which is why
+        // this test measured the value instead of asserting the reading of the code:
+        // a day that the calendar deleted answers as the first instant that exists
+        // after it, and the difference from the nominal midnight is the size of the
+        // skip rather than an arbitrary error.
+        //
+        // That is the behaviour worth pinning: the endpoint keeps serving (a shop
+        // cannot have a day that 500s), and it answers with a real instant rather
+        // than an invented UTC reading of a wall clock that never existed.
+        let tz: Tz = "Pacific/Apia".parse().unwrap();
+        let skipped = NaiveDate::from_ymd_opt(2011, 12, 30).unwrap();
+        assert!(
+            skipped
+                .and_time(NaiveTime::MIN)
+                .and_local_timezone(tz)
+                .single()
+                .is_none(),
+            "30 Dec 2011 in Apia is the fixture this test exists for: no local time on it exists"
+        );
+
+        let first = first_instant_of(skipped, tz);
+        assert_eq!(
+            first,
+            utc(2011, 12, 30, 10, 0),
+            "the first instant that exists after the skipped day"
+        );
+        assert_eq!(
+            first
+                .with_timezone(&tz)
+                .format("%Y-%m-%d %H:%M")
+                .to_string(),
+            "2011-12-31 00:00",
+            "and it is the next real midnight, in the zone's own post-skip offset (+14)"
+        );
+
+        // The claim the function's own comment makes — that a gap is at most a couple
+        // of hours — is true of DST and **false** of a date-line move. Recorded as a
+        // measurement rather than left in the comment as an assumption.
+        assert!(
+            (first - skipped.and_time(NaiveTime::MIN).and_utc()).num_hours() == 10,
+            "the skip is ten hours, not the two a DST gap could explain"
+        );
+    }
+
+    #[test]
+    fn first_instant_of_never_answers_a_non_midnight_for_a_day_that_has_one() {
+        // The property that makes the function safe to call on any date: whenever
+        // local midnight exists, that is what it answers — in every zone, across a
+        // whole year, both hemispheres and both DST directions. A branch that
+        // returned the wrong reading would be caught by `day_range`'s tests only in
+        // the four zones they use; this walks a wider set.
+        let zones: [Tz; 5] = [
+            buenos_aires(),
+            Tz::UTC,
+            "America/New_York".parse().unwrap(),
+            "America/Santiago".parse().unwrap(),
+            "Europe/Madrid".parse().unwrap(),
+        ];
+        for zone in zones {
+            for month in 1..=12u32 {
+                for day in [1u32, 15, 28] {
+                    let date = NaiveDate::from_ymd_opt(2027, month, day).unwrap();
+                    let first = first_instant_of(date, zone);
+                    let back = first.with_timezone(&zone);
+                    // Whenever the local wall clock at this instant is midnight, the
+                    // function agreed with the calendar; when it is not, the day had
+                    // a gap and starting later is the documented behaviour.
+                    if back.time() == NaiveTime::MIN {
+                        assert_eq!(
+                            back.date_naive(),
+                            date,
+                            "{zone} on {date} started on the wrong calendar day"
+                        );
+                    } else {
+                        assert!(
+                            back.time() < NaiveTime::from_hms_opt(4, 0, 0).unwrap(),
+                            "{zone} on {date} started at {}, which is not a gap but a wrong reading",
+                            back.time()
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
