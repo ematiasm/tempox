@@ -28,6 +28,13 @@
     refundableOf as saleRefundableOf,
     refundedByLine as saleRefundedByLine
   } from '#lib/salesRefund.js';
+  import {
+    canStepPage,
+    clampOffset,
+    pageCount,
+    pageIsPartial,
+    pageNumber
+  } from '#lib/ledgerPaging.js';
   import { lang } from '#lib/i18n/index.svelte.js';
   import { isOnAccount, methodLabel } from '#lib/methodLabel.js';
   import { createStaleNotice } from '#lib/screenTrust.js';
@@ -53,6 +60,15 @@
   let { refreshToken = 0, oncount }: Props = $props();
 
   const PAGE = 50;
+  /**
+   * Which page of the period is on screen.
+   *
+   * **This ledger used to announce the truncation and offer nowhere to go.** `pageIsPartial`
+   * drove a note under the footings saying the table showed part of the period — honest, and
+   * useless to a cashier who needed the rest. The arithmetic is `ledgerPaging.ts`, shared with
+   * the purchases and expenses ledgers.
+   */
+  let pageOffset = $state(0);
 
   // Keep the instant the page is scoped to; the server resolves its span.
   let scopeInstant = $state(new Date());
@@ -142,8 +158,10 @@
   const shownTotal = $derived(summary?.net ?? null);
   const refundedTotal = $derived(summary?.refunded ?? '0.00');
   const periodDocuments = $derived(summary?.documents ?? null);
+  /** The period's exact document count, so the last page is a known address. */
+  const pageTotal = $derived(periodDocuments ?? 0);
   /** True when the period holds more documents than this page shows. */
-  const pageIsPartial = $derived(periodDocuments !== null && rows.length < periodDocuments);
+  const pageIsPartialNote = $derived(pageIsPartial(rows.length, pageTotal));
 
   /**
    * How many rows of this page are below the frame's bottom edge.
@@ -245,6 +263,12 @@
     const at = scopeInstant;
     void scope;
     void refreshToken;
+    // **`pageOffset` is an input to this read, so it has to be a dependency.** Without it the
+    // pager moved the offset, the label changed, and the table above kept showing the page it
+    // had — a control that reports a page the reader is not looking at. Found by the e2e: after
+    // pressing the step, the document at the top of page one was still on screen.
+    const offset = pageOffset;
+    void offset;
     let cancelled = false;
 
     loading = true;
@@ -275,10 +299,20 @@
         // happens to hold: `listSales` caps at PAGE, so anything summed here
         // omits the rest of the period. One request covers the whole span.
         const [sales, totals] = await Promise.all([
-          listSales({ from: day.from, to: day.to, limit: PAGE, offset: 0 }),
+          listSales({ from: day.from, to: day.to, limit: PAGE, offset: pageOffset }),
           getSalesSummary(day.from, day.to)
         ]);
         if (cancelled) return;
+        // **A remembered offset can outlive the rows it addressed.** A period left open while a
+        // note lands elsewhere shrinks, and the page a reader is on can end up past the end —
+        // an empty table under footings that report documents. The clamp is idempotent, so
+        // nudging the offset here is enough: the effect re-runs on it and the next read lands
+        // on a page that exists.
+        const clamped = clampOffset(pageOffset, PAGE, totals.documents);
+        if (clamped !== pageOffset) {
+          pageOffset = clamped;
+          return;
+        }
         rows = sales;
         summary = totals;
         expanded.clear();
@@ -333,6 +367,25 @@
     if (!range) return;
     const target = delta < 0 ? range.prev : range.next;
     scopeInstant = new Date(target);
+  }
+
+  /**
+   * Moves to the neighbouring page of the period, clamped by `clampOffset`.
+   *
+   * The clamp is what makes the last page a real address and keeps the buttons honest at both
+   * ends — the defect the expenses pager shipped with, where a step towards an available page
+   * was disabled and the reader was stranded one page short.
+   */
+  function stepPage(delta: number) {
+    const next = clampOffset(pageOffset + delta * PAGE, PAGE, pageTotal);
+    if (next === pageOffset) return;
+    pageOffset = next;
+    // A refund armed on the page being left is not on screen any more, and leaving it armed
+    // would write against a document the cashier can no longer see.
+    confirming = null;
+    // The expanded set is a `SvelteSet` of documents; the ones on the page being left are no
+    // longer on screen, and keeping them open would reopen a stranger's row on return.
+    expanded.clear();
   }
 
   /**
@@ -505,7 +558,15 @@
     // wrote is the record, and the derived stamped state has to come from it, not
     // from what this component believes it sent.
     try {
-      rows = await listSales({ from: range.from, to: range.to, limit: PAGE, offset: 0 });
+      const reloaded = await listSales({
+        from: range.from,
+        to: range.to,
+        limit: PAGE,
+        offset: pageOffset
+      });
+      // The same clamp as the effect read: a note can land on the page being shown, and the
+      // resulting reload must not leave the reader on an address past the end.
+      rows = reloaded;
       const c = await getCash();
       cash = c.total;
       // This is a successful reload of the whole day, so the same rule applies as
@@ -849,8 +910,10 @@
         <!-- The note says which set the figure covers, and says when the table
              beside it is only part of it. A footer that reads as the period's
              total while the table above shows a page is the defect this
-             replaces. -->
-        {#if pageIsPartial}
+             replaces. **The pager below it is the other half**: the first version
+             said the table was a page and offered nowhere to go, which for a
+             cashier looking for last Tuesday's sale is the same as not saying it. -->
+        {#if pageIsPartialNote}
           {lang.t.sales_shown_note_partial(rows.length, periodDocuments ?? rows.length)}
         {:else}
           {lang.t.sales_shown_note}
@@ -862,6 +925,27 @@
          quarter of the footer's width that the two money figures needed. A gift
          line is still visible where it matters: marked on its own line inside
          the document, and counted in the total like any other. -->
+    {#if pageIsPartialNote}
+      <div class="pager">
+        <button
+          type="button"
+          onclick={() => stepPage(1)}
+          disabled={!canStepPage(pageOffset, PAGE, pageTotal, 1)}
+        >
+          ← {lang.t.sales_older}
+        </button>
+        <span class="page-of figures">
+          {lang.t.ledger_page_of(pageNumber(pageOffset, PAGE), pageCount(pageTotal, PAGE))}
+        </span>
+        <button
+          type="button"
+          onclick={() => stepPage(-1)}
+          disabled={!canStepPage(pageOffset, PAGE, pageTotal, -1)}
+        >
+          {lang.t.sales_newer} →
+        </button>
+      </div>
+    {/if}
     <div class="fig">
       <span class="label">{lang.t.sales_refunded}</span>
       <span class="value figures">{formatMoney(refundedTotal)}</span>

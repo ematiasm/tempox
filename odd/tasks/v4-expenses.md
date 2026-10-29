@@ -671,3 +671,31 @@ nowhere to go: #116 made it *say* when part of the day was off screen, which was
   page it reaches leads with a different document, and walking forward returns to page one.
 - **Counts**: frontend unit 292 (was 280), e2e 42 (was 41), backend unchanged at 73/182/6.
   `make lint` clean.
+
+L24 (the class closed where it actually lived). `R3-004` was recorded as an expenses defect; it was
+a **repo-wide** one wearing three costumes, and this is the generalisation:
+
+- **Ventas** said its table was a page and gave the reader nowhere to go — the same "notice with
+  no destination" the expenses fix had just removed one screen over.
+- **Compras** asked for 200 rows and let the rest of the day go **in silence**, with a count line
+  that read as the period's.
+
+So the arithmetic moved to `frontend/src/lib/ledgerPaging.ts` (`clampOffset`, `pageCount`,
+`pageNumber`, `canStepPage`, `pageIsPartial`), owned once for the three ledgers, exactly as
+`methodLabel.ts` owns the empty-rail rule for the same three. `expenseLedger.ts` keeps its
+`day*` names as thin wrappers so that module still reads as being about a day.
+
+- **Three defects found while wiring it, all real**: the sales pager moved the label and not the
+  table, because `pageOffset` was not a dependency of the effect that reads the day; the count
+  line on purchases reported the page as the period; and the pager labels are inverted by the
+  newest-first ordering, which the expenses slice had already paid to learn.
+- **The e2e bit back four times, and every failure was a decoration test in disguise** — the
+  pattern `v5-customer-account.md` V2b names. It branched on whatever the shared database held
+  ("the period fits", so removing the pager still passed); it read `.foot .note` for a class that
+  is `.footings .note`; it guessed `<tr>` rows where every ledger uses `data-doc-row`; and it
+  compared `innerText` of a slip, which Playwright normalises differently between reads. Each was
+  fixed by asserting the identity instead of a derived rendering.
+- **Neutered four ways and each failed**: purchases ignoring the offset; purchases hiding the
+  partial notice; the sales pager not rendered; and `pageOffset` dropped from the effect's
+  dependencies.
+- **Counts**: frontend unit 307 (was 292), e2e 44 (was 42). Backend untouched.

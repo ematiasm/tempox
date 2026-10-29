@@ -31,6 +31,13 @@
     returnableOf,
     returnedByLine
   } from '#lib/supplierReturns.js';
+  import {
+    canStepPage,
+    clampOffset,
+    pageCount,
+    pageIsPartial,
+    pageNumber
+  } from '#lib/ledgerPaging.js';
   import { lang } from '#lib/i18n/index.svelte.js';
   import { isOnAccount, methodLabel } from '#lib/methodLabel.js';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
@@ -57,8 +64,21 @@
   // How many columns the reader cannot see, measured by the `overflowsX` action.
   let hiddenColumns = $state(0);
 
+  /**
+   * The size of one page of this ledger, and which page is on screen.
+   *
+   * **This ledger used to ask for 200 rows and let the rest of the day go in silence.** No
+   * notice, no pager, no way to learn that a day holding 300 purchases rendered 200 of them —
+   * the same class as `R2-001` and `R3-004` on the expenses side, in its worst form: silent.
+   * `ledgerPaging.ts` owns the arithmetic now, shared with the other two ledgers.
+   */
+  const PAGE = 200;
+  let pageOffset = $state(0);
+
   // Tell the page how many documents the period holds, whenever that changes.
   const periodDocuments = $derived(summary?.documents ?? null);
+  /** The period's exact document count, so the last page is a known address. */
+  const total = $derived(periodDocuments ?? 0);
   $effect(() => {
     oncount?.(periodDocuments);
   });
@@ -105,6 +125,26 @@
   }
 
   /**
+   * Moves to the neighbouring page of the period, clamped by `clampOffset`.
+   *
+   * The clamp is the rule rather than a guard: it is what makes "the last page is an address"
+   * true instead of hopeful, and it is what stops the pager disabling a button that would
+   * have moved — the defect the expenses pager shipped with.
+   */
+  function stepPage(delta: number) {
+    const next = clampOffset(pageOffset + delta * PAGE, PAGE, total);
+    if (next === pageOffset) return;
+    pageOffset = next;
+    // An expanded row from the previous page is not on screen any more; leaving it open
+    // would reopen a stranger's form on return.
+    open.clear();
+    // The generation counter owns staleness, so this call needs no external check: a slow
+    // response from the page being left behind is discarded by the counter, exactly as it is
+    // for a day change.
+    loadDay(scopeInstant, () => false);
+  }
+
+  /**
    * A generation counter for day loads.
    *
    * Every load takes a number and every load checks it before writing. Without
@@ -131,12 +171,25 @@
     // hold: `listPurchases` caps at its own page size, so anything summed here
     // omits the rest of the period. One request covers the whole day.
     const [list, supplierList, totals] = await Promise.all([
-      listPurchases({ from: day.from, to: day.to, limit: 200 }),
+      listPurchases({ from: day.from, to: day.to, limit: PAGE, offset: pageOffset }),
       listSuppliers(),
       getPurchasesSummary(day.from, day.to)
     ]);
     if (isStale()) return false;
     range = day;
+    // **A remembered offset can outlive the rows it addressed.** A day left open while a
+    // purchase is returned elsewhere shrinks, and the page a reader is on can end up past the
+    // end — an empty table under a foot that reports documents, which is the contradiction
+    // this whole class of fix exists to remove. Re-reading once is safe because the clamp is
+    // idempotent, so the second pass falls through.
+    const clamped = clampOffset(pageOffset, PAGE, totals.documents);
+    if (clamped !== pageOffset) {
+      pageOffset = clamped;
+      // The caller's staleness check still applies: a reload triggered by the clamp is not
+      // allowed to overwrite a newer day.
+      if (isStale()) return false;
+      return loadDay(at, isStale);
+    }
     rows = list;
     suppliers = supplierList;
     summary = totals;
@@ -337,8 +390,15 @@
     </p>
   {:else}
     <p class="count">
-      {rows.length}
-      {rows.length === 1 ? lang.t.purchases_document_one : lang.t.purchases_documents}
+      {#if pageIsPartial(rows.length, total)}
+        <!-- **The count used to be the page's and read as the period's.** A day holding 300
+             purchases rendered "200 documentos" over footings that covered all 300, which is
+             the silent truncation this fix removes. -->
+        {lang.t.ledger_shown_partial(rows.length, total)}
+      {:else}
+        {rows.length}
+        {rows.length === 1 ? lang.t.purchases_document_one : lang.t.purchases_documents}
+      {/if}
     </p>
 
     <div class="table-frame">
@@ -537,6 +597,26 @@
       <span class="value figures">{summary === null ? '—' : formatMoney(summary.returned)}</span>
       <span class="note">{lang.t.purchases_footing_returned_note}</span>
     </div>
+    <div class="pager">
+      <button
+        type="button"
+        onclick={() => stepPage(1)}
+        disabled={!canStepPage(pageOffset, PAGE, total, 1)}
+      >
+        ← {lang.t.sales_older}
+      </button>
+      <span class="page-of figures">
+        {lang.t.ledger_page_of(pageNumber(pageOffset, PAGE), pageCount(total, PAGE))}
+      </span>
+      <button
+        type="button"
+        onclick={() => stepPage(-1)}
+        disabled={!canStepPage(pageOffset, PAGE, total, -1)}
+      >
+        {lang.t.sales_newer} →
+      </button>
+    </div>
+
     <div class="fig">
       <span class="label">{lang.t.purchases_footing_net}</span>
       <span class="value figures">{summary === null ? '—' : formatMoney(summary.net)}</span>
@@ -604,6 +684,33 @@
     cursor: default;
   }
   .empty,
+  .pager {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 0;
+  }
+  .pager button {
+    background: none;
+    border: 1px solid var(--rule-strong);
+    border-radius: var(--radius);
+    padding: 6px 12px;
+    font: inherit;
+    font-size: var(--step--1);
+    color: var(--ink);
+    cursor: pointer;
+  }
+  .pager button:disabled {
+    color: var(--ink-soft);
+    border-color: var(--rule);
+    cursor: default;
+  }
+  .page-of {
+    font-size: var(--step--1);
+    color: var(--ink-soft);
+  }
+
   .count {
     color: var(--ink-soft);
     font-size: var(--step-0);
