@@ -138,10 +138,15 @@
     // An expanded row from the previous page is not on screen any more; leaving it open
     // would reopen a stranger's form on return.
     open.clear();
-    // The generation counter owns staleness, so this call needs no external check: a slow
-    // response from the page being left behind is discarded by the counter, exactly as it is
-    // for a day change.
-    loadDay(scopeInstant, () => false);
+    // **Through `reload`, and that is the fix for `R3-001` of `review-58ab3200d6f59c90`.**
+    // This called `loadDay(scopeInstant, () => false)`, and a constant-false predicate is not
+    // "the counter owns staleness" — it is "nothing is ever stale". `loadDay` gates every
+    // write with `if (isStale()) return false`, so two page steps in flight both wrote: the
+    // slower response overwrote `rows` and `summary` after the newer one had landed, leaving
+    // the table on a different page from the one the pager names. `reload` takes the counter
+    // and bumps it, so the older response is discarded, and it carries the same guard a day
+    // change has.
+    void reload(scopeInstant);
   }
 
   /**
@@ -210,7 +215,11 @@
    */
   async function reload(at: Date): Promise<void> {
     const seq = ++loadSeq;
-    await loadDay(at, () => seq !== loadSeq || scopeInstant !== at);
+    // **The page the request was made for is part of staleness.** Without it, stepping twice
+    // quickly leaves the slower response writing rows for a page the reader has left — the
+    // same defect as the constant predicate above, reachable through the write path too.
+    const requestedPage = pageOffset;
+    await loadDay(at, () => seq !== loadSeq || scopeInstant !== at || pageOffset !== requestedPage);
   }
 
   $effect(() => {

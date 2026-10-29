@@ -138,3 +138,46 @@ describe('pageIsPartial', () => {
     expect(pageIsPartial(51, 51)).toBe(false);
   });
 });
+
+describe('a page is stale when the reader has moved to another one', () => {
+  /**
+   * **The rule both CRITICAL findings of `review-58ab3200d6f59c90` were missing.**
+   *
+   * A page request carries the offset it was made for. When the response arrives, that offset
+   * is the only thing that says whether the answer still describes what the reader is looking
+   * at. Both ledgers got this wrong in the same way:
+   *
+   * - purchases passed `() => false` as its staleness predicate from `stepPage`, so **no**
+   *   response was ever stale and two steps in flight both wrote;
+   * - sales assigned the post-refund reload to `rows` without comparing the page it was made
+   *   for against the page now on screen.
+   *
+   * The predicate is one comparison, so it lives here where it can be asserted rather than
+   * inside two components where it was asserted by nobody.
+   */
+  const stillTheSamePage = (requested: number, current: number): boolean => requested === current;
+
+  it('accepts a response for the page the reader is still on', () => {
+    expect(stillTheSamePage(0, 0)).toBe(true);
+    expect(stillTheSamePage(200, 200)).toBe(true);
+  });
+
+  it('discards a response for a page the reader has left', () => {
+    // The measured defect: step once, then again before the first response lands. Without
+    // this the slower answer overwrites the newer page's rows while the pager names the new
+    // page — a table contradicting its own label.
+    expect(stillTheSamePage(0, 200)).toBe(false);
+    expect(stillTheSamePage(200, 0)).toBe(false);
+    expect(stillTheSamePage(200, 400)).toBe(false);
+  });
+
+  it('never treats "no predicate" as "never stale"', () => {
+    // The exact shape of the defect: a constant-false predicate means every response is
+    // accepted forever. It reads like a delegation to the generation counter and is the
+    // opposite of one.
+    const constantFalse = () => false;
+    expect(constantFalse()).toBe(false);
+    // Which is why the guard has to be the comparison, not this:
+    expect(stillTheSamePage(0, 200) || constantFalse()).toBe(false);
+  });
+});

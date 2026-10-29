@@ -558,14 +558,37 @@
     // wrote is the record, and the derived stamped state has to come from it, not
     // from what this component believes it sent.
     try {
+      // **The page this request was made for, captured before it is sent** (`R3-002` of
+      // `review-58ab3200d6f59c90`). The reload below used to assign whatever came back to
+      // `rows` without asking whether the reader had paged in the meantime: a step taken while
+      // this was in flight would have its page replaced by the previous one's rows, with the
+      // pager still naming the new page. The comment claiming "the same clamp as the effect
+      // read" was worse than useless — there was no clamp there at all.
+      const requestedPage = pageOffset;
       const reloaded = await listSales({
         from: range.from,
         to: range.to,
         limit: PAGE,
-        offset: pageOffset
+        offset: requestedPage
       });
-      // The same clamp as the effect read: a note can land on the page being shown, and the
-      // resulting reload must not leave the reader on an address past the end.
+      // The reader has moved on: this reload describes a page they are not looking at, and
+      // the read that owns the screen is theirs. Only the stale notice is left to retire,
+      // because the *note* did land — that fact does not depend on which page is on screen.
+      if (pageOffset !== requestedPage) {
+        refundStale.retireAll();
+        refunding = null;
+        return;
+      }
+      // And the clamp the old comment promised: a note can shrink the period, which can leave
+      // the remembered offset past the new end. Nudging it re-runs the effect, which reads the
+      // page that now exists.
+      const clamped = clampOffset(pageOffset, PAGE, pageTotal);
+      if (clamped !== pageOffset) {
+        pageOffset = clamped;
+        refundStale.retireAll();
+        refunding = null;
+        return;
+      }
       rows = reloaded;
       const c = await getCash();
       cash = c.total;

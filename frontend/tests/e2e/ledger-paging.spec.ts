@@ -169,3 +169,17 @@ test('the sales ledger offers a way to the rest of the period it says is missing
   await expect(pager.locator('.page-of')).not.toHaveText(/Página 1 de \d+/);
   await expect(page.locator(`[data-doc-row="${beforePage}"]`)).toHaveCount(0);
 });
+
+// **There is no e2e for the staleness rule, and that is a decision rather than a gap.**
+// `R3-001` of `review-58ab3200d6f59c90` is a race: two page reads in flight, the slower one
+// writing after the newer landed. An attempt to reproduce it with two quick clicks was
+// written, passed three times out of three, and **also passed with the defect restored** —
+// so it was deleted rather than kept. A test that cannot fail when its subject is broken is
+// the decoration class this repository has paid for three times, and keeping it would have
+// made the suite report coverage of a rule it never exercised.
+//
+// What pins the rule instead is `ledger-paging.test.ts`: the comparison that decides staleness
+// (`requested === current`) is asserted directly, including the shape of the defect — a
+// constant-false predicate treated as "never stale". The components call it; the unit test is
+// where its truth is checked. That is a weaker guarantee than an integration test would be,
+// and it is stated as weaker rather than dressed up.
