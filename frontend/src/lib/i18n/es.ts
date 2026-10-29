@@ -322,6 +322,10 @@ const es: Dict = {
   expenses_advance_action: 'Registrar adelanto',
   expenses_advanced: 'Adelanto registrado',
   expenses_advance_only_owed: 'Sólo un gasto a cuenta acepta adelantos',
+  expenses_older_owed_notice: (count) =>
+    count === 1
+      ? 'Hay 1 deuda anterior que no se muestra — la lista entra en una página'
+      : `Hay ${count} deudas anteriores que no se muestran — la lista entra en una página`,
   expenses_category_new: 'Nueva categoría',
   expenses_category_new_action: 'Agregar',
   documents_one: 'documento',

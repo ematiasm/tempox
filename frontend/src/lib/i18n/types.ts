@@ -338,6 +338,14 @@ export interface Dict {
   expenses_advance_action: string;
   expenses_advanced: string;
   expenses_advance_only_owed: string;
+  /**
+   * Said when the older-debts page is not the whole list (issue #115).
+   *
+   * A function rather than a string because the count is the point: "there are more" is a
+   * shrug, and "12 older debts are not shown" is something the operator can act on. The
+   * alternative — silently truncating — is exactly the defect this message closes.
+   */
+  expenses_older_owed_notice: (count: number) => string;
   expenses_category_new: string;
   expenses_category_new_action: string;
   documents_one: string;

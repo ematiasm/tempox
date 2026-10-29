@@ -13592,8 +13592,14 @@ async fn v4_expenses_the_ledger_derives_paid_and_outstanding_and_scopes_by_day(p
 
     let listed = client.get("/api/expenses").await;
     listed.expect_status(axum::http::StatusCode::OK);
-    let rows = listed.json().as_array().expect("an array of expenses");
+    // The envelope's `rows`, and the page's own facts around them: since issue #115 the
+    // endpoint reports what it is holding rather than pretending a capped list is the whole.
+    let rows = listed.json()["rows"]
+        .as_array()
+        .expect("an array of expenses");
     assert_eq!(rows.len(), 2, "the ledger returns both: {listed:?}");
+    assert_eq!(listed.json()["unsettled_older"], serde_json::json!(0));
+    assert_eq!(listed.json()["cap"], serde_json::json!(200));
 
     // Found by id, never by position: the ledger is shared and ordered by time.
     let find = |id: &str| {
@@ -13633,6 +13639,248 @@ async fn v4_expenses_the_ledger_derives_paid_and_outstanding_and_scopes_by_day(p
         columns, 0,
         "paid and outstanding are derived; a stored copy could disagree with its own sources"
     );
+}
+
+/// **A window, and what the server says about the rest of the ledger** (`S8`).
+///
+/// `unsettled_older` is the count of owed documents that fall **outside** the window the
+/// caller asked for, capped exactly like the list itself — so a screen rendering older
+/// debts can say how many it is showing out of how many there are.
+///
+/// The envelope's field names belong to the list and to the figures, which is why they are
+/// unchanged: a client merging a page with older debts needs no new vocabulary.
+#[derive(Debug, serde::Deserialize)]
+struct ExpensePage {
+    rows: Vec<serde_json::Value>,
+    unsettled_older: i64,
+    cap: i64,
+}
+
+/// **The defect this test closes** (`R3-003` of `review-0e3269a3a9623ddc`, issue #115).
+///
+/// The ledger was made honest about owed documents by asking for the newest 200 in the
+/// shop's whole history and filtering in the browser. Past 200 documents an owed salary
+/// older than that page rendered no row and no advance form — the same defect the earlier
+/// fix closed, moved one page size out — and the cap was not surfaced, so the operator
+/// could not tell a complete day from a truncated one.
+///
+/// The filter belongs on the server, and that is what the `unsettled` mode is: a question
+/// about documents, asked of the database, with a page of its own. Nothing here asserts the
+/// browser's behaviour; the browser can only render what this endpoint answers.
+#[sqlx::test]
+async fn v4_expenses_the_ledger_can_ask_for_what_still_owes_without_a_horizon(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+    let category = category_named(&pool, "Sueldos").await;
+
+    // An owed expense from long ago, and enough newer paid documents to bury it: sixty of
+    // them against a page of five, so a capped newest-first list would never reach it. The
+    // proportion is small on purpose — the defect is the shape, not the number 200.
+    let ancient = client
+        .post(
+            "/api/expenses",
+            serde_json::json!({
+                "category_id": category,
+                "payee": "Sueldo viejo adeudado",
+                "amount": "300.00",
+                "occurred_at": "2025-01-10T12:00:00Z",
+                "payment_method_id": "on_account"
+            }),
+        )
+        .await;
+    ancient.expect_status(axum::http::StatusCode::CREATED);
+    let ancient_id = ancient.body["id"].as_str().expect("an id").to_string();
+
+    for i in 0..60 {
+        let filler = client
+            .post(
+                "/api/expenses",
+                serde_json::json!({
+                    "category_id": category,
+                    "payee": format!("Pagado {i}"),
+                    "amount": "10.00",
+                    "occurred_at": "2026-06-01T12:00:00Z"
+                }),
+            )
+            .await;
+        filler.expect_status(axum::http::StatusCode::CREATED);
+    }
+
+    // The horizon the old screen had: the newest five documents, newest first. The owed one
+    // is not in it — this is the measurement, not an assumption about it.
+    let recent = client.get("/api/expenses?limit=5").await;
+    recent.expect_status(axum::http::StatusCode::OK);
+    assert!(
+        recent.json()["rows"]
+            .as_array()
+            .expect("rows")
+            .iter()
+            .all(|row| { row["id"] != serde_json::json!(ancient_id) }),
+        "the newest page cannot contain a document from 2025; got {recent:?}"
+    );
+
+    // The question asked of the server instead. The page is small and the document is
+    // still found, because the filter is the document's state and not its age.
+    let owed = client.get("/api/expenses?unsettled=true&limit=5").await;
+    owed.expect_status(axum::http::StatusCode::OK);
+    let page: ExpensePage = serde_json::from_value(owed.json().clone()).expect("the envelope");
+    assert_eq!(
+        page.rows.len(),
+        1,
+        "only the owed document answers `unsettled`; got {owed:?}"
+    );
+    assert_eq!(page.rows[0]["id"], serde_json::json!(ancient_id));
+    assert_eq!(page.rows[0]["outstanding"], "300.00");
+    assert_eq!(
+        page.unsettled_older, 0,
+        "the envelope's count is what this page does NOT hold"
+    );
+
+    // **`unsettled` composes with `to`**, and that is the rule the screen depends on: an
+    // owed document that belongs to the day being read is already in the day's list, and a
+    // second copy would render it twice or count it twice. `to` is exclusive, so the
+    // first instant of 2026-06-01 excludes the whole day.
+    let before_the_fillers = client
+        .get("/api/expenses?unsettled=true&to=2026-06-01T00:00:00Z&limit=50")
+        .await;
+    before_the_fillers.expect_status(axum::http::StatusCode::OK);
+    let page: ExpensePage =
+        serde_json::from_value(before_the_fillers.json().clone()).expect("the envelope");
+    assert_eq!(page.rows.len(), 1);
+    assert_eq!(page.rows[0]["id"], serde_json::json!(ancient_id));
+
+    // **The cap is surfaced rather than hidden** (`S8`). With a page of one and two owed
+    // documents in scope, the envelope says there is one older than the page it answered.
+    // A screen that renders a page with no way to know it is a page is the defect this
+    // whole test is about, one layer up.
+    let second_owed = client
+        .post(
+            "/api/expenses",
+            serde_json::json!({
+                "category_id": category,
+                "payee": "Otro sueldo adeudado",
+                "amount": "50.00",
+                "occurred_at": "2025-02-10T12:00:00Z",
+                "payment_method_id": "on_account"
+            }),
+        )
+        .await;
+    second_owed.expect_status(axum::http::StatusCode::CREATED);
+
+    let one_at_a_time = client
+        .get("/api/expenses?unsettled=true&to=2026-06-01T00:00:00Z&limit=1")
+        .await;
+    one_at_a_time.expect_status(axum::http::StatusCode::OK);
+    let page: ExpensePage = serde_json::from_value(one_at_a_time.json().clone()).expect("envelope");
+    assert_eq!(page.rows.len(), 1, "the page honours its own limit");
+    assert_eq!(
+        page.unsettled_older, 1,
+        "two owed documents in scope, one returned: the count says one is left; got {one_at_a_time:?}"
+    );
+    assert_eq!(
+        page.cap, 200,
+        "the cap is reported so a client can tell the page from the whole"
+    );
+
+    // **What `unsettled` is not**: a second way to say "every document". Asked without a
+    // page, it is still a page, and the count fills it.
+    let all_owed = client.get("/api/expenses?unsettled=true").await;
+    all_owed.expect_status(axum::http::StatusCode::OK);
+    let page: ExpensePage = serde_json::from_value(all_owed.json().clone()).expect("envelope");
+    assert_eq!(page.rows.len(), 2);
+    assert_eq!(page.unsettled_older, 0);
+
+    // The plain list keeps its old meaning: five documents, newest first, and no filter
+    // invented behind the caller's back. It is paginated, not whole — which is exactly the
+    // fact the day's screen must not rely on any more.
+    let plain = client.get("/api/expenses?limit=5").await;
+    plain.expect_status(axum::http::StatusCode::OK);
+    let page: ExpensePage = serde_json::from_value(plain.json().clone()).expect("the envelope");
+    assert_eq!(page.rows.len(), 5);
+    assert_eq!(
+        page.unsettled_older, 0,
+        "without `unsettled`, the envelope counts nothing older"
+    );
+}
+
+#[sqlx::test]
+async fn v4_expenses_a_partially_advanced_debt_still_answers_unsettled(pool: sqlx::PgPool) {
+    // **The predicate's own trap, and the reason it is not `payment_method_id IS NULL`.**
+    // An owed document keeps a null rail after it takes an advance — the advance names its
+    // own rail, the document deliberately fixed none — so "has no method" and "owes
+    // something" are different questions, and the filter the screen uses must ask the
+    // second one. Written as its own test because the shortcut would pass every assertion in
+    // the test above: those documents were never advanced against.
+    let client = common::client(pool.clone());
+    let category = category_named(&pool, "Sueldos").await;
+
+    let owed = client
+        .post(
+            "/api/expenses",
+            serde_json::json!({
+                "category_id": category,
+                "payee": "Sueldo con adelanto",
+                "amount": "300.00",
+                "occurred_at": "2025-03-01T12:00:00Z",
+                "payment_method_id": "on_account"
+            }),
+        )
+        .await;
+    owed.expect_status(axum::http::StatusCode::CREATED);
+    let owed_id = owed.body["id"].as_str().expect("an id").to_string();
+
+    client
+        .post(
+            &format!("/api/expenses/{owed_id}/advances"),
+            serde_json::json!({ "amount": "100.00" }),
+        )
+        .await
+        .expect_status(axum::http::StatusCode::CREATED);
+
+    // A second owed document, advanced in full, so the test also proves the filter's other
+    // edge: fully paid means it is *not* owed, whichever way it was paid.
+    let settled = client
+        .post(
+            "/api/expenses",
+            serde_json::json!({
+                "category_id": category,
+                "payee": "Sueldo ya saldado",
+                "amount": "80.00",
+                "occurred_at": "2025-03-02T12:00:00Z",
+                "payment_method_id": "on_account"
+            }),
+        )
+        .await;
+    let settled_id = settled.body["id"].as_str().expect("an id").to_string();
+    client
+        .post(
+            &format!("/api/expenses/{settled_id}/advances"),
+            serde_json::json!({ "amount": "80.00" }),
+        )
+        .await
+        .expect_status(axum::http::StatusCode::CREATED);
+
+    let owed_page = client.get("/api/expenses?unsettled=true").await;
+    owed_page.expect_status(axum::http::StatusCode::OK);
+    let page: ExpensePage = serde_json::from_value(owed_page.json().clone()).expect("envelope");
+
+    let ids: Vec<&str> = page
+        .rows
+        .iter()
+        .map(|row| row["id"].as_str().expect("an id"))
+        .collect();
+    assert_eq!(
+        ids,
+        vec![owed_id.as_str()],
+        "only the document that still owes answers `unsettled`; a fully advanced one does not \
+         — got {owed_page:?}"
+    );
+    assert_eq!(
+        page.rows[0]["payment_method_id"],
+        serde_json::Value::Null,
+        "and its rail is still null after the advance: the two questions are different"
+    );
+    assert_eq!(page.rows[0]["paid"], "100.00");
+    assert_eq!(page.rows[0]["outstanding"], "200.00");
 }
 
 #[sqlx::test]
@@ -13820,7 +14068,7 @@ async fn v4_expenses_a_day_is_the_shops_day_and_a_full_instant_is_taken_as_given
         ))
         .await;
     listed.expect_status(axum::http::StatusCode::OK);
-    assert_eq!(listed.json().as_array().expect("an array").len(), 1);
+    assert_eq!(listed.json()["rows"].as_array().expect("an array").len(), 1);
 
     // **The other half of the contract**: an older client that sends a complete instant
     // keeps today's behaviour exactly, and a string that is neither shape is a 400 rather

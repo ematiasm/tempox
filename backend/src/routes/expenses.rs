@@ -579,6 +579,25 @@ pub struct ExpensesQuery {
     /// in this system has.
     #[serde(default)]
     pub to: Option<chrono::DateTime<chrono::Utc>>,
+    /// **The only filter here that asks a question rather than slicing an order.**
+    ///
+    /// `true` narrows the ledger to the documents that still owe something —
+    /// `amount − SUM(payments) > 0` — which is the set a screen can act on, and it is
+    /// deliberately **not** `payment_method_id IS NULL`: an owed document with one advance
+    /// still owes, and the older filter would have printed it as settled and hidden its
+    /// form. It composes with every other parameter instead of replacing them, so a caller
+    /// can ask for `unsettled=true&to=<first instant of the day>` and get exactly the older
+    /// debts the day's own list cannot contain.
+    ///
+    /// **This exists because the client used to answer the question itself** (`R3-003` of
+    /// `review-0e3269a3a9623ddc`, issue #115). It asked for the newest 200 documents in the
+    /// shop's whole history and filtered them in the browser, so past 200 documents an owed
+    /// salary older than that page rendered no row and no advance form — the defect the
+    /// previous fix closed, moved one page size out, with no sign to the operator. A bigger
+    /// page is the same bug with a later horizon; the answer is to let the database say
+    /// which documents owe.
+    #[serde(default)]
+    pub unsettled: bool,
 }
 
 /// A row of the expense ledger: the document, its names by join, and the two figures that
@@ -605,15 +624,56 @@ pub struct ExpenseRow {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// One page of the ledger, and the two facts a client needs to tell a page from the whole.
+///
+/// **The envelope exists because a capped list with no envelope is a silent truncation.**
+/// The ledger was a bare array, so a client could not distinguish "this is the day" from
+/// "this is the first 50 of the day" — `R3-004` of `review-1e9c4c74ced6d94b`, which a day
+/// with more than 50 expenses made visible. The field names `rows`, `cap` and
+/// `unsettled_older` are the contract; every other figure stays where it was.
+#[derive(Debug, serde::Serialize)]
+pub struct ExpensePage {
+    /// The documents this page holds, newest first by `occurred_at`.
+    pub rows: Vec<ExpenseRow>,
+    /// **How many owed documents fall outside this page**, capped exactly like the list.
+    ///
+    /// Non-zero only when the caller asked `unsettled=true`, and it is what lets a screen
+    /// say "12 older debts, showing 5" instead of pretending the page is everything. It is
+    /// a count of a **bounded** population on purpose: an exact count over the shop's whole
+    /// history grows with it, and a number nobody can act on is not worth an unbounded
+    /// query. The page and the count are read under one snapshot, so the pair cannot
+    /// describe two different ledgers.
+    pub unsettled_older: i64,
+    /// The largest page this endpoint will answer, so a client can tell the page from the
+    /// whole without hard-coding a limit that lives in the server.
+    pub cap: i64,
+}
+
 async fn list_expenses(
     State(state): State<AppState>,
     Query(params): Query<ExpensesQuery>,
-) -> Result<Json<Vec<ExpenseRow>>, StatusCode> {
+) -> Result<Json<ExpensePage>, StatusCode> {
     let limit = params.limit.unwrap_or(50).clamp(1, MAX_LIST_LIMIT);
     // A negative offset is not a page request: OFFSET refuses it in Postgres, and turning
     // that into a 500 would blame the server for a bad query. Every other ledger clamps the
     // same way, because a filter that behaves differently on two screens reads as a bug.
     let offset = params.offset.unwrap_or(0).max(0);
+
+    // **One snapshot for the page and its count.** Read separately, a document created or
+    // an advance recorded between the two queries would let the envelope report a page and
+    // a remainder that describe different ledgers — the contradiction `parties.rs` takes a
+    // `REPEATABLE READ` for. Two statements, one instant.
+    let mut tx = state.db.begin().await.map_err(|e| {
+        tracing::error!(?e, "list_expenses tx failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            tracing::error!(?e, "list_expenses isolation failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     // **One statement for the rows and their figures**, rather than a query per row: `paid`
     // is a sum over a different table, and asking it once per document is the N+1 this
@@ -623,6 +683,11 @@ async fn list_expenses(
     // would drop an owed expense from the ledger with no error — the trap `purchases.rs`
     // documents. The payments join is aggregated in a subquery so a document with two
     // advances yields one row, not two.
+    //
+    // The `unsettled` predicate repeats the subtraction rather than filtering on the joined
+    // `paid` column: comparing an expression with a `COALESCE`d sum is exact in `NUMERIC`
+    // and readable as the rule it is, and it keeps the filter independent of the projection
+    // so a future change to what is selected cannot silently change what is filtered.
     let rows = sqlx::query_as::<
         _,
         (
@@ -653,6 +718,7 @@ async fn list_expenses(
            ) p ON p.party_id = e.id
           WHERE ($1::timestamptz IS NULL OR e.occurred_at >= $1)
             AND ($2::timestamptz IS NULL OR e.occurred_at < $2)
+            AND (NOT $5::boolean OR e.amount - COALESCE(p.paid, 0) > 0)
           ORDER BY e.occurred_at DESC, e.id
           LIMIT $3 OFFSET $4",
     )
@@ -660,14 +726,55 @@ async fn list_expenses(
     .bind(params.to)
     .bind(limit)
     .bind(offset)
-    .fetch_all(&state.db)
+    .bind(params.unsettled)
+    .fetch_all(&mut *tx)
     .await
     .map_err(|e| {
         tracing::error!(?e, "list_expenses failed");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    let expenses = rows
+    // The remainder is bounded by the same cap as the page, and that bound is the whole
+    // design: it answers "is there more than a page of these, and about how much" without
+    // becoming an exact count over a history that grows forever.
+    let unsettled_older = if params.unsettled {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM (
+                 SELECT e.id
+                   FROM expenses e
+                   LEFT JOIN (
+                        SELECT party_id, SUM(total) AS paid
+                          FROM payments
+                         WHERE party_kind = 'expense'
+                         GROUP BY party_id
+                   ) p ON p.party_id = e.id
+                  WHERE ($1::timestamptz IS NULL OR e.occurred_at >= $1)
+                    AND ($2::timestamptz IS NULL OR e.occurred_at < $2)
+                    AND e.amount - COALESCE(p.paid, 0) > 0
+                  OFFSET $3
+                  LIMIT $4
+             ) older",
+        )
+        .bind(params.from)
+        .bind(params.to)
+        .bind(offset + limit)
+        .bind(MAX_LIST_LIMIT)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| {
+            tracing::error!(?e, "list_expenses remainder failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+    } else {
+        0
+    };
+
+    tx.commit().await.map_err(|e| {
+        tracing::error!(?e, "list_expenses commit failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let rows = rows
         .into_iter()
         .map(
             |(
@@ -697,7 +804,11 @@ async fn list_expenses(
         )
         .collect();
 
-    Ok(Json(expenses))
+    Ok(Json(ExpensePage {
+        rows,
+        unsettled_older,
+        cap: MAX_LIST_LIMIT,
+    }))
 }
 
 // ── The summary ────────────────────────────────────────────────────────────
