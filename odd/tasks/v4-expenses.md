@@ -1,0 +1,402 @@
+# v4-expenses — money leaving that touches no stock
+
+The last v4 slice that was never specified. **State: designed, not implemented.** Every
+spec below is a decision; none is a measurement of code that exists. The schema facts
+quoted here were read on `87dfa5a` and are named with their line so they can be
+re-checked instead of believed. Engram topic key: `tempox/odd/v4-expenses/tasks`.
+
+The state that must hold when this feature closes, and it is one sentence:
+
+```
+a utility bill, a repair or a salary is recorded once, with a category and who was paid,
+whether the money left today or leaves in three advances,
+and the shop's spending for a day includes it — plus the purchases it already recorded.
+```
+
+v4 bought the machine this slice stands on and left it pointed at one case: `0018`'s three
+documents (opening balance, transfer, count adjustment) move money and touch no stock, and
+`0023`'s payables gave a debt its own shape. An expense is the first **recurring, everyday**
+document in that family: it has a category, a payee, and a balance that survives the month
+it belongs to.
+
+## Why this is the last hole in v4, measured
+
+`PLAN.md`'s roadmap has said since 2026-10-20 that the till is overstated by every salary
+until expenses exist, and the reason it was placed after v3 is still the reason it is shaped
+this way: an expense must name **where** the money left, and before v3 there was no place to
+name. That is now true — `money_entries.payment_method_id` is `NOT NULL` and the account is
+derived from it by `money_entry_resolves_account` (`0001_schema.sql:2261`).
+
+What is measured absent today:
+
+| what | measured |
+|---|---|
+| a table, route or screen for expenses | `grep -ri expense backend/src backend/migrations frontend/src` → **0** |
+| a place a payee's name could live | `suppliers` exists but is a purchase counterparty, and its seed is `one-off-supplier` |
+| a way to owe a non-supplier party | `payables` is closed to `source_document_kind = 'purchase'` (`0001_schema.sql:4146`) |
+| a way for money to leave against a non-supplier debt | `payments.party_kind ∈ ('customer','supplier')` (`0001_schema.sql:3773`) |
+| a category vocabulary | nothing; the only closed sets in the schema are the ones this repo paid three times to extend |
+
+## The decisions this design rests on
+
+**D1 — An expense is not a purchase, and purchases are not written as expenses.** The
+owner's words: *"quiero que registre las compras como una categoria de gastos, asi que esos
+gastos se pueden **derivar** de compras que ya tienen proveedor obligatorio"*. Derived is the
+verb: a purchase keeps meaning "goods arrived and money left, with a supplier", and the
+spending report adds it as one of its terms. Copying it into `expenses` would be two records
+of one fact — the defect `0017` spent a migration killing for balances.
+
+**D2 — A category is a row, never a `CHECK`.** This repository has paid for closed
+vocabularies three times: `stock_movements.reason` (`0011` replaced six enumerating
+constraints with one shape-derived trigger), `money_entries.document_kind` (`0020` copied its
+members by hand and **silently dropped `annulment`**, turning every annulment into a 500), and
+`obligations.source_document_kind` (`0023` paid an entire duplicated table to avoid re-cutting
+it). A category is shop data — adding one must be an `INSERT`, not a migration.
+
+**D3 — An expense is a party to its own money, so it needs no new settlement table.** An
+owed expense is paid in advances: *"anoto el salario de un empleado del mes y este durante el
+mes puede ir retirando adelantos"*. That is several payments against one debt, which
+`payments` already expresses: `party_kind = 'expense'`, `party_id = expenses.id`. The
+outstanding figure is `expenses.amount − SUM(payments out on that party)`, and it needs **no
+third ceiling function** — the mirror of `payables` would have cost one, and `0023`'s own
+comment records what re-cutting a money-guarding function has already cost (`0022` lost a
+`FOR UPDATE` doing it once).
+
+**D4 — The cost of D3, stated rather than discovered later.** One payment answers **one**
+expense. Paying the rent and the electricity with a single bank withdrawal is two payments,
+not one. Purchases keep the ability to spread one payment over several debts because
+`payable_settlements` exists; expenses do not, and the asymmetry is real. It is bought
+deliberately: the owner's case is many payments to one debt, not one payment to many.
+
+**D5 — Salaries are in scope as a category and out of scope as a staff flow.** The owner's
+words: *"registrar los salarios de empleados... todavia no tenemos user/staff creado, asi que
+podemos dejar para mas adelante"*. A `Sueldos` category is seeded and usable today; naming
+**which** employee a salary belongs to needs a staff table that does not exist
+(`grep -ri "CREATE TABLE.*users\|TABLE.*staff" backend/migrations` → 0), and `expenses.payee`
+carries the name as text until it does. Recorded so a later session does not read the absence
+as an oversight.
+
+**D5a — When staff lands, it is a column on `expenses`, not a document of its own.** The
+owner's words: *"mi idea es que sea con empleado pero un documento con FK en user"*. That wish
+is satisfied by `expenses.staff_id UUID REFERENCES staff (id)` — the document is `expenses` and
+the FK names the employee. A separate `salaries` table would cost a **second** debt mechanism:
+`party_kind = 'salary'` (or a settlements table of its own), a second advance route, a second
+ceiling function, and a second term in the report. `0023` measured exactly that price on the
+supplier side and recorded `obligations.party_kind = 'supplier'` left declared and unused
+(`v4-settlement.md` L25). A salary and a utility bill are the same fact — money left, for a
+concept, with no goods arriving — where a purchase and a sale are not.
+
+**D5b — The column is NOT reserved now, and the reason is recorded policy.** Two measured
+facts: the FK target does not exist (`grep -ci "create table.*\(users\|staff\|employee\)"` →
+**0**), and `docs/en/architecture.md:104` states the principle against reserving — *"adding it
+later is a nullable `ALTER TABLE` with no backfill — which is why no reserved column anticipates
+it"*. Adding `staff_id` when staff exists costs one line and needs no backfill: earlier expenses
+stay `NULL`, which is the truth rather than a placeholder.
+
+**D5c — What D5a promises, and it is only promisable because it was measured.** Adding
+`staff_id` later touches `payments` not at all, nor the advance route, nor the book, nor the
+summary — advances keep settling the expense through `party_kind = 'expense'`. The employee is an
+attribute of a document that already exists.
+
+**D5d — Open for the staff slice, stated so it is not decided by accident.** "One salary per
+employee per month" is a uniqueness rule that does not exist today, because
+`expenses.occurred_at` is an instant and not a period. When `staff_id` arrives, that slice has to
+choose between an explicit month column and `UNIQUE (staff_id, date_trunc('month', occurred_at))`.
+
+**D6 — Two alternatives were evaluated and rejected, and they are recorded here rather than
+left in a conversation.** The owner asked whether a table for expenses is right, or whether a
+purchase should instead carry a field naming which expense it belongs to, with the rest written
+as account movements carrying that same identifier. Both fail on measured facts.
+
+**A1 — a field on `purchases` naming its expense: refused by the immutability guard.**
+`0001_schema.sql:774-794` installs `reject_purchase_mutation()` as
+`BEFORE UPDATE OR DELETE ON purchases`, **with no column list** — unlike
+`payment_methods_account_guard`, which is `BEFORE UPDATE OF account_id`. A purchase has no mutable
+column at all. The field leaves two roads, both worse: relaxing the guard opens `UPDATE` on a table
+`stock_movements` and `payables` both hang off; leaving it strict forces the classification to be
+decided **at the moment of buying**, which `PRODUCT.md` forbids (*"no report may justify asking
+for an extra field at write time"*). Re-classification would then be impossible, and the salary
+case has no document to hang the field on at all.
+
+**A2 — expenses written as `money_entries` rows carrying their own identifier: refused by four
+measurements.**
+
+1. **A movement cannot hold a document's data.** `money_entries` has nine columns — `id`,
+   `account_id`, `payment_method_id`, `document_kind`, `document_id`, `amount`, `occurred_at`,
+   `created_at`, `created_by` — and none is a payee, a category, or a **declared** amount.
+   `document_id` has no foreign key and no validation trigger; coherence comes from per-document
+   constraint triggers (`payments_claim_their_entry`, `sales_payment_method_claimed`). An entry of
+   kind `'expense'` pointing at nothing is what `0017` called *"an entry with no cause is a bug,
+   and a bug should not be representable"*.
+2. **An owed expense is not a movement, and this is the requirement that kills the shape.**
+   `money_entry_names_a_real_account` refuses any row whose account is not `cash`/`digital`
+   (`accounts_kind_known CHECK (kind IN ('cash','digital'))`), and `0021` established that a sale
+   on account writes **zero** entries. October's salary recorded on the 1st and paid in three
+   advances has no movement on the 1st — it is a debt, and debts are documents since v4.
+3. **Advances would be indistinguishable from separate expenses.** There is no unique index on
+   `money_entries (document_kind, document_id)` — a transfer writes two rows on purpose. "One
+   salary of 300 paid 100+100+100" and "three expenses of 100" therefore produce byte-identical
+   rows, and the declared amount becomes an aggregate that can never be compared with anything.
+4. **The closed vocabulary would be re-cut a fourth time.** `money_entries_kind_known` was re-cut
+   three times (`0018`, `0020`, `0022`) and `0020` lost `annulment` doing it, turning every
+   annulment into a 500. Ten `INSERT INTO money_entries` sites across five files would start
+   writing a new kind with its own pair of guards.
+
+**D6a — The one point in A2's favour, and how it is handled.** A2 would have allowed classifying
+goods purchases by rubro (cleaning supplies vs. resale stock), which S9's single derived group
+cannot. The owner deferred it — *"pir ahora no, dejamos una versión chica y lo vemos mas
+adelante"* — and the shape it must take when it returns is stated now so it is not rediscovered
+as A1: a separate `expense_classifications (document_kind, document_id, category_id)` table with
+its own guard, **never** a column on `purchases`.
+
+## Specs
+
+S1 **`expense_categories` is a table, seeded, and categories are retired rather than
+deleted.** `expense_categories(id, name, is_active, created_at)` with `name UNIQUE`. The seed
+carries the shop's own words: `Alquiler`, `Sueldos`, `Servicios`, `Mantenimiento`,
+`Impuestos`, `Otros`. The names are **not translated**: a category is shop data, exactly as a
+supplier's name is, and both languages render the same row. `is_active` exists for the reason
+`payment_methods.is_active` does — an expense that named a category is history, so the row
+cannot be deleted, and a picker must be able to stop offering it.
+
+S2 **An expense names a payee in text and a category by reference.**
+`expenses(id, category_id, payee, amount, occurred_at, payment_method_id?, created_at,
+created_by)`:
+
+- `category_id UUID NOT NULL REFERENCES expense_categories (id)` — the owner's *"Dato
+  importante, quiero poder categorizar gastos"*, and the reason S1 is a table.
+- `payee TEXT NOT NULL CHECK (btrim(payee) <> '')` — "Edenor", "Ferretería X", a person's
+  name. No FK: the payees this document needs are mostly **not** suppliers, and forcing them
+  into `suppliers` would fill a purchase table with rows that never sell anything and can
+  never be deleted.
+- `amount NUMERIC(14, 6) NOT NULL CHECK (amount > 0)` with `amount = round(amount, 2)` and
+  `created_by <> ''` — the same three constraints `opening_balances`, `transfers` and
+  `count_adjustments` carry.
+- `occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW()` — **the day the expense belongs to**, which
+  is not necessarily the day it is paid. This is what makes D3 worth having: October's salary is
+  recorded in October and settles in November, and a later report can say both. Absent in the body
+  means now, exactly as `opening_balances.opened_at` does it. **It is an instant and not a
+  period** — see D5d for the consequence the staff slice inherits.
+- `payment_method_id UUID REFERENCES payment_methods (id)` — nullable, and the null is a
+  claim held by a trigger (S4), exactly as `sales` and `purchases` do it since `0021`.
+
+S3 **`POST /api/expenses` reuses the `Destination` grammar, and its three inputs keep their
+meaning.** The body is `{category_id, payee, amount, occurred_at?, payment_method_id?}` and
+`payment_method_id` follows `models/destination.rs` exactly:
+
+| input | means | what the transaction writes |
+|---|---|---|
+| omitted | the seeded `cash` method | the expense, **one** `payments` row `out` for the full amount, and that payment's ledger entry |
+| a uuid | money left through that method | the same two rows, naming that method |
+| `"on_account"` | nothing left; the shop owes | the expense alone: no payment, no ledger entry |
+| explicit `null`, a number, a list | not a destination | `400` |
+
+**The route reads the field raw and judges it in the handler**, never through a custom serde
+deserializer: `v4-payables.md` L4 measured that a deserializer's failure reaches the client
+through axum's `Json` as **422** while the field's contract promises 400, and both existing
+routes were repaired for it.
+
+S4 **The two states of an expense, checked at commit.** A constraint trigger
+`DEFERRABLE INITIALLY DEFERRED` on `expenses`, the mechanism `0021` established for `sales`:
+
+```
+payment_method_id IS NOT NULL  →  at least one `payments` row (out, party_kind='expense',
+                                  party_id=this expense), summed within `amount`
+payment_method_id IS NULL      →  no `payments` row for this expense yet
+```
+
+**The claim is judged at the moment the document is created, and that is why it is
+deferred.** A later advance (S7) adds payments to an expense whose claim was the null one;
+that is a second document making its own statement, not a contradiction of the first. The
+deferral also carries `0021`'s recorded trap: the payment is written after the expense row
+exists, and **no `ALTER TABLE` on this table may follow a row-touching statement in the same
+transaction**.
+
+S5 **The book learns no new kind, and that is the strongest available evidence that this
+design is right.** Money moves through the `payments` row S3 writes, which already owns
+exactly one `money_entries` row of kind `'payment'` — `payments_claim_their_entry`
+(`0001_schema.sql`) refuses a payment that wrote none or more than one, and `0022` re-cut that
+closed set to admit `'payment'` once already.
+
+**An `'expense'` ledger entry would therefore count the same coin twice**, and the first
+draft of this document had exactly that defect. It is recorded rather than quietly fixed
+because it is the class this repository keeps paying for: two records of one movement. So the
+expense document writes **no entry at all** — and because it writes none, this migration
+touches `money_entries.document_kind` neither by `ALTER` nor by a hand-copied member list,
+which is the operation that lost `annulment` in `0020`.
+
+S6 **`payments` learns a third party, and the direction rule is extended rather than
+loosened.** `payments.party_kind` gains `'expense'` and `payments_direction_matches_party`
+gains the pair `(direction = 'out' AND party_kind = 'expense')`. **The money direction is
+`out` and only `out`**: money never arrives at an expense, and a rule that allowed `in` would
+make the direction a suggestion — the argument `0022` makes for `in`-from-a-supplier. Both
+`CHECK`s are re-cut by the whole member list and asserted by a `DO` block that names every
+member the chain already accepted, the discipline `0020`'s lost `annulment` bought.
+
+S7 **A payment against an owed expense is an advance, and its ceiling is a sum.**
+`POST /api/expenses/{id}/advances` with `{payment_method_id, amount}` — one transaction: one
+`payments` row `out` naming `party_kind='expense'`, `party_id=<expense>`, and its ledger entry.
+Refusals, and each is its own status because each is a different correction:
+
+| case | status | why |
+|---|---|---|
+| `SUM(advances) + amount > expenses.amount` | `409` | the debt is not that large; asking first is what makes it a `409` and not a trigger's `500` |
+| an amount that is not positive whole cents | `400` | the database's `CHECK`, asked before it |
+| an unknown expense or an unknown method | `404` | the same shape check every other route makes |
+| the expense was fully paid when it was created (S3 named a method) | `409` | it owes nothing, so there is nothing to advance against |
+
+The expense row is locked `FOR UPDATE` before the ceiling is judged, so two concurrent
+advances cannot both read the same committed sum and both find room. **The lock order is one
+row, so there is no order to get wrong** — the defect class `aa95665` cost is not reachable
+here, and that is worth stating rather than assuming.
+
+**The ceiling is enforced below the route as well as in it**, by a trigger on `payments`
+`BEFORE INSERT` when `party_kind = 'expense'`. The route's `409` exists because a `RAISE` at
+commit reaches the caller as a `500`; the trigger exists because a ceiling enforced only above
+the database is a suggestion to everyone who reaches below it — `v4-payables.md`
+`R3-005` records that lesson on the supplier side.
+
+S8 **The expense ledger is day-scoped with the contract every other ledger has.**
+`GET /api/expenses?from=&to=&limit=50&offset=0`: newest first by `occurred_at`, the same
+half-open `[from, to)` bounds, the same `limit` clamp (1..200) and `offset` clamp, each row
+carrying category name, payee, method name (or null, meaning on account), `amount`, `paid`
+(derived) and `outstanding` (derived). **`paid` and `outstanding` are never stored**: a stored
+figure that is a subtraction of other rows can disagree with them, which is why `sales` lost
+its lifecycle in `0015`.
+
+S9 **The summary answers "what did the shop spend", and `net` has two terms.**
+`GET /api/expenses/summary?from=&to=` answers
+`{expenses, purchases, supplier_returns, net, documents}` where
+`net = expenses + purchases − supplier_returns`, scoped by each document's own `occurred_at`
+for an expense and by `created_at` for a purchase. Two halves of D1 in one payload: the
+recorded expenses and the purchases already in the system, **derived, not copied**, so the
+answer to "what did I spend this month" does not depend on anybody remembering to record a
+purchase twice.
+
+**Payments out on expense parties appear in no term of `net`, and the asymmetry with
+settlements is deliberate.** A settlement is excluded because the debt it answers is already
+counted; here the payment is excluded for a stronger reason — the *money* it moved is the same
+money `expenses` already carries at full amount, whether it was paid today or in three
+advances. The payload therefore reports `expenses` (what the period cost) and, per row, the
+`paid` and `outstanding` that S8 derives; it does **not** report a second period figure named
+`advances`, because a number that looks like spending and is a settlement of spending is the
+kind of figure a reader adds twice.
+
+**Purchases enter under one derived group and gain no column.** A purchase records no category
+and must not start: `PRODUCT.md`'s principle is explicit — *"No report may justify asking for
+an extra field at write time"* — and every purchase in this system is a goods purchase, so one
+group is the truth rather than a simplification.
+
+S10 **`GET /api/expense-categories` and `POST /api/expense-categories`.** The getter returns
+every category, **including inactive ones**, for the reason `GET /api/payment-methods` does:
+a ledger rendering a historical expense needs the name of a category retired afterwards. The
+poster takes `{name}` — `400` blank (trimmed first), `409` duplicate. Retiring is
+`PATCH {is_active}`, and a category may not be deleted.
+
+S11 **Every rule is proven by a test that bites, through the public interface.** RED first,
+one test per requested rule, asserting every observable effect: the status code, the exact
+response shape, **and that a refused request left no row behind** — no expense, no payment, no
+ledger entry, no advance — because the book is append-only and a refused write that left a row
+cannot be taken back. Each guard is then proven by neutering it and watching its test fail. A
+documents count or a `len()` is **not** an assertion: `v5-customer-account.md` V2b records
+that class of decoration passing for a different row three times.
+
+S12 **Scope.** In: categories, the expense document, immediate payment, advances, the
+ledger, the summary, the category routes. Out, with reasons recorded so they are not
+rediscovered as surprises:
+
+- **Salaries as a staff flow** (D5-D5d) — needs a `staff` table, deferred to the staff slice.
+  The shape is already decided (D5a) and needs no work here.
+- **One payment across several expenses** (D4) — the price of D3, stated.
+- **Classifying purchases by category** — the owner's answer: *"pir ahora no, dejamos una
+  versión chica y lo vemos mas adelante"*. Purchases enter the summary as **one derived
+group** (S9), which is the small version. When the shop wants goods split by rubro, that is
+  a separate slice and **not** a column on `purchases` (D6).
+- **A recurring template** ("every month, rent 300.000") — a schedule is a different document,
+  and a template that silently writes expenses is a machine that records facts nobody entered.
+- **Reversing an expense.** An expense is immutable and append-only. Its correction document
+  is a future slice, and it is the mirror of `annulment`: a `reason`, not an edit.
+- **Attaching a receipt image.** No file storage exists in this system.
+- **Changing `created_by`** — still `'counter'`, still deferred with `v4-settlement.md` L24.
+
+## Tasks
+
+| ID | Spec | Task | Route | Risk | Commit |
+| --- | --- | --- | --- | --- | --- |
+| E1-T1 | S1, S10 | `expense_categories` + seed + `GET`/`POST`/`PATCH`, with the closed-set assertion discipline | inline | — | — |
+| E1-T2 | S2, S3, S4, S5, S6 | the expense document in one migration — the table, `payments.party_kind` extended to `'expense'` with its direction pair and its `DO` assertion, the two-state trigger, and `POST /api/expenses` over the shared `Destination` grammar | inline | item 1 | — |
+| E1-T3 | S7 | advances: `POST /api/expenses/{id}/advances`, the ceiling, the lock, the four refusals | inline | item 1 | — |
+| E1-T4 | S8, S9 | the ledger and the summary, with `paid`/`outstanding` derived and purchases as a term | inline | — | — |
+| E1-T5 | S11 | the whole rule set proven to bite, plus `architecture.md`, `README.md`, `PRODUCT.md` and `docs/en/testing.md`'s counts | inline | — | — |
+| E2-T1 | S1, S8 | `/expenses`: the draft sheet (payee, category picker, amount, method picker with "on account"), the day's ledger, the rail destination, the version chip, both dictionaries | inline | item 3 | — |
+| E2-T2 | S7, S9 | the advance action inside an expanded expense, the spending foot with its two terms and the purchases term, and one e2e that records a paid expense and finds it by identity | inline | item 3 | — |
+| E3-T1 | S9 | **deferred by the owner (L7)** — `GET /api/spending`: the period's spending grouped by category with purchases as one derived group | inline | — | — |
+
+**E3 is deferred, not dropped.** The owner's answer to classifying purchases by rubro was
+*"pir ahora no, dejamos una versión chica y lo vemos mas adelante"* (L7). So the **small version
+is E1-T4**: purchases appear in `GET /api/expenses/summary` as **one derived group**, which is
+the owner's *"compras como una categoría"* at its cheapest. A per-rubro breakdown waits, and
+when it returns it is `expense_classifications (document_kind, document_id, category_id)` with
+its own guard — never a column on `purchases` (D6, A1).
+
+Order is dependency, not preference: E1-T2 needs T1's table, T3 needs T2's document, T4 needs
+T3's advances to report `paid`, and E2 needs E1 green. E1 and E2 are the whole of this
+feature's committed work; E3 is the deferred remainder and can be dropped without leaving a
+half-built document.
+
+**Slice boundaries, so each candidate stays reviewable.** E1 is one migration and one route
+family (~900 authored lines with tests) — above the 400-line guideline, so it carries a
+`size:exception` with this paragraph as its reason: the table, the two `CHECK` re-cuts of
+`payments`, the two-state trigger and the routes cannot be split without a commit that
+compiles and does not work. E2 is the screen (~700). E3 is one read model (~250). The
+precedent for refusing a candidate this size does not apply: `v4-payables.md` was refused at
+**3556** lines, and the whole of E1 is a quarter of it.
+
+## Log
+
+L1 (owner, verbatim): "dale especifiquemos gastos"
+
+L2 (owner, verbatim, answering who a gasto pays): "Por un lado quiero que registre las
+compras como una categoria de gastos, asi que esos gastos se pueden derivar de compras que ya
+tienen proveedor obligatorio. Por otro lado quiero registrar ordinarios que por ahora
+podriamos dejar como texto. Y otro importante auqnue podriamos dejarlo para otro slice, es
+registrar los salarios de empleados, pero todavia no tenemos user/staff creado, asi que
+podemos dejar para mas adelante. Dato importante, quiero poder categorizar gastos"
+
+L3 (owner, decision, answering how a gasto is classified): **`expense_categories` as a table
+with a seed**, chosen over free text and over a fixed `CHECK` vocabulary. Reasons of record:
+free text makes "Sueldos" and "sueldos" two categories in a report that an immutable document
+can never correct; a `CHECK` is the closed-set anti-pattern this schema paid for three times
+(D2).
+
+L4 (owner, verbatim, answering whether a gasto can be owed): "un gasto puede quedar en deber.
+Por ejemplo anoto el salario de un empleado del mes y este durante el mes puede ir retirando
+adelantos. Es decir puede haber pagos parciales de gastos."
+
+L5 (owner, verbatim, answering the slice shape): "API mas pantalla en 2 o mas slices, por ahi
+es mejor divir en mas slice si se hace grande el feat"
+
+L6 (owner, request, before accepting the design): "Conviene crear una tabla para gastos o es
+preferible agregar un campo a compras para identificar a que gasto pertenece, a salarios
+(cuando se cree a futuro) y los demas gastos anotarlos como movimientos de cuenta que tambien
+lleve un identificador para que gasto corresponde?" — **both alternatives measured and rejected
+as A1 and A2 in D6**, with the file and line of the guard that refuses each.
+
+L7 (owner, verbatim, on classifying purchases by rubro): "pir ahora no, dejamos una versión
+chica y lo vemos mas adelante" — deferred as D6a, with the shape it must take when it returns.
+
+L8 (owner, verbatim, on salaries): "mi idea es que sea con empleado pero un documento con FK en
+user" — satisfied by `expenses.staff_id` (D5a) rather than a `salaries` document, because the
+latter duplicates the debt mechanism `0023` already paid for. The column is **not** reserved now
+(D5b), and what D5a promises about not touching `payments` is D5c.
+
+L6 (design, from L2's verb "derivar", and the reason it is a spec rather than an
+implementation detail): a purchase is **not** copied into `expenses`. Two records of one fact
+is the defect `0017` killed for balances, and `PRODUCT.md` forbids a report justifying a new
+column at write time — so purchases enter the spending report as a derived term (S9) and
+never as rows.
+
+L7 (design, D3/D4): an owed expense is a **party to its own money** (`party_kind='expense'`,
+`party_id=expenses.id`) rather than a third debt table with a third ceiling function. The
+price — one payment answers one expense — is L4's mirror left unbuilt on purpose, and it is
+written in D4 rather than left to be discovered.
