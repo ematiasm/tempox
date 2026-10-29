@@ -12559,3 +12559,1306 @@ async fn v4_expenses_truncate_is_refused_as_well_as_delete(pool: sqlx::PgPool) {
         "the six seeded categories survive the attempt"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v4-expenses E1-T2 — an expense is money leaving, and the book learns no new kind
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// `odd/tasks/v4-expenses.md` S2, S3, S4, S5, S6. The load-bearing claim is S5: an
+// expense writes **no** `money_entries` row of its own kind. The money moved when its
+// `payments` row was written, and `payments_claim_their_entry` already guarantees
+// exactly one `'payment'` entry per payment. An `'expense'` kind would count the same
+// coin twice — which is why the first draft of the specification had that defect and
+// why these tests measure the entry count rather than trusting the reasoning.
+
+/// The id of a seeded category, found by name: the identity, never the position.
+async fn category_named(pool: &sqlx::PgPool, name: &str) -> String {
+    let (id,): (uuid::Uuid,) = sqlx::query_as("SELECT id FROM expense_categories WHERE name = $1")
+        .bind(name)
+        .fetch_one(pool)
+        .await
+        .expect("the seeded category");
+    id.to_string()
+}
+
+/// How many ledger rows this document wrote, whatever kind they are.
+async fn ledger_rows_for(pool: &sqlx::PgPool, kind: &str, id: uuid::Uuid) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM money_entries WHERE document_kind = $1 AND document_id = $2",
+    )
+    .bind(kind)
+    .bind(id)
+    .fetch_one(pool)
+    .await
+    .expect("count ledger rows")
+}
+
+#[sqlx::test]
+async fn v4_expenses_a_paid_expense_moves_money_once_and_through_the_payment(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+    let category = category_named(&pool, "Servicios").await;
+
+    // The omitted-method case: the shop paid from the till, which is every document's
+    // behaviour before v3 and stays an older client's exact behaviour.
+    let created = client
+        .post(
+            "/api/expenses",
+            serde_json::json!({
+                "category_id": category,
+                "payee": "Edenor",
+                "amount": "12500.00"
+            }),
+        )
+        .await;
+    created.expect_status(axum::http::StatusCode::CREATED);
+    assert_eq!(created.body["payee"], "Edenor");
+    assert_eq!(
+        created.body["amount"], "12500.00",
+        "money leaves as a two-decimal string, like every other amount"
+    );
+    assert_eq!(
+        created.body["payment_method_id"],
+        serde_json::json!(uuid::Uuid::from_u128(4).to_string()),
+        "an omitted method is the seeded cash method"
+    );
+    let expense_id: uuid::Uuid = created.body["id"]
+        .as_str()
+        .expect("an id")
+        .parse()
+        .expect("a uuid");
+
+    // **`S5`, and this is the assertion that keeps the book honest.** The money moved
+    // exactly once, in a row of kind `'payment'` — not in an `'expense'` row as well.
+    assert_eq!(
+        ledger_rows_for(&pool, "expense", expense_id).await,
+        0,
+        "an expense writes no ledger row of its own kind: the money moved in its payment"
+    );
+
+    // The payment exists, is `out`, is the full amount, and carries exactly one entry.
+    let payment: (uuid::Uuid, rust_decimal::Decimal, String) = sqlx::query_as(
+        "SELECT id, total, direction FROM payments
+          WHERE party_kind = 'expense' AND party_id = $1",
+    )
+    .bind(expense_id)
+    .fetch_one(&pool)
+    .await
+    .expect("the expense's payment");
+    assert_eq!(payment.1.normalize().to_string(), "12500");
+    assert_eq!(
+        payment.2, "out",
+        "money leaves for an expense; it never arrives"
+    );
+    assert_eq!(
+        ledger_rows_for(&pool, "payment", payment.0).await,
+        1,
+        "a payment moves money exactly once"
+    );
+
+    // And the till went down by exactly that, measured through the read model rather
+    // than through the row we just wrote.
+    let balance: rust_decimal::Decimal = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(amount), 0) FROM money_movements WHERE account_id = $1",
+    )
+    .bind(uuid::Uuid::from_u128(3))
+    .fetch_one(&pool)
+    .await
+    .expect("the till's balance");
+    assert_eq!(balance.normalize().to_string(), "-12500");
+}
+
+#[sqlx::test]
+async fn v4_expenses_an_expense_on_account_moves_no_money_and_writes_one_payment_none(
+    pool: sqlx::PgPool,
+) {
+    let client = common::client(pool.clone());
+    let category = category_named(&pool, "Sueldos").await;
+
+    let created = client
+        .post(
+            "/api/expenses",
+            serde_json::json!({
+                "category_id": category,
+                "payee": "Juan Perez",
+                "amount": "300000.00",
+                "payment_method_id": "on_account"
+            }),
+        )
+        .await;
+    created.expect_status(axum::http::StatusCode::CREATED);
+    assert_eq!(
+        created.body["payment_method_id"],
+        serde_json::Value::Null,
+        "on account means no rail: the null is the document's own statement"
+    );
+    let expense_id: uuid::Uuid = created.body["id"]
+        .as_str()
+        .expect("an id")
+        .parse()
+        .expect("a uuid");
+
+    // No payment, therefore no ledger row anywhere: nothing moved.
+    let payments: i64 = sqlx::query_scalar("SELECT count(*) FROM payments WHERE party_id = $1")
+        .bind(expense_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count payments");
+    assert_eq!(
+        payments, 0,
+        "an expense on account owes; it does not pay itself"
+    );
+
+    let entries: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM money_entries WHERE document_id = $1")
+            .bind(expense_id)
+            .fetch_one(&pool)
+            .await
+            .expect("count entries");
+    assert_eq!(entries, 0, "nothing moved, so nothing entered the book");
+
+    // The till is untouched, which is the observable consequence a shop cares about.
+    let balance: rust_decimal::Decimal = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(amount), 0) FROM money_movements WHERE account_id = $1",
+    )
+    .bind(uuid::Uuid::from_u128(3))
+    .fetch_one(&pool)
+    .await
+    .expect("the till's balance");
+    assert_eq!(
+        balance.normalize().to_string(),
+        "0",
+        "an owed salary has not left the till yet"
+    );
+}
+
+#[sqlx::test]
+async fn v4_expenses_the_destination_grammar_keeps_its_three_inputs(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+    let category = category_named(&pool, "Otros").await;
+
+    // An explicit null is not "the till" and not "on account": it is a request that
+    // says neither, and the field's contract answers 400 rather than guessing.
+    for (label, raw) in [
+        ("an explicit null", serde_json::json!(null)),
+        ("a number", serde_json::json!(7)),
+        ("a list", serde_json::json!([])),
+        ("an object", serde_json::json!({"id": "x"})),
+        ("a string that is not a uuid", serde_json::json!("efectivo")),
+    ] {
+        let refused = client
+            .post(
+                "/api/expenses",
+                serde_json::json!({
+                    "category_id": category,
+                    "payee": "Algo",
+                    "amount": "10.00",
+                    "payment_method_id": raw
+                }),
+            )
+            .await;
+        assert_eq!(
+            refused.status(),
+            axum::http::StatusCode::BAD_REQUEST,
+            "{label} is not a destination, and the field's contract promises 400 — \
+             not the 422 a serde failure would produce; body: {}",
+            refused.text
+        );
+    }
+
+    // An unknown method is a 404, and the refusal wrote nothing.
+    let unknown = client
+        .post(
+            "/api/expenses",
+            serde_json::json!({
+                "category_id": category,
+                "payee": "Algo",
+                "amount": "10.00",
+                "payment_method_id": "00000000-0000-0000-0000-0000000000ee"
+            }),
+        )
+        .await;
+    assert_eq!(unknown.status(), axum::http::StatusCode::NOT_FOUND);
+
+    // An unknown category is a 404 too, and that refusal also wrote nothing.
+    let unknown_category = client
+        .post(
+            "/api/expenses",
+            serde_json::json!({
+                "category_id": "00000000-0000-0000-0000-0000000000ee",
+                "payee": "Algo",
+                "amount": "10.00"
+            }),
+        )
+        .await;
+    assert_eq!(unknown_category.status(), axum::http::StatusCode::NOT_FOUND);
+
+    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM expenses")
+        .fetch_one(&pool)
+        .await
+        .expect("count expenses");
+    assert_eq!(total, 0, "every refusal above wrote nothing");
+}
+
+#[sqlx::test]
+async fn v4_expenses_the_document_refuses_what_it_cannot_record(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+    let category = category_named(&pool, "Impuestos").await;
+
+    // A blank payee is refused: the CHECK guards the same value, and this asks first so
+    // the caller gets a 400 instead of a trigger's 500.
+    let blank_payee = client
+        .post(
+            "/api/expenses",
+            serde_json::json!({
+                "category_id": category,
+                "payee": "   ",
+                "amount": "10.00"
+            }),
+        )
+        .await;
+    assert_eq!(blank_payee.status(), axum::http::StatusCode::BAD_REQUEST);
+
+    // Zero and negative amounts are not documents.
+    for amount in ["0.00", "-1.00"] {
+        let refused = client
+            .post(
+                "/api/expenses",
+                serde_json::json!({
+                    "category_id": category,
+                    "payee": "Algo",
+                    "amount": amount
+                }),
+            )
+            .await;
+        assert_eq!(
+            refused.status(),
+            axum::http::StatusCode::BAD_REQUEST,
+            "an expense of {amount} is not a document"
+        );
+    }
+
+    // **Finer than a cent is refused, and the database is what refuses it.** The
+    // declared scale is 6 with a whole-cents CHECK, exactly as every money column in
+    // this schema: a column that declares more is what lets the database refuse a value
+    // finer than a cent instead of silently rounding it away. The route asks first.
+    let sub_cent = client
+        .post(
+            "/api/expenses",
+            serde_json::json!({
+                "category_id": category,
+                "payee": "Algo",
+                "amount": "10.005"
+            }),
+        )
+        .await;
+    assert!(
+        sub_cent.status().is_client_error(),
+        "a value finer than a cent must be refused, not rounded; got {}",
+        sub_cent.status()
+    );
+
+    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM expenses")
+        .fetch_one(&pool)
+        .await
+        .expect("count expenses");
+    assert_eq!(total, 0, "no refusal above left a row behind");
+}
+
+#[sqlx::test]
+async fn v4_expenses_the_database_holds_the_two_states_at_commit(pool: sqlx::PgPool) {
+    // **`S4`, below the route.** The claim a paid expense makes — "there is a payment
+    // for me" — is judged at COMMIT because the payment is written after the document.
+    // A plain `AFTER INSERT` would refuse the correct order; `DEFERRABLE INITIALLY
+    // DEFERRED` is what lets one transaction build a coherent set and judge it once.
+    //
+    // Written directly against the tables, because that is the half a `psql` session
+    // reaches and the half a future route cannot quietly bypass.
+    let category = category_named(&pool, "Mantenimiento").await;
+
+    let mut tx = pool.begin().await.expect("begin");
+
+    sqlx::query(
+        "INSERT INTO expenses (category_id, payee, amount, payment_method_id, created_by)
+         VALUES ($1, 'Ferreteria', 500.00, $2, 'counter')",
+    )
+    .bind(uuid::Uuid::parse_str(&category).expect("uuid"))
+    .bind(uuid::Uuid::from_u128(4))
+    .execute(&mut *tx)
+    .await
+    .expect("insert the expense");
+
+    // No payment yet, and the id is deliberately not read: the claim under test belongs to
+    // the document, and COMMIT is what judges it. Reading the id back would suggest the
+    // assertion depends on it, which it does not.
+    //
+    // At COMMIT this must be refused: the document says money moved.
+    let committed = tx.commit().await;
+    assert!(
+        committed.is_err(),
+        "a paid expense with no payment contradicts its own claim; the trigger must refuse at COMMIT"
+    );
+
+    // The positive control, so the refusal above cannot pass for the wrong reason: the
+    // same document WITH its payment commits.
+    let mut tx = pool.begin().await.expect("begin again");
+    let (expense_id,): (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO expenses (category_id, payee, amount, payment_method_id, created_by)
+         VALUES ($1, 'Ferreteria', 500.00, $2, 'counter') RETURNING id",
+    )
+    .bind(uuid::Uuid::parse_str(&category).expect("uuid"))
+    .bind(uuid::Uuid::from_u128(4))
+    .fetch_one(&mut *tx)
+    .await
+    .expect("insert the expense");
+
+    let (payment_id,): (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO payments (party_kind, party_id, payment_method_id, total, direction, occurred_at, created_by)
+         VALUES ('expense', $1, $2, 500.00, 'out', NOW(), 'counter') RETURNING id",
+    )
+    .bind(expense_id)
+    .bind(uuid::Uuid::from_u128(4))
+    .fetch_one(&mut *tx)
+    .await
+    .expect("insert the payment");
+
+    sqlx::query(
+        "INSERT INTO money_entries
+            (account_id, payment_method_id, document_kind, document_id, amount, occurred_at, created_by)
+         SELECT pm.account_id, $1, 'payment', $2, -500.00, NOW(), 'counter'
+           FROM payment_methods pm WHERE pm.id = $1",
+    )
+    .bind(uuid::Uuid::from_u128(4))
+    .bind(payment_id)
+    .execute(&mut *tx)
+    .await
+    .expect("insert the payment's entry");
+
+    tx.commit()
+        .await
+        .expect("a paid expense with its payment and entry commits");
+}
+
+#[sqlx::test]
+async fn v4_expenses_payments_learns_the_third_party_and_only_the_out_direction(
+    pool: sqlx::PgPool,
+) {
+    // **`S6`.** `party_kind` gains `'expense'` and the direction pair gains exactly one
+    // new member: `(out, expense)`. `in` from an expense is refused, because money never
+    // arrives at an expense — a rule that allowed it would make the direction a
+    // suggestion, the argument `0022` makes for `in`-from-a-supplier.
+    let category = category_named(&pool, "Alquiler").await;
+    let (expense_id,): (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO expenses (category_id, payee, amount, payment_method_id, created_by)
+         VALUES ($1, 'Duenio', 100.00, NULL, 'counter') RETURNING id",
+    )
+    .bind(uuid::Uuid::parse_str(&category).expect("uuid"))
+    .fetch_one(&pool)
+    .await
+    .expect("an expense on account");
+
+    // **The entry is written in the same transaction, and that is the whole design of this
+    // assertion.** The first version inserted the payment bare and asserted an error — and
+    // it stayed green when the direction CHECK was deleted, because `payments_claim_their_entry`
+    // refused the payment for writing no ledger entry. A refusal that would happen anyway
+    // proves nothing about the rule under test; measured by neutering the CHECK into
+    // `party_kind = 'expense'` with no direction term and watching the test stay green.
+    //
+    // With the entry present, the only thing left that can refuse the commit is the
+    // direction pair, so the assertion measures what it claims to.
+    let mut tx = pool.begin().await.expect("begin");
+    let inserted = sqlx::query_scalar::<_, uuid::Uuid>(
+        "INSERT INTO payments (party_kind, party_id, payment_method_id, total, direction, occurred_at, created_by)
+         VALUES ('expense', $1, $2, 50.00, 'in', NOW(), 'counter') RETURNING id",
+    )
+    .bind(expense_id)
+    .bind(uuid::Uuid::from_u128(4))
+    .fetch_one(&mut *tx)
+    .await;
+
+    // The CHECK fires at INSERT, so a refusal is expected here — and it must be *this*
+    // rule's refusal, not a foreign key's or a blank column's. When the row is admitted
+    // instead (the neutered migration), the entry is written and COMMIT is what judges.
+    let payment_id = match inserted {
+        Err(refusal) => {
+            let message = refusal.to_string();
+            assert!(
+                message.contains("payments_direction_matches_party"),
+                "the refusal must come from the direction rule, not from something else \
+                 that would refuse anyway: {message}"
+            );
+            tx.rollback().await.expect("rollback");
+            return;
+        }
+        Ok(id) => id,
+    };
+
+    sqlx::query(
+        "INSERT INTO money_entries
+            (account_id, payment_method_id, document_kind, document_id, amount, occurred_at, created_by)
+         SELECT pm.account_id, $1, 'payment', $2, 50.00, NOW(), 'counter'
+           FROM payment_methods pm WHERE pm.id = $1",
+    )
+    .bind(uuid::Uuid::from_u128(4))
+    .bind(payment_id)
+    .execute(&mut *tx)
+    .await
+    .expect("the entry");
+
+    let committed = tx.commit().await;
+    assert!(
+        committed.is_err(),
+        "money never arrives at an expense: (in, expense) must be refused, and the entry \
+         being present means the direction rule is the only thing that could refuse it"
+    );
+    // The existing pairs keep working, which is the other half of an extended closed set:
+    // a change that admitted `expense` by dropping `customer` would pass the assertion
+    // above and lose the shop's real behaviour.
+    //
+    // **`payments_claim_their_entry` refused the first version of this block**, and it was
+    // right: a payment must write exactly one ledger entry, so a bare `INSERT` here
+    // measures the entry guard rather than the pair `(in, customer)`.
+    let (customer_id,): (uuid::Uuid,) =
+        sqlx::query_as("SELECT id FROM customers WHERE name = 'walk-in'")
+            .fetch_one(&pool)
+            .await
+            .expect("the seeded customer");
+
+    let mut tx = pool.begin().await.expect("begin");
+    let (payment_id,): (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO payments (party_kind, party_id, payment_method_id, total, direction, occurred_at, created_by)
+         VALUES ('customer', $1, $2, 1.00, 'in', NOW(), 'counter') RETURNING id",
+    )
+    .bind(customer_id)
+    .bind(uuid::Uuid::from_u128(4))
+    .fetch_one(&mut *tx)
+    .await
+    .expect("(in, customer) still works");
+
+    sqlx::query(
+        "INSERT INTO money_entries
+            (account_id, payment_method_id, document_kind, document_id, amount, occurred_at, created_by)
+         SELECT pm.account_id, $1, 'payment', $2, 1.00, NOW(), 'counter'
+           FROM payment_methods pm WHERE pm.id = $1",
+    )
+    .bind(uuid::Uuid::from_u128(4))
+    .bind(payment_id)
+    .execute(&mut *tx)
+    .await
+    .expect("the entry");
+
+    tx.commit().await.expect("commit the customer payment");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v4-expenses — one definition of "blank", for every guard that asks
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// `R3-003`/`R3-004`/`R3-005` of `review-1abfbd892fed09cb` are one finding reported three
+// times, and measuring it turned up **seventeen** constraints with the same defect:
+//
+//     btrim(name) <> ''
+//
+// `btrim`'s default trim set is a single space. Rust's `str::trim` removes the whole
+// `char::is_whitespace` set. So every one of those guards accepts a value made of a tab,
+// a newline, or a non-breaking space, while the route in front of it refuses the same
+// value — the two layers disagreeing about what "blank" means, which is the defect
+// `R3-001` fixed for one constraint in `0003`.
+//
+// **`[[:space:]]` is not the answer either**, and that was measured before choosing:
+// PostgreSQL's POSIX class does not include U+00A0, so `E'\u00A0' ~ '^[[:space:]]*$'` is
+// **false**. The set has to be spelled out.
+
+#[sqlx::test]
+async fn v4_expenses_is_blank_agrees_with_rust_about_every_kind_of_whitespace(pool: sqlx::PgPool) {
+    // The function is the single definition every guard will call. It is asserted against
+    // the values Rust trims, on the database side, because that is the side that had no
+    // definition at all.
+    let cases: Vec<(&str, bool)> = vec![
+        ("", true),
+        (" ", true),
+        ("\t", true),
+        ("\n", true),
+        ("\r", true),
+        ("\u{b}", true),
+        ("\u{c}", true),
+        ("\u{85}", true),
+        ("\u{a0}", true),
+        ("\u{1680}", true),
+        ("\u{2000}", true),
+        ("\u{2003}", true),
+        ("\u{2009}", true),
+        ("\u{2028}", true),
+        ("\u{2029}", true),
+        ("\u{202f}", true),
+        ("\u{205f}", true),
+        ("\u{3000}", true),
+        (" \t\n ", true),
+        ("a", false),
+        ("  Publicidad  ", false),
+        ("\u{a0}\u{a0}x\u{a0}", false),
+        ("0", false),
+    ];
+
+    for (value, expected) in cases {
+        let actual: bool = sqlx::query_scalar("SELECT is_blank($1)")
+            .bind(value)
+            .fetch_one(&pool)
+            .await
+            .expect("call is_blank");
+        assert_eq!(
+            actual, expected,
+            "is_blank({value:?}) must be {expected}: the database has to agree with Rust \
+             about what whitespace is"
+        );
+
+        // And the Rust side of the same claim, so the two are compared rather than assumed.
+        assert_eq!(
+            value.trim().is_empty(),
+            expected,
+            "the expectation above is Rust's own answer for {value:?}"
+        );
+    }
+}
+
+#[sqlx::test]
+async fn v4_expenses_every_not_blank_guard_uses_is_blank_instead_of_btrim(pool: sqlx::PgPool) {
+    // The sweep, asserted rather than promised: no constraint may keep the default `btrim`,
+    // and none may keep an inline trim set either. A future migration that writes
+    // `btrim(x) <> ''` fails here instead of silently reopening the disagreement for one
+    // more column — which is exactly what happened between `0003` and this fix.
+    let offenders: Vec<String> = sqlx::query_scalar(
+        "SELECT conname FROM pg_constraint
+          WHERE contype = 'c'
+            AND pg_get_constraintdef(oid) LIKE '%btrim(%'
+            AND pg_get_constraintdef(oid) NOT LIKE '%is_blank(%'",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("list constraints");
+
+    assert!(
+        offenders.is_empty(),
+        "these constraints still trim with btrim's default set: {offenders:?}"
+    );
+
+    // The positive control: the guards exist and do use the shared function. Without this,
+    // an empty result above could mean the query was wrong rather than the schema clean.
+    let using: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM pg_constraint
+          WHERE contype = 'c' AND pg_get_constraintdef(oid) LIKE '%is_blank(%'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count constraints");
+    assert!(
+        using >= 17,
+        "expected every not-blank guard to call is_blank, found {using}"
+    );
+}
+
+#[sqlx::test]
+async fn v4_expenses_a_direct_insert_cannot_smuggle_a_blank_value_past_a_guard(pool: sqlx::PgPool) {
+    // Three of the seventeen, chosen because they are the ones the review named and because
+    // they cover the three shapes: a name, a payee, and the audit column every table has.
+    for (label, sql) in [
+        (
+            "a category name of one non-breaking space",
+            "INSERT INTO expense_categories (name) VALUES (U&'\\00A0')",
+        ),
+        (
+            "a category name of tabs",
+            "INSERT INTO expense_categories (name) VALUES (E'\\t\\t')",
+        ),
+        (
+            "an account name of one non-breaking space",
+            "INSERT INTO accounts (name) VALUES (U&'\\00A0')",
+        ),
+    ] {
+        let refused = sqlx::query(sql).execute(&pool).await;
+        assert!(
+            refused.is_err(),
+            "the database must refuse {label}: it is whitespace, not a value"
+        );
+    }
+
+    // The payee guard needs its parent rows, so it gets its own statement.
+    let category: String = sqlx::query_scalar("SELECT id::text FROM expense_categories LIMIT 1")
+        .fetch_one(&pool)
+        .await
+        .expect("a category");
+    let refused_payee = sqlx::query(
+        "INSERT INTO expenses (category_id, payee, amount, created_by)
+         VALUES ($1, U&'\\00A0\\00A0', 10.00, 'counter')",
+    )
+    .bind(uuid::Uuid::parse_str(&category).expect("uuid"))
+    .execute(&pool)
+    .await;
+    assert!(
+        refused_payee.is_err(),
+        "the payee guard must refuse a non-breaking-space payee, the same way the route does"
+    );
+
+    // And the audit column, which the sweep covers twelve times over.
+    let refused_created_by = sqlx::query(
+        "INSERT INTO expenses (category_id, payee, amount, created_by)
+         VALUES ($1, 'Edenor', 10.00, E'\\t')",
+    )
+    .bind(uuid::Uuid::parse_str(&category).expect("uuid"))
+    .execute(&pool)
+    .await;
+    assert!(
+        refused_created_by.is_err(),
+        "created_by must be held to the same definition of blank"
+    );
+
+    // The positive control: real values still pass, so the sweep above cannot pass by
+    // refusing everything.
+    sqlx::query(
+        "INSERT INTO expenses (category_id, payee, amount, created_by)
+         VALUES ($1, U&'\\00A0Edenor\\00A0', 10.00, 'counter')",
+    )
+    .bind(uuid::Uuid::parse_str(&category).expect("uuid"))
+    .execute(&pool)
+    .await
+    .expect("a payee with a real character inside is accepted");
+}
+
+#[sqlx::test]
+async fn v4_expenses_a_second_payment_cannot_bypass_the_documents_claim(pool: sqlx::PgPool) {
+    // `R3-001` of `review-5e9ab82a94f3c6e2`, CRITICAL: the claim fired when the *document*
+    // was written and never again. Measured: 100 through the till, then 500 through the
+    // bank, both committed.
+    let category = category_named(&pool, "Servicios").await;
+    let expense_uuid = uuid::Uuid::parse_str(&category).expect("uuid");
+
+    let (bank_method,): (uuid::Uuid,) = sqlx::query_as(
+        "WITH a AS (
+             INSERT INTO accounts (name) VALUES ('Banco R3') RETURNING id
+         )
+         INSERT INTO payment_methods (account_id, name)
+         SELECT id, 'transferencia-r3' FROM a RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("a second rail");
+
+    // The state the trigger used to accept and never revisit.
+    let mut tx = pool.begin().await.expect("begin");
+    let (expense_id,): (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO expenses (category_id, payee, amount, payment_method_id, created_by)
+         VALUES ($1, 'Edenor', 100.00, $2, 'counter') RETURNING id",
+    )
+    .bind(expense_uuid)
+    .bind(uuid::Uuid::from_u128(4))
+    .fetch_one(&mut *tx)
+    .await
+    .expect("insert the expense");
+
+    let (first_payment,): (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO payments (party_kind, party_id, payment_method_id, total, direction, occurred_at, created_by)
+         VALUES ('expense', $1, $2, 100.00, 'out', NOW(), 'counter') RETURNING id",
+    )
+    .bind(expense_id)
+    .bind(uuid::Uuid::from_u128(4))
+    .fetch_one(&mut *tx)
+    .await
+    .expect("the first payment");
+
+    sqlx::query(
+        "INSERT INTO money_entries
+            (account_id, payment_method_id, document_kind, document_id, amount, occurred_at, created_by)
+         SELECT pm.account_id, $1, 'payment', $2, -100.00, NOW(), 'counter'
+           FROM payment_methods pm WHERE pm.id = $1",
+    )
+    .bind(uuid::Uuid::from_u128(4))
+    .bind(first_payment)
+    .execute(&mut *tx)
+    .await
+    .expect("the first entry");
+
+    tx.commit()
+        .await
+        .expect("a paid expense with its payment commits");
+
+    // Each half its own assertion: wrong rail and wrong amount differ.
+    for (label, method, amount) in [
+        ("a second payment on another rail", bank_method, "1.00"),
+        (
+            "a second payment beyond the amount",
+            uuid::Uuid::from_u128(4),
+            "500.00",
+        ),
+    ] {
+        let mut tx = pool.begin().await.expect("begin the second attempt");
+        let second: Result<(uuid::Uuid,), _> = sqlx::query_as(
+            "INSERT INTO payments (party_kind, party_id, payment_method_id, total, direction, occurred_at, created_by)
+             VALUES ('expense', $1, $2, $3, 'out', NOW(), 'counter') RETURNING id",
+        )
+        .bind(expense_id)
+        .bind(method)
+        .bind(
+            amount
+                .parse::<rust_decimal::Decimal>()
+                .expect("a decimal"),
+        )
+        .fetch_one(&mut *tx)
+        .await;
+
+        let outcome = match second {
+            Err(_) => Err(()),
+            Ok((payment_id,)) => {
+                sqlx::query(
+                    "INSERT INTO money_entries
+                        (account_id, payment_method_id, document_kind, document_id, amount, occurred_at, created_by)
+                     SELECT pm.account_id, $1, 'payment', $2, -1.00, NOW(), 'counter'
+                       FROM payment_methods pm WHERE pm.id = $1",
+                )
+                .bind(method)
+                .bind(payment_id)
+                .execute(&mut *tx)
+                .await
+                .expect("the second entry");
+                tx.commit().await.map_err(|_| ())
+            }
+        };
+
+        assert!(
+            outcome.is_err(),
+            "the database must refuse {label}: the document's claim is not a one-time check"
+        );
+    }
+
+    // The document and its money still agree, which is the observable consequence.
+    let paid: rust_decimal::Decimal = sqlx::query_scalar(
+        "SELECT SUM(total) FROM payments WHERE party_id = $1 AND party_kind = 'expense'",
+    )
+    .bind(expense_id)
+    .fetch_one(&pool)
+    .await
+    .expect("the amount actually paid");
+    assert_eq!(
+        paid.normalize().to_string(),
+        "100",
+        "no refused payment left a row behind"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v4-expenses E1-T3 — advances against an owed expense
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// `odd/tasks/v4-expenses.md` S7. The owner's own words (`L4`): *"anoto el salario de un
+// empleado del mes y este durante el mes puede ir retirando adelantos"*. The first version
+// of the claim trigger made that impossible — it refused any payment naming a null-method
+// expense — which is why this slice exists before the rest of the ledger.
+
+/// The amount paid against an expense, read from the payments side.
+async fn paid_against(pool: &sqlx::PgPool, expense: uuid::Uuid) -> rust_decimal::Decimal {
+    sqlx::query_scalar(
+        "SELECT COALESCE(SUM(total), 0) FROM payments
+          WHERE party_kind = 'expense' AND party_id = $1",
+    )
+    .bind(expense)
+    .fetch_one(pool)
+    .await
+    .expect("the amount paid")
+}
+
+#[sqlx::test]
+async fn v4_expenses_an_owed_expense_takes_advances_up_to_its_amount(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+    let category = category_named(&pool, "Sueldos").await;
+
+    // A salary of 300, owed: nothing left the till when it was recorded.
+    let created = client
+        .post(
+            "/api/expenses",
+            serde_json::json!({
+                "category_id": category,
+                "payee": "Juan Perez",
+                "amount": "300.00",
+                "payment_method_id": "on_account"
+            }),
+        )
+        .await;
+    created.expect_status(axum::http::StatusCode::CREATED);
+    let expense: uuid::Uuid = created.body["id"]
+        .as_str()
+        .expect("an id")
+        .parse()
+        .expect("a uuid");
+
+    // Two advances, the second partial. The positive case first: a refusal on its own
+    // could pass for the wrong reason.
+    for amount in ["100.00", "150.00"] {
+        let advanced = client
+            .post(
+                &format!("/api/expenses/{expense}/advances"),
+                serde_json::json!({ "amount": amount }),
+            )
+            .await;
+        advanced.expect_status(axum::http::StatusCode::CREATED);
+        assert_eq!(advanced.body["amount"], amount);
+        assert_eq!(advanced.body["direction"], "out");
+        assert_eq!(
+            advanced.body["payment_method_id"],
+            serde_json::json!(uuid::Uuid::from_u128(4).to_string()),
+            "an omitted method is the till, the same as every other document"
+        );
+    }
+
+    assert_eq!(
+        paid_against(&pool, expense).await.normalize().to_string(),
+        "250",
+        "both advances were recorded"
+    );
+
+    // The ceiling: a third advance that would pass the amount is refused with 409, and the
+    // refusal writes nothing — which the figure below is what proves.
+    let over = client
+        .post(
+            &format!("/api/expenses/{expense}/advances"),
+            serde_json::json!({ "amount": "50.01" }),
+        )
+        .await;
+    assert_eq!(
+        over.status(),
+        axum::http::StatusCode::CONFLICT,
+        "50.01 against 50 outstanding is not money that exists; body: {}",
+        over.text
+    );
+    assert_eq!(
+        paid_against(&pool, expense).await.normalize().to_string(),
+        "250",
+        "the refused advance wrote no payment"
+    );
+
+    // And exactly what is left is accepted, so the ceiling is `<=` and not a fence short of it.
+    let exact = client
+        .post(
+            &format!("/api/expenses/{expense}/advances"),
+            serde_json::json!({ "amount": "50.00" }),
+        )
+        .await;
+    exact.expect_status(axum::http::StatusCode::CREATED);
+    assert_eq!(
+        paid_against(&pool, expense).await.normalize().to_string(),
+        "300",
+        "a salary of 300 is fully advanced"
+    );
+}
+
+#[sqlx::test]
+async fn v4_expenses_an_advance_is_refused_where_it_would_be_meaningless(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+    let category = category_named(&pool, "Otros").await;
+
+    // A paid expense owes nothing, so there is nothing to advance against. This is a 409
+    // rather than a 400 because the shape is fine and the state is not.
+    let paid = client
+        .post(
+            "/api/expenses",
+            serde_json::json!({
+                "category_id": category,
+                "payee": "Edenor",
+                "amount": "80.00"
+            }),
+        )
+        .await;
+    paid.expect_status(axum::http::StatusCode::CREATED);
+    let paid_id: uuid::Uuid = paid.body["id"].as_str().expect("id").parse().expect("uuid");
+
+    let against_paid = client
+        .post(
+            &format!("/api/expenses/{paid_id}/advances"),
+            serde_json::json!({ "amount": "10.00" }),
+        )
+        .await;
+    assert_eq!(
+        against_paid.status(),
+        axum::http::StatusCode::CONFLICT,
+        "a paid expense owes nothing"
+    );
+
+    // The shape refusals: not positive, finer than a cent, an unknown expense.
+    let owed = client
+        .post(
+            "/api/expenses",
+            serde_json::json!({
+                "category_id": category,
+                "payee": "Alquiler",
+                "amount": "100.00",
+                "payment_method_id": "on_account"
+            }),
+        )
+        .await;
+    let owed_id = owed.body["id"].as_str().expect("id").to_string();
+
+    for (label, amount) in [
+        ("zero", "0.00"),
+        ("negative", "-5.00"),
+        ("sub-cent", "1.005"),
+    ] {
+        let refused = client
+            .post(
+                &format!("/api/expenses/{owed_id}/advances"),
+                serde_json::json!({ "amount": amount }),
+            )
+            .await;
+        assert_eq!(
+            refused.status(),
+            axum::http::StatusCode::BAD_REQUEST,
+            "an advance of {label} is not a document"
+        );
+    }
+
+    let unknown = client
+        .post(
+            "/api/expenses/00000000-0000-0000-0000-0000000000ff/advances",
+            serde_json::json!({ "amount": "10.00" }),
+        )
+        .await;
+    assert_eq!(unknown.status(), axum::http::StatusCode::NOT_FOUND);
+
+    let unknown_method = client
+        .post(
+            &format!("/api/expenses/{owed_id}/advances"),
+            serde_json::json!({
+                "amount": "10.00",
+                "payment_method_id": "00000000-0000-0000-0000-0000000000ee"
+            }),
+        )
+        .await;
+    assert_eq!(
+        unknown_method.status(),
+        axum::http::StatusCode::NOT_FOUND,
+        "an unknown rail is asked before the payment is written, not after"
+    );
+
+    // Every refusal above left nothing behind.
+    assert_eq!(
+        paid_against(&pool, uuid::Uuid::parse_str(&owed_id).expect("uuid"))
+            .await
+            .normalize()
+            .to_string(),
+        "0",
+        "no refused advance wrote a payment"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v4-expenses E1-T4 — the ledger and the summary
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// `odd/tasks/v4-expenses.md` S8 and S9. Two claims: `paid` and `outstanding` are
+// **derived**, never stored, and the summary answers "what did the shop spend" in two
+// terms — the expenses it recorded plus the purchases it already has.
+
+#[sqlx::test]
+async fn v4_expenses_the_ledger_derives_paid_and_outstanding_and_scopes_by_day(pool: sqlx::PgPool) {
+    let client = common::client(pool.clone());
+    let category = category_named(&pool, "Servicios").await;
+
+    // One paid expense and one owed expense with a partial advance.
+    let paid = client
+        .post(
+            "/api/expenses",
+            serde_json::json!({
+                "category_id": category, "payee": "Edenor", "amount": "80.00"
+            }),
+        )
+        .await;
+    paid.expect_status(axum::http::StatusCode::CREATED);
+    let paid_id = paid.body["id"].as_str().expect("id").to_string();
+
+    let owed = client
+        .post(
+            "/api/expenses",
+            serde_json::json!({
+                "category_id": category, "payee": "AySA", "amount": "200.00",
+                "payment_method_id": "on_account"
+            }),
+        )
+        .await;
+    let owed_id = owed.body["id"].as_str().expect("id").to_string();
+
+    client
+        .post(
+            &format!("/api/expenses/{owed_id}/advances"),
+            serde_json::json!({ "amount": "50.00" }),
+        )
+        .await
+        .expect_status(axum::http::StatusCode::CREATED);
+
+    let listed = client.get("/api/expenses").await;
+    listed.expect_status(axum::http::StatusCode::OK);
+    let rows = listed.json().as_array().expect("an array of expenses");
+    assert_eq!(rows.len(), 2, "the ledger returns both: {listed:?}");
+
+    // Found by id, never by position: the ledger is shared and ordered by time.
+    let find = |id: &str| {
+        rows.iter()
+            .find(|row| row["id"] == serde_json::json!(id))
+            .unwrap_or_else(|| panic!("row {id} in {listed:?}"))
+    };
+
+    let paid_row = find(&paid_id);
+    assert_eq!(paid_row["paid"], "80.00", "a cash expense is paid in full");
+    assert_eq!(paid_row["outstanding"], "0.00");
+    assert_eq!(paid_row["payment_method_name"], "cash");
+    assert_eq!(paid_row["category_name"], "Servicios", "the name is joined");
+
+    let owed_row = find(&owed_id);
+    assert_eq!(owed_row["paid"], "50.00", "the advance counts as paid");
+    assert_eq!(
+        owed_row["outstanding"], "150.00",
+        "outstanding is amount minus what was advanced, derived"
+    );
+    assert_eq!(
+        owed_row["payment_method_name"],
+        serde_json::Value::Null,
+        "an owed document has no rail of its own"
+    );
+
+    // **Nothing is stored.** The claim is that these figures are subtractions of rows, so
+    // the schema must not have columns to disagree with them. Asserted rather than assumed.
+    let columns: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM information_schema.columns
+          WHERE table_name = 'expenses' AND column_name IN ('paid', 'outstanding')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect columns");
+    assert_eq!(
+        columns, 0,
+        "paid and outstanding are derived; a stored copy could disagree with its own sources"
+    );
+}
+
+#[sqlx::test]
+async fn v4_expenses_the_summary_counts_expenses_and_purchases_and_nets_returns(
+    pool: sqlx::PgPool,
+) {
+    let client = common::client(pool.clone());
+    let category = category_named(&pool, "Mantenimiento").await;
+
+    // An expense recorded in a known window. The instant is passed explicitly so the test
+    // does not depend on the wall clock — `docs/en/testing.md`'s rule, and the one the
+    // e2e helper `unique.ts` exists because of.
+    let at = chrono::DateTime::parse_from_rfc3339("2026-03-15T12:00:00Z")
+        .expect("a fixed instant")
+        .with_timezone(&chrono::Utc);
+    client
+        .post(
+            "/api/expenses",
+            serde_json::json!({
+                "category_id": category, "payee": "Ferreteria",
+                "amount": "300.00", "occurred_at": at
+            }),
+        )
+        .await
+        .expect_status(axum::http::StatusCode::CREATED);
+
+    // A purchase and a supplier return in the same window, through the API so the summary
+    // is measured against documents the system actually wrote.
+    let supplier = client
+        .post(
+            "/api/suppliers",
+            serde_json::json!({ "name": "Proveedor T4" }),
+        )
+        .await;
+    let supplier_id = supplier.body["id"]
+        .as_str()
+        .expect("supplier id")
+        .to_string();
+
+    let product = client
+        .post(
+            "/api/products",
+            serde_json::json!({ "name": "Clavo T4", "list_price": "100.00" }),
+        )
+        .await;
+    let product_id = product.body["id"].as_str().expect("product id").to_string();
+
+    let purchase = client
+        .post(
+            "/api/purchases",
+            serde_json::json!({
+                "supplier_id": supplier_id,
+                "items": [{ "product_id": product_id, "quantity": 5 }]
+            }),
+        )
+        .await;
+    purchase.expect_status(axum::http::StatusCode::CREATED);
+    // **The create response nests the document under `purchase`.** Reading `body["id"]`
+    // panicked here, and the panic is the useful part: the shape is
+    // `{purchase: {...}, items: [...]}`, and a test that guessed the flat shape would have
+    // been asserting against a field that never existed.
+    let purchase_id = purchase.body["purchase"]["id"]
+        .as_str()
+        .expect("purchase id")
+        .to_string();
+    let item_id = purchase.body["items"][0]["id"]
+        .as_str()
+        .expect("item id")
+        .to_string();
+
+    client
+        .post(
+            &format!("/api/purchases/{purchase_id}/supplier-returns"),
+            serde_json::json!({ "items": [{ "purchase_item_id": item_id, "quantity": 2 }] }),
+        )
+        .await
+        .expect_status(axum::http::StatusCode::CREATED);
+
+    // **The two windows are the assertion that each term is scoped by its own clock.**
+    // The expense carries `occurred_at` in March; the purchase and the return were created
+    // *now*, which is not March. So a March window must contain the expense and none of the
+    // purchases, and an unbounded window must contain all three. If `purchases` were summed
+    // by the expense's clock, or if `expenses` were scoped by `created_at`, one of the two
+    // blocks below fails.
+    let from = "2026-03-01T00:00:00Z";
+    let to = "2026-04-01T00:00:00Z";
+    let summary = client
+        .get(&format!("/api/expenses/summary?from={from}&to={to}"))
+        .await;
+    summary.expect_status(axum::http::StatusCode::OK);
+
+    assert_eq!(
+        summary.body["expenses"], "300.00",
+        "the recorded expense, scoped by occurred_at: {summary:?}"
+    );
+    assert_eq!(
+        summary.body["purchases"], "0.00",
+        "the purchase was created now, not in March: purchases are scoped by created_at, \
+         not by the expense's occurred_at"
+    );
+    assert_eq!(summary.body["supplier_returns"], "0.00");
+    assert_eq!(
+        summary.body["net"], "300.00",
+        "one expense and nothing else"
+    );
+    assert_eq!(summary.body["documents"], 1, "one expense in the window");
+
+    // And the wide window, where all three documents are in scope. This is the assertion
+    // that the purchases term is real rather than a zero-shaped placeholder.
+    let wide = client.get("/api/expenses/summary").await;
+    wide.expect_status(axum::http::StatusCode::OK);
+    assert_eq!(wide.body["expenses"], "300.00");
+    assert_eq!(
+        wide.body["purchases"], "500.00",
+        "five units at the list price"
+    );
+    assert_eq!(
+        wide.body["supplier_returns"], "200.00",
+        "two units came back"
+    );
+    assert_eq!(
+        wide.body["net"], "600.00",
+        "300 expenses + 500 purchases − 200 returned"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// R3-002 of review-1e9c4c74ced6d94b — a day is the shop's day, not UTC's
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[sqlx::test]
+async fn v4_expenses_a_day_is_the_shops_day_and_a_full_instant_is_taken_as_given(
+    pool: sqlx::PgPool,
+) {
+    // **The defect, measured.** A browser reading `2026-03-15` from a date input and calling
+    // `toISOString()` produces `2026-03-15T00:00:00Z`, which in the shop's zone (UTC-3) is
+    // the **14th**: the expense lands on the wrong day and is missing from the ledger the
+    // cashier is looking at. The server now resolves a bare date in `SHOP_TIMEZONE`.
+    let client = common::client(pool.clone());
+    let category = category_named(&pool, "Servicios").await;
+
+    client
+        .post(
+            "/api/expenses",
+            serde_json::json!({
+                "category_id": category, "payee": "Edenor", "amount": "10.00",
+                "occurred_at": "2026-03-15"
+            }),
+        )
+        .await
+        .expect_status(axum::http::StatusCode::CREATED);
+
+    let stored: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT occurred_at FROM expenses WHERE payee = 'Edenor'")
+            .fetch_one(&pool)
+            .await
+            .expect("the stored instant");
+
+    // The shop's day, through the server's own arithmetic. Hardcoding `T03:00:00Z` would
+    // pass while the zone was wrong and the offset coincidentally right.
+    let zone = chrono_tz::America::Argentina::Buenos_Aires;
+    let shop_day = tempox::day::day_range(zone, stored);
+    assert_eq!(
+        stored.with_timezone(&zone).date_naive().to_string(),
+        "2026-03-15",
+        "a bare 2026-03-15 must be the 15th in the shop, not the 14th — stored {stored}"
+    );
+    assert_eq!(
+        stored, shop_day.from,
+        "the expense lands on the first instant of the shop's day"
+    );
+
+    // The consequence a cashier sees: the document is in the day they are looking at.
+    // `Z`, not `+00:00`: a literal `+` in a query string is a space, and the request would
+    // be answered 400 before the route saw it — measured.
+    let listed = client
+        .get(&format!(
+            "/api/expenses?from={}&to={}",
+            shop_day
+                .from
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            shop_day
+                .to
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        ))
+        .await;
+    listed.expect_status(axum::http::StatusCode::OK);
+    assert_eq!(listed.json().as_array().expect("an array").len(), 1);
+
+    // **The other half of the contract**: an older client that sends a complete instant
+    // keeps today's behaviour exactly, and a string that is neither shape is a 400 rather
+    // than the 422 serde would produce.
+    client
+        .post(
+            "/api/expenses",
+            serde_json::json!({
+                "category_id": category, "payee": "Alquiler", "amount": "10.00",
+                "occurred_at": "2026-03-15T12:34:56Z"
+            }),
+        )
+        .await
+        .expect_status(axum::http::StatusCode::CREATED);
+
+    let exact: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT occurred_at FROM expenses WHERE payee = 'Alquiler'")
+            .fetch_one(&pool)
+            .await
+            .expect("the stored instant");
+    assert_eq!(
+        exact.to_rfc3339(),
+        "2026-03-15T12:34:56+00:00",
+        "a full instant is stored as given, never re-interpreted"
+    );
+
+    let refused = client
+        .post(
+            "/api/expenses",
+            serde_json::json!({
+                "category_id": category, "payee": "Algo", "amount": "10.00",
+                "occurred_at": "el martes"
+            }),
+        )
+        .await;
+    assert_eq!(
+        refused.status(),
+        axum::http::StatusCode::BAD_REQUEST,
+        "an unparseable date is the caller's mistake, and the field's contract says 400"
+    );
+}

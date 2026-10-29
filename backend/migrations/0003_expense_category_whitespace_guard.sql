@@ -91,21 +91,29 @@ BEGIN
     -- failed this migration and could never apply the whitespace fix. A migration that
     -- refuses to run on correct data is worse than the hole it repairs.
     --
-    -- What the assertion actually owed is weaker and still meaningful: **the six seeded
-    -- names are all still there**, which is what proves this migration did not change the
-    -- vocabulary while re-cutting a constraint over it. Expressed as "none of the seed is
-    -- missing" instead of "nothing else exists", it holds on a database of any size.
-    SELECT count(*) INTO seeded
-      FROM expense_categories
-     WHERE name IN (
-             'Alquiler', 'Sueldos', 'Servicios',
-             'Mantenimiento', 'Impuestos', 'Otros'
-           );
+    -- I then narrowed it to "the six seeded **names** are still present", and **that was
+    -- still wrong — `R3-002` of `review-1abfbd892fed09cb`, CRITICAL.** The `PATCH` route in
+    -- this same candidate lets the shop rename any category, seeded ones included, so a
+    -- shop that corrected "Alquiler" to "Alquiler (casa)" hit `found 5` and was blocked
+    -- from the whitespace fix. Measured on a migrated database:
+    --
+    --     UPDATE expense_categories SET name = 'Alquiler (casa)' WHERE name = 'Alquiler';
+    --     0003 -> ERROR: expected all 6 seeded expense categories to still be present, found 5
+    --
+    -- **The lesson is that any assertion keyed on the seed's *content* is an assertion
+    -- about data the shop owns and may change.** What this migration actually owes is a
+    -- statement about the schema it is re-cutting, not about rows: that the constraint is
+    -- gone and the new one is in place, and that the table is not empty. Those hold on any
+    -- database, however its vocabulary reads today.
+    --
+    -- An empty table would mean something went wrong earlier in the chain — `0002` seeds
+    -- six rows and nothing deletes them — so it is still worth refusing, and it is the
+    -- weakest claim that survives every legitimate edit.
+    SELECT count(*) INTO seeded FROM expense_categories;
 
-    IF seeded <> 6 THEN
+    IF seeded = 0 THEN
         RAISE EXCEPTION
-            'expected all 6 seeded expense categories to still be present, found %; refusing to continue',
-            seeded;
+            'expense_categories is empty: 0002 seeds six categories and nothing deletes them, so this database did not run the chain cleanly; refusing to continue';
     END IF;
 END;
 $$;
