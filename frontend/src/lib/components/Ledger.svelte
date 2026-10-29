@@ -554,27 +554,39 @@
     // Reload the day rather than patching the row in place: the note the server
     // wrote is the record, and the derived stamped state has to come from it, not
     // from what this component believes it sent.
+    //
+    // **The two reads are independent, and treating them as one sequence is `R3-003` of
+    // `review-02622a533b5553ec` (#123).** Making the cash refresh unconditional closed
+    // `R3-CORR-001` — a balance left describing the ledger before the note — and it was put
+    // *before* the refresh, which turned it into a gate: a failing `getCash()` threw past
+    // `page.refresh()`, so the note existed on the server and the row never showed it. The reader
+    // read their own write as having done nothing, which is the worse of the two failures: the
+    // balance can be re-read, and the list is the evidence that the write landed.
+    //
+    //     page.refresh();              // the rows, unconditionally and first
+    //     await refreshCashFigures();  // the balance, and its own failure reported as its own
+    //
+    // **The refresh is issued, not awaited.** `refresh()` moves `revision`; the effect is the one
+    // reader of the period and re-fetches. A read here would be the second reader that raced it
+    // before.
+    page.refresh();
+    // This is a successful reload of the whole day, so the same rule applies as
+    // in the effect above: nothing on this screen is stale any more. The rule
+    // lives in one place (`screenTrust.ts`) precisely so both success paths
+    // honour it -- the first version only retired notices on the effect path,
+    // which would have left a warning standing over figures that had just been
+    // re-read.
+    refundStale.retireAll();
     try {
-      // **The reload is a signal, not a read.** Reading here made this a second reader of the
-      // period: it and the effect both bumped the generation, and the discarded one was the one
-      // carrying the note's rows — the credit note existed and its block never appeared.
-      // `refresh()` moves `revision`, the effect re-reads once, and the period has one reader.
-      //
-      // **Cash is refreshed unconditionally**, because it is the shop's balance and belongs to no
-      // period or page — the regression the validator recorded as `R3-CORR-001`.
       const c = await getCash();
       cash = c.total;
-      page.refresh();
-      // This is a successful reload of the whole day, so the same rule applies as
-      // in the effect above: nothing on this screen is stale any more. The rule
-      // lives in one place (`screenTrust.ts`) precisely so both success paths
-      // honour it -- the first version only retired notices on the effect path,
-      // which would have left a warning standing over figures that had just been
-      // re-read.
-      refundStale.retireAll();
     } catch (e) {
-      // The note stands; only this screen is behind. It is said as that, and the
-      // confirm is closed, so the cashier does not read it as a refund to redo.
+      // The balance is the one figure that did not come back. The notice names this failure and
+      // nothing else: in the sales ledger the rows rise through the effect, so only a `getCash`
+      // failure can leave them looking current. Reporting a failed row reload here would say "the
+      // figures may be stale" while the screen's own alert already says the ledger could not be
+      // read — the two-messages-for-one-fact defect `screenTrust.ts` exists to prevent.
+      cash = null;
       refundStale.mark(row.id, e instanceof ApiError ? `${e.message} (${e.status})` : String(e));
     }
     refunding = null;
