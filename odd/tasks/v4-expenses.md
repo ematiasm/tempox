@@ -507,6 +507,7 @@ L16 (debt: what that review left, and one it found that this slice does not fix)
   server-side filter for "owes something", not a bigger page size.**
 - **`R3-001` of that review** — `day::first_instant_of` became `pub` for this slice and has
   no unit test of its own; its behaviour is pinned only transitively through the route tests.
+  **Closed in `test/day-first-instant-unit-tests` (L22).**
 - **`R3-002` of that review** — the advance route's `409` is advisory; the trigger is the real
   enforcement. Recorded because a future change that dropped the trigger would leave a `409`
   that no longer holds.
@@ -609,3 +610,31 @@ rediscovered as surprises): `R2-001` `expenseLedger.ts:101-102`; `R2-002` `en.ts
 `R2-003` `expenseLedger.ts:65-71`; `R2-004` `expenseLedger.ts:83-86`; `R2-005`
 `v4-expenses.md:571-575`; `R3-002` `expenseLedger.ts:102`; `R3-003`
 `backend/src/routes/expenses.rs:761`. None opened a correction and none reopens the review.
+
+L22 (evidence, `R3-001` of `review-1e9c4c74ced6d94b` closed — `day::first_instant_of` now has
+unit tests of its own). Debt carried since `L16`; no behaviour changed, only coverage, so there
+was no RED to observe and the proof is the inverse: break each branch and watch its test fail.
+
+- **What the indirection was hiding.** Every existing test reached the function *through*
+  `day_range`, which pins the endpoint's behaviour well and says nothing about the function's
+  branches. Enumerating them directly showed `Single` and `Ambiguous` covered only in the zones
+  and dates `day_range`'s fixtures happen to use, `None` reached by accident, and the bounded
+  walk's fallback covered by nothing at all.
+- **One hypothesis was wrong and the measurement is the record.** The code comment said a gap
+  is "at most a couple of hours" and the fallback "unreachable for any real zone". Samoa deleted
+  30 December 2011 entirely, so I predicted the 1440-minute walk would fall through to the
+  fallback. It does not: the walk lands on 31 Dec 00:00 +14, which is 30 Dec 10:00Z — a real
+  instant, ten hours from the nominal midnight. Verified independently with tzdata
+  (`TZ=Pacific/Apia date -d @1325239200` → `Sat Dec 31 00:00:00 +14 2011`). Both comments were
+  corrected rather than the test; asserting the predicted fallback would have encoded a claim
+  the code never made true.
+- **Six tests**, all calling the function directly: a normal day, UTC as a zone like any other,
+  a gapped midnight (Santiago 2027), an ambiguous one taking the **earlier** reading (Havana
+  2027), the skipped calendar day, and a property sweep over five zones × twelve months
+  asserting that whenever local midnight exists the answer is that midnight on that date.
+- **Neutered three ways and each failed.** `first.min(second)` → `first.max(second)`: the
+  ambiguous tests failed, the others stayed green. The walk stepping backwards: four tests
+  failed. `Single` forced to a fixed -3 offset: eight failed. Restored, 73 pass.
+- **Counts**: backend unit 73 (was 67). No other suite touches `day.rs`, so integration, e2e and
+  the frontend are unaffected — and that is worth stating because it is exactly why the gap
+  survived this long.
