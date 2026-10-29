@@ -566,9 +566,16 @@
       // pager still naming the new page. The comment claiming "the same clamp as the effect
       // read" was worse than useless — there was no clamp there at all.
       const requestedPage = pageOffset;
+      // **`R3-002` of `review-811cd5f5c6e59feb`: the period was not part of the comparison.**
+      // The offset alone cannot tell "same page" from "same offset of a different period", so a
+      // cashier changing scope while this was in flight could have the old period's financial
+      // totals written over the new one's. The bounds are captured here and required to match.
+      const requested = { from: range.from, to: range.to };
+      const stillSamePeriod = () =>
+        range !== null && range.from === requested.from && range.to === requested.to;
       const reloaded = await listSales({
-        from: range.from,
-        to: range.to,
+        from: requested.from,
+        to: requested.to,
         limit: PAGE,
         offset: requestedPage
       });
@@ -577,8 +584,14 @@
       // the clamp computed from the pre-write `pageTotal` was clamping against a number the
       // write had already invalidated. The validator caught this as a partial correction, and
       // it was right — the count was never refreshed on this path.
-      const [totals, c] = await Promise.all([getSalesSummary(range.from, range.to), getCash()]);
-      summary = totals;
+      const [totals, c] = await Promise.all([
+        getSalesSummary(requested.from, requested.to),
+        getCash()
+      ]);
+      // The summary belongs to the period it was asked for, so it is assigned only when that
+      // period is still the one on screen. Cash is the shop's balance and belongs to no period,
+      // which is why it is assigned unconditionally below.
+      if (stillSamePeriod()) summary = totals;
       // **The cash refresh happens on every path, including the ones that return early.** The
       // validator recorded its absence as `R3-CORR-001`: the first version of this fix returned
       // before `getCash()`, so a successful write followed by a page step or a clamp left the
@@ -586,7 +599,7 @@
       // The note landed; the money moved. Neither fact depends on which page is on screen.
       cash = c.total;
       const clamped = clampOffset(requestedPage, PAGE, totals.documents);
-      if (!isSamePageResponse(requestedPage, pageOffset)) {
+      if (!stillSamePeriod() || !isSamePageResponse(requestedPage, pageOffset)) {
         // The reader has moved on: this reload describes a page they are not looking at, and
         // the read that owns the screen is theirs. Nothing is assigned to `rows`.
         refundStale.retireAll();

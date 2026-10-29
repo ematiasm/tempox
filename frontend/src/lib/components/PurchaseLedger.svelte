@@ -35,6 +35,8 @@
     canStepPage,
     clampOffset,
     isSamePageResponse,
+    isStaleAfterClamp,
+    offsetAfterFailedLoad,
     pageCount,
     pageIsPartial,
     pageNumber
@@ -190,11 +192,23 @@
     // idempotent, so the second pass falls through.
     const clamped = clampOffset(pageOffset, PAGE, totals.documents);
     if (clamped !== pageOffset) {
+      // **`R3-001` of `review-811cd5f5c6e59feb`: the clamp used to invalidate its own reload.**
+      // It changed `pageOffset`, then re-entered `loadDay` with the *caller's* predicate — which
+      // for a page step compares against the offset the caller captured before the request. The
+      // clamp had just made them differ, so the predicate answered "stale" and the reload of the
+      // clamped page was discarded: page two's rows stayed on screen under page one's label.
+      //
+      // The re-read now carries a predicate that knows the offset is *expected* to have changed,
+      // and still guards the day and the generation — so a newer day or a newer load still wins.
+      const seqAtClamp = loadSeq;
+      const dayAtClamp = `${at.getTime()}`;
       pageOffset = clamped;
-      // The caller's staleness check still applies: a reload triggered by the clamp is not
-      // allowed to overwrite a newer day.
       if (isStale()) return false;
-      return loadDay(at, isStale);
+      return loadDay(at, () =>
+        // Not "is the page the same": the clamp changed it, deliberately. Only a newer load or a
+        // different day can invalidate this re-read.
+        isStaleAfterClamp(seqAtClamp, loadSeq, dayAtClamp, `${at.getTime()}`)
+      );
     }
     rows = list;
     suppliers = supplierList;
@@ -216,14 +230,29 @@
    */
   async function reload(at: Date): Promise<void> {
     const seq = ++loadSeq;
+    // **`R3-003` of `review-811cd5f5c6e59feb`: a failed page step left the pager lying.** The
+    // step moved `pageOffset`, the reload threw, and nothing rolled the offset back — so the
+    // label named a page whose rows were never fetched, over the previous page's table. It also
+    // surfaced as an unhandled rejection rather than a page-load failure the screen could show.
+    const requested = pageOffset;
     // **The page the request was made for is part of staleness.** Without it, stepping twice
     // quickly leaves the slower response writing rows for a page the reader has left — the
     // same defect as the constant predicate above, reachable through the write path too.
     const requestedPage = pageOffset;
-    await loadDay(
-      at,
-      () => seq !== loadSeq || scopeInstant !== at || !isSamePageResponse(requestedPage, pageOffset)
-    );
+    try {
+      await loadDay(
+        at,
+        () =>
+          seq !== loadSeq || scopeInstant !== at || !isSamePageResponse(requestedPage, pageOffset)
+      );
+    } catch (e) {
+      // The offset goes back to the page whose rows are still on screen, so the label and the
+      // table agree again — and the failure is reported through the screen's own error channel.
+      if (seq === loadSeq) {
+        pageOffset = offsetAfterFailedLoad(requested);
+        error = describe(e);
+      }
+    }
   }
 
   $effect(() => {

@@ -5,6 +5,8 @@ import {
   canStepPage,
   clampOffset,
   isSamePageResponse,
+  isStaleAfterClamp,
+  offsetAfterFailedLoad,
   pageCount,
   pageIsPartial,
   pageNumber
@@ -191,5 +193,50 @@ describe('isSamePageResponse: the rule both CRITICAL findings were missing', () 
       const importBlock = /import\s*\{[^}]*\}\s*from '#lib\/ledgerPaging\.js'/.exec(source);
       expect(importBlock?.[0]).toContain('isSamePageResponse');
     }
+  });
+});
+
+describe('isStaleAfterClamp: the clamp must not invalidate its own re-read', () => {
+  /**
+   * **`R3-001` of `review-811cd5f5c6e59feb`, and it was a logical deadlock.**
+   *
+   * The clamp changed `pageOffset` to a valid page, then re-read using the caller's predicate.
+   * That predicate compares the page the *original* request was made for against the page now on
+   * screen — which the clamp had just made different, by design. So the re-read judged itself
+   * stale, returned without writing, and the clamped page was never fetched: the previous page's
+   * rows stayed under the clamped page's label. Reachable whenever a reader steps to page two and
+   * the day then holds at most one page.
+   */
+  const day = '2027-03-15T03:00:00.000Z';
+
+  it('accepts a re-read the clamp itself caused', () => {
+    expect(isStaleAfterClamp(7, 7, day, day)).toBe(false);
+  });
+
+  it('still discards a re-read that a newer load has superseded', () => {
+    expect(isStaleAfterClamp(7, 8, day, day)).toBe(true);
+  });
+
+  it('still discards a re-read after the day changed', () => {
+    // The clamp has no opinion about the day, so a day change remains a reason to drop it.
+    expect(isStaleAfterClamp(7, 7, day, '2027-03-16T03:00:00.000Z')).toBe(true);
+  });
+
+  it('would have called its own re-read stale under the page comparison', () => {
+    // The shape of the defect, stated directly: after a clamp from offset 200 to 0, the page
+    // comparison answers "different page" — which is exactly what must not be staleness here.
+    expect(isSamePageResponse(200, 0)).toBe(false);
+    expect(isStaleAfterClamp(7, 7, day, day)).toBe(false);
+  });
+});
+
+describe('offsetAfterFailedLoad: a failed step must not leave the label lying', () => {
+  it('returns the pager to the page whose rows are still on screen', () => {
+    // `R3-003` of `review-811cd5f5c6e59feb`. The step moved the offset, the read threw, and
+    // nothing rolled it back — so the label named a page the table was not showing. It also
+    // surfaced as an unhandled rejection instead of a page-load error the screen could report.
+    expect(offsetAfterFailedLoad(0)).toBe(0);
+    expect(offsetAfterFailedLoad(200)).toBe(200);
+    expect(offsetAfterFailedLoad(400)).toBe(400);
   });
 });

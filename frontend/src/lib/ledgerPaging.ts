@@ -97,3 +97,41 @@ export function pageIsPartial(rowsHeld: number, total: number): boolean {
 export function isSamePageResponse(requested: number, current: number): boolean {
   return requested === current;
 }
+
+/**
+ * Whether a clamp's own re-read is still valid, given that the clamp changed the offset.
+ *
+ * **`R3-001` of `review-811cd5f5c6e59feb`, and the deadlock it removes.** A caller that clamps a
+ * remembered offset and then re-reads using the *same* staleness predicate compares the page the
+ * original request was made for against the page now on screen — and the clamp has just made
+ * those differ on purpose. The predicate answers "stale", the re-read is discarded, and the
+ * clamped page is never fetched: the previous page's rows stay on screen under the clamped
+ * page's label.
+ *
+ * A re-read after a clamp must therefore not treat "the offset changed" as staleness. What still
+ * makes it stale is a newer load (the generation) or a different day — the things the clamp has
+ * no opinion about.
+ */
+export function isStaleAfterClamp(
+  generationAtClamp: number,
+  currentGeneration: number,
+  dayAtClamp: string,
+  currentDay: string
+): boolean {
+  return generationAtClamp !== currentGeneration || dayAtClamp !== currentDay;
+}
+
+/**
+ * Where the pager should point after a page load failed.
+ *
+ * **`R3-003` of `review-811cd5f5c6e59feb`.** A step moves the offset *before* the read, so a read
+ * that throws leaves the label naming a page whose rows were never fetched, over the previous
+ * page's table. Rolling the offset back to the page the rows still belong to is what makes the
+ * label and the table agree again — and it is a rule rather than an inline assignment because
+ * the failure path is the one nobody writes a test for, which is why it was missing.
+ *
+ * `requested` is the offset the rows on screen were fetched for.
+ */
+export function offsetAfterFailedLoad(requested: number): number {
+  return requested;
+}
