@@ -1035,3 +1035,32 @@ on the count test and on this reasoning, not on a mutation of its own.
 
 Counts: unit 323, component 13 (was 10), e2e 44, `make lint` and `svelte-check` clean. Correction
 diff: 312 lines across five files — over the 200-line budget, recorded rather than compressed.
+
+L33 (the eighth round, and the one where taking a read away took a message with it). The re-review of
+`497ff9c` (`review-a88d442d3e677eb8`) found two CRITICALs, both `introduced`, both `corroborated` by
+the refuter — and both the same regression, one screen each.
+
+**The pattern, named.** Making the write path read nothing (`S20` applied to the return and the
+refund) moved the failure handling into the effect. But the effect's failure was the *generic ledger
+error* — "no se pudo leer el libro" — which replaces the region and says the opposite of what
+happened: the write landed, only the re-read failed. The previous code caught that failure where the
+write was, and said so ("la devolución quedó registrada"), which is exactly the distinction
+`screenTrust.ts` exists for. **`S20` was right; dropping the write's own reporting with its own read
+was not.**
+
+This is the third time in eight rounds that a correction fixed the thing it was aimed at and broke
+something adjacent, and the first time the cause is stated as a rule rather than a slip: **a message
+about a write belongs to the write path even when the read does not.** The write already knows it
+succeeded; the reader cannot know it on its behalf.
+
+**The fix, both screens.** Each keeps a set of documents whose write has just landed
+(`readingAfterReturn`, `refundedAfterWrite`). The effect's failure checks it first: a failure that
+belongs to a write's reload reports *that* message, through a heading the template now selects with
+`errorIsRecordedWrite` — otherwise the generic prefix is printed over the true sentence. A successful
+reload clears the set, so a later unrelated failure is not blamed on a write that already finished.
+
+Both are pinned, and both were watched to fail by neutralising the branch (`if (readingAfterReturn.size
+> 0)` → `if (false)`, same for the refund). Measured: 1 test each.
+
+Counts: unit 323, component 15 (was 13), e2e 44, `make lint` and `svelte-check` clean. Correction
+diff: 209 lines, budget 200 — nine over, recorded.

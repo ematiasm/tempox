@@ -102,6 +102,14 @@
   });
   let loading = $state(true);
   let error = $state<string | null>(null);
+  /**
+   * True when `error` describes a *write's* failed reload rather than a failed read.
+   *
+   * The template prefixes `error` with "could not read the book", which is the wrong sentence when
+   * the return already landed (`R3-001` of `review-a88d442d3e677eb8`): it invites the operator to
+   * record the same return twice. Kept separate from `error` so the two facts stay distinguishable.
+   */
+  let errorIsRecordedWrite = $state(false);
   let open = new SvelteSet<string>();
 
   /**
@@ -126,6 +134,7 @@
     void page.revision;
     loading = true;
     error = null;
+    errorIsRecordedWrite = false;
     const token = page.claim();
     readDay(at, token)
       .catch((e) => {
@@ -133,13 +142,21 @@
         // Back to the page whose rows are on screen, then report (`S21`). The owner knows which
         // page that is; a caller cannot, because by now the offset has already moved.
         page.restore();
-        // A recorded return whose reload failed names itself, so the operator knows the write
-        // landed even though the table could not catch up (`R3-001`).
-        for (const rowId of readingAfterReturn) {
-          reloadNotice.mark(rowId, lang.t.purchases_return_recorded);
+        // **A reload that a recorded return asked for says *that*, not a generic read failure**
+        // (`R3-001` of `review-a88d442d3e677eb8`). The write landed and only the re-read failed;
+        // reporting the generic ledger error replaced the region and told the operator the opposite
+        // — "the book could not be read" — inviting them to record the return again. One message,
+        // and it is the true one.
+        if (readingAfterReturn.size > 0) {
+          for (const rowId of readingAfterReturn) {
+            reloadNotice.mark(rowId, lang.t.purchases_return_recorded);
+          }
+          readingAfterReturn.clear();
+          errorIsRecordedWrite = true;
+          error = `${lang.t.purchases_return_recorded}${e instanceof ApiError ? ` (${e.status})` : ''}`;
+        } else {
+          error = describe(e);
         }
-        readingAfterReturn.clear();
-        error = describe(e);
       })
       .finally(() => {
         if (page.owns(token)) loading = false;
@@ -230,6 +247,8 @@
 
   /** Applies an accepted page. Never called for a discarded read. */
   const applyPage: PageApply<PurchaseListItem, PurchasePageExtra> = (list, extra) => {
+    // The write's reload arrived: nothing is left waiting to be named by a failure.
+    readingAfterReturn.clear();
     range = extra.day;
     rows = list;
     suppliers = extra.suppliers;
@@ -383,7 +402,11 @@
        empty-state paragraph claiming there are no purchases, or beside stale rows. -->
   {#if error}
     <p class="error" role="alert">
-      {lang.t.purchases_ledger_error}{error}
+      {#if errorIsRecordedWrite}
+        {error}
+      {:else}
+        {lang.t.purchases_ledger_error}{error}
+      {/if}
       <button type="button" class="ghost" onclick={() => (scopeInstant = new Date())}>
         {lang.t.sales_retry}
       </button>

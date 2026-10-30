@@ -86,6 +86,8 @@
   let cash = $state<string | null>(null);
   let loading = $state(true);
   let error = $state<string | null>(null);
+  /** True when `error` describes a write's failed reload rather than a failed read (`R3-002`). */
+  let errorIsRecordedWrite = $state(false);
   // `SvelteSet` rather than a plain `Set` in `$state`: it carries its own
   // reactivity, so `has`/`add`/`delete` register as reads and writes directly and
   // the expanded rows stay in step with the set without reassigning it.
@@ -113,6 +115,15 @@
   // figures are current and a warning saying otherwise is a lie. Backed by a
   // `SvelteMap` so retiring it re-renders.
   const refundStale = createStaleNotice(new SvelteMap<string, string>());
+  /**
+   * The sales whose credit note has just been recorded and whose reload the effect is about to do.
+   *
+   * **`R3-002` of `review-a88d442d3e677eb8`.** Taking the read out of the refund path (so the effect
+   * is the only reader) also took away the place that used to report "the note landed, the screen did
+   * not catch up". Without this the failure surfaces as the generic ledger error and the cashier is
+   * invited to issue the note a second time.
+   */
+  let refundedAfterWrite = new SvelteSet<string>();
   /**
    * The key of the notice about the cash figure, which belongs to no document.
    *
@@ -315,6 +326,7 @@
 
     loading = true;
     error = null;
+    errorIsRecordedWrite = false;
     // Both reads have to succeed before this screen counts as current, and they are independent
     // requests that run in parallel: retiring the notice on the sales read alone cleared the
     // warning while the cash figure was still stale.
@@ -345,6 +357,8 @@
         // A discarded read is not a fresh one: the rows on screen are not the ones it fetched, so
         // the stale notice must stand.
         if (applied) salesFresh = true;
+        // The write's reload arrived: nothing is left waiting to be named by a failure.
+        if (applied) refundedAfterWrite.clear();
         retireIfCurrent();
       } catch (e) {
         if (!mine()) return;
@@ -354,7 +368,22 @@
         // skipped it. The owner knows which page that is; the caller cannot, because the offset has
         // already moved.
         page.restore();
-        error = e instanceof ApiError ? `${e.message} (${e.status})` : String(e);
+        // **A reload that a recorded note asked for says *that*** (`R3-002`). The note exists on the
+        // server; only the re-read failed. Reporting the generic ledger error replaced the region and
+        // erased the one fact the cashier needs — that their write landed, so they must not repeat it.
+        if (refundedAfterWrite.size > 0) {
+          for (const saleId of refundedAfterWrite) {
+            refundStale.mark(
+              saleId,
+              e instanceof ApiError ? `${e.message} (${e.status})` : String(e)
+            );
+          }
+          refundedAfterWrite.clear();
+          errorIsRecordedWrite = true;
+          error = `${lang.t.sales_refund_stale}${e instanceof ApiError ? ` (${e.status})` : ''}`;
+        } else {
+          error = e instanceof ApiError ? `${e.message} (${e.status})` : String(e);
+        }
       } finally {
         if (mine()) loading = false;
       }
@@ -607,6 +636,7 @@
     // **The refresh is issued, not awaited.** `refresh()` moves `revision`; the effect is the one
     // reader of the period and re-fetches. A read here would be the second reader that raced it
     // before.
+    refundedAfterWrite.add(row.id);
     page.refresh();
     // **The notice is not retired here** (`S23`, `R3-004` of `review-b263118903947f58`). Retiring it
     // immediately after *scheduling* the refresh erased a warning that was still true whenever the
@@ -705,7 +735,10 @@
        empty-state paragraph claiming there are no sales, or beside stale rows. -->
   {#if error}
     <div class="alert" role="alert">
-      <strong>{lang.t.sales_ledger_error}</strong>
+      <strong
+        >{#if errorIsRecordedWrite}{lang.t.sales_stale_title}{:else}{lang.t
+            .sales_ledger_error}{/if}</strong
+      >
       <span>{error}</span>
       <button type="button" onclick={() => (refreshToken = refreshToken + 1)}>
         {lang.t.sales_retry}

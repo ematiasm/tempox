@@ -517,3 +517,74 @@ describe('a recorded return', () => {
     expect(target.textContent).not.toContain('Cargando…');
   });
 });
+
+/**
+ * **`R3-001` of `review-a88d442d3e677eb8`: a recorded return whose reload fails says so.**
+ *
+ * Taking the read out of the return path made the effect the one reader — and with it went the
+ * place that reported "the return landed, the screen did not catch up". The failed reload raised the
+ * *generic* ledger error, which replaces the region and tells the operator the opposite: that the
+ * book could not be read, inviting the return to be recorded again. The message must be the true
+ * one — the write is a fact, only the re-read failed.
+ */
+describe('a recorded return whose reload fails', () => {
+  let target: HTMLDivElement;
+  let component: Record<string, unknown> | undefined;
+
+  beforeEach(() => {
+    Object.values(api).forEach((fn) => fn.mockReset());
+    api.fetchDay.mockImplementation(async (at: Date) => dayAt(at.getTime()));
+    api.listSuppliers.mockResolvedValue([]);
+    api.getPurchasesSummary.mockResolvedValue({
+      gross: '0.00',
+      returned: '0.00',
+      net: '0.00',
+      documents: 1
+    });
+    api.createSupplierReturn.mockResolvedValue({});
+    target = document.createElement('div');
+    document.body.append(target);
+  });
+
+  afterEach(() => {
+    if (component) unmount(component);
+    component = undefined;
+    target.remove();
+    document.body.innerHTML = '';
+  });
+
+  it('tells the operator the return landed, not that the book could not be read', async () => {
+    api.listPurchases.mockResolvedValue([purchase('r1', '10.00', 4)]);
+    component = mount(PurchaseLedger, { target, props: {} }) as Record<string, unknown>;
+    flushSync();
+    await settle();
+
+    (target.querySelector('[data-doc-row]') as HTMLElement).click();
+    await settle();
+    (
+      [...target.querySelectorAll('button')].find(
+        (b) => b.textContent?.trim() === 'Devolver al proveedor…'
+      ) as HTMLButtonElement
+    ).click();
+    await settle();
+
+    // The return lands; its reload does not.
+    api.listPurchases.mockRejectedValue(new ApiError(503));
+    (
+      [...target.querySelectorAll('button')].find(
+        (b) => b.textContent?.trim() === 'Sí, devolver'
+      ) as HTMLButtonElement
+    ).click();
+    await settle();
+
+    expect(api.createSupplierReturn).toHaveBeenCalledTimes(1);
+    const alert = target.querySelector('[role="alert"]')?.textContent ?? '';
+    expect(alert, 'the write is a fact and the message says it').toContain(
+      'La devolución quedó registrada'
+    );
+    expect(
+      alert,
+      'and not the generic read failure, which reads as "record it again"'
+    ).not.toContain('No se pudo leer el libro');
+  });
+});

@@ -422,3 +422,67 @@ describe('one writer for the balance', () => {
     expect(balance()).toContain('100');
   });
 });
+
+/**
+ * **`R3-002` of `review-a88d442d3e677eb8`: a recorded note whose reload fails says the note landed.**
+ *
+ * Moving the read out of the refund path made the effect the one reader; the place that reported
+ * "the note exists, the screen is behind" went with it. The failed reload raised the generic ledger
+ * error, and that sentence — *could not read the book* — erases the only fact the cashier needs and
+ * invites a second note on top of the first. The heading must say what actually happened.
+ */
+describe('a recorded note whose reload fails', () => {
+  let target: HTMLDivElement;
+  let component: Record<string, unknown> | undefined;
+
+  beforeEach(() => {
+    Object.values(api).forEach((fn) => fn.mockReset());
+    api.fetchDay.mockResolvedValue(shopDay());
+    api.getSalesSummary.mockResolvedValue(summary());
+    api.getCash.mockResolvedValue({ total: '100.00' });
+    api.createCreditNote.mockResolvedValue(creditNote());
+    target = document.createElement('div');
+    document.body.append(target);
+  });
+
+  afterEach(() => {
+    if (component) unmount(component);
+    component = undefined;
+    target.remove();
+    document.body.innerHTML = '';
+  });
+
+  it('says the note was recorded rather than that the book could not be read', async () => {
+    api.listSales.mockResolvedValue([sale()]);
+    component = mount(Ledger, { target, props: {} }) as Record<string, unknown>;
+    flushSync();
+    await settle();
+
+    (target.querySelector('[data-doc-row]') as HTMLElement).click();
+    await settle();
+    (
+      [...target.querySelectorAll('button')].find(
+        (b) => b.textContent?.trim() === 'Anular venta…'
+      ) as HTMLButtonElement
+    ).click();
+    await settle();
+
+    // The note lands; its reload does not.
+    api.listSales.mockRejectedValue(new ApiError(503));
+    (
+      [...target.querySelectorAll('button')].find(
+        (b) => b.textContent?.trim() === 'Sí, anular'
+      ) as HTMLButtonElement
+    ).click();
+    await settle();
+
+    expect(api.createCreditNote).toHaveBeenCalledTimes(1);
+    const alert = target.querySelector('[role="alert"]')?.textContent ?? '';
+    expect(alert, 'the note is a fact and the message says it').toContain(
+      'La devolución quedó registrada'
+    );
+    expect(alert, 'and not "could not read the book", which invites a second note').not.toContain(
+      'No se pudo leer el libro'
+    );
+  });
+});
