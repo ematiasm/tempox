@@ -18,7 +18,9 @@ record what each delivered slice measured.
 | **S6b** payables, supplier returns | `0023_payables.sql`, `purchases.rs`, `payables.rs` — see `odd/tasks/v4-payables.md` | #87 → merged 2026-10-25 | **none — delivered without a native review, `v4-payables.md` L9** |
 | **S7** retire `credit` | `0016_credit_seed_identity.sql` **deleted**, seed removed from `0012`, the ledger guard generalised to `accounts.kind` | #88 | — |
 
-**Every row above is merged.** v4 closed on `main` on 2026-10-29 once `v4-expenses`
+**Every slice in this table is merged except S2**, which is deferred to v5 and says so in its
+own row — the two are not in conflict once the sentence names the exception. v4 closed on
+`main` on 2026-10-29 once `v4-expenses`
 landed (`#110`–`#114`); the two debts it closed with are stated in `v4-expenses.md`
 `L34` (an unreviewed last correction) and `v4-payables.md` `L9` (a slice that got no
 external view because its candidate exceeded the reviewer budget). Neither is repaired
