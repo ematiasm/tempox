@@ -1064,3 +1064,32 @@ Both are pinned, and both were watched to fail by neutralising the branch (`if (
 
 Counts: unit 323, component 15 (was 13), e2e 44, `make lint` and `svelte-check` clean. Correction
 diff: 209 lines, budget 200 — nine over, recorded.
+
+L34 (closed with the debt stated, by the owner's decision). `e95bfa2` is the final candidate and the
+last round is **not** reviewed. The owner's words: *"cerramos con la deuda"*.
+
+**What is verified, independently of any review.** unit 323, component 15, e2e 44, `make lint` and
+`svelte-check` clean, backend untouched. Every rule `S20`–`S24` is pinned by a test that was watched
+to fail when its code was deleted, and the two tests that had shipped wrong (the loading test clicking
+the header's day buttons, the notice assertion no UI state discriminates) are corrected rather than
+kept.
+
+**What is owed, named rather than implied.** The candidate was reviewed three times
+(`review-95eb20a5e08dacda`, `review-b263118903947f58`, `review-a88d442d3e677eb8`); each closed
+`correction_required` and each found real defects — thirteen across the three, of which **five were
+introduced by my own corrections**. The findings of the last lineage are fixed (`L33`) and that fix
+was **never reviewed**. So:
+
+- no lineage ever reached `approved` for this work;
+- the last correction rests on its tests and on the reviewer's claim being addressed, not on a
+  reviewer confirming it;
+- three corrections exceeded the 200-line budget (193, 597, 312) and one came in at 209. Recorded,
+  not compressed away.
+
+**What a future session should read first.** `L30` for why a `corrupted_or_unverifiable_authority`
+answer was wrong (the findings were on disk in the transaction's `review-state.json` the whole time),
+`L31`–`L33` for the rules and the three regressions, and the PR body for what is not claimed.
+
+**The honest summary of the branch.** It closes #120, #121, #122 and #123 with a structural change
+(one reader per ledger) whose *cause* is understood and written down, and it carries an unreviewed
+correction. Merging it means accepting that last risk knowingly, which is what this entry records.
