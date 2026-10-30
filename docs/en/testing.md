@@ -2,26 +2,39 @@
 
 This document is the single authority for how tests run in this repository. Other
 files link here instead of restating it. Every number, port and path below was
-measured on 2026-10-19, after the six phases below had landed, not recalled.
+measured on 2026-10-30, not recalled — and re-measured whenever a level changes, because
+this table carried 39/47/16 long after those numbers were false.
 
 The rule this document replaces lived only in an agent's memory and in ODD logs.
 That is why it failed twice. It lives in a file now.
 
 ## The three levels
 
-| Level           | Count                | What it needs running | What it **cannot** see                               |
-| --------------- | -------------------- | --------------------- | ---------------------------------------------------- |
-| Unit (backend)  | 39                   | nothing               | the database, the router, a real order of operations |
-| Unit (frontend) | 139 cases in 9 files | nothing               | the API, the DOM as the browser builds it            |
-| Integration     | 47                   | a postgres container  | whether the screen renders                           |
-| End to end      | 16 cases in 4 specs  | postgres, chromium    | why a row is missing                                 |
+| Level              | Count                 | What it needs running  | What it **cannot** see                               |
+| ------------------ | --------------------- | ---------------------- | ---------------------------------------------------- |
+| Unit (backend)     | 73                    | nothing                | the database, the router, a real order of operations |
+| Unit (frontend)    | 323 cases in 22 files | nothing                | the API, the DOM as the browser builds it            |
+| Component          | 15 cases in 3 files   | **chromium installed** | the API, the real network                            |
+| Integration        | 182                   | a postgres container   | whether the screen renders                           |
+| End to end         | 44 cases in 10 specs  | postgres, chromium     | why a row is missing                                 |
 
 ```bash
-make test-unit        # backend + frontend, nothing running
+npx playwright install chromium   # once per machine: the component level needs it
+make test-unit        # backend + frontend, no service running
 make test-backend     # integration: a database per test, no external backend
 make test-e2e         # Playwright starts the backend, builds and serves its own preview
 make test             # all three
 ```
+
+**The component level is not an optional extra, and it is easy to mistake for one.** A `.svelte.ts`
+rune can only be exercised by *mounting* a component, and mounting needs Svelte's **client** build:
+`svelte`'s export map resolves `.` to `index-server.js` by default and to `index-client.js` only under
+the `browser` condition, which SvelteKit owns — neither `resolve.conditions` nor
+`ssr.resolve.conditions` reaches it (measured both ways; the story is in `frontend/vite.config.ts`).
+So those tests run in a real Chromium through `@vitest/browser`, and `npm run test:unit` collects
+them, which means **a machine without the browser installed fails that command**. It fails *after*
+reporting the jsdom tests as passing, with "Executable doesn't exist" — a red that names the browser
+and not the code, which is why CI shipped without it for a while (#124).
 
 No level needs a backend someone else started. `make test-backend` gives every test
 its own database and lets the tests that need a socket spawn the binary themselves;

@@ -185,6 +185,19 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package.json
       - run: npm install --no-audit --no-fund
+      # **The unit job runs a real browser, and nothing said so** (#124 CI). `vite.config.ts` has a
+      # `component` project that mounts Svelte components in Chromium, because a `.svelte.ts` rune can
+      # only be exercised by mounting and mounting needs Svelte's *client* build — which neither
+      # `resolve.conditions` nor `ssr.resolve.conditions` reaches under SvelteKit (measured, recorded
+      # in that config). `vitest --run` collects every project, so this step needs Chromium just as
+      # much as the e2e job does.
+      #
+      # It did not, until 2026-10-30: the browser project landed in `de056ba` without this step, and
+      # the run failed with "Executable doesn't exist" *after* reporting 323 passing tests — a red
+      # whose message named the browser rather than the code. `--with-deps` also installs the system
+      # libraries the runner does not ship.
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
       - run: npm run lint
       - run: npm run check
       - run: npm run test:unit -- --run
