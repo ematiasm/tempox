@@ -290,6 +290,10 @@
     // it, so this effect has a single reason to run and exactly one reader owns the period.
     void page.revision;
     let cancelled = false;
+    // **The owner's claim, before the first await** (`R3-001`): `cancelled` fires only when this
+    // effect is torn down, so a response arriving before the replacement run started was applied.
+    const token = page.claim();
+    const mine = () => !cancelled && page.owns(token);
 
     loading = true;
     error = null;
@@ -299,14 +303,14 @@
     let salesFresh = false;
     let cashFresh = false;
     const retireIfCurrent = () => {
-      if (cancelled || !salesFresh || !cashFresh) return;
+      if (!mine() || !salesFresh || !cashFresh) return;
       refundStale.retireAll();
     };
 
     void (async () => {
       try {
         const [day, today] = await Promise.all([fetchDay(at, scope), fetchDay(new Date(), scope)]);
-        if (cancelled) return;
+        if (!mine()) return;
         shopZone = day.zone;
         const fetcher: PageFetcher<SaleListItem, SalesPageExtra> = async (offset) => {
           const [sales, totals] = await Promise.all([
@@ -318,16 +322,16 @@
             extra: { day, todayFrom: today.from, summary: totals }
           };
         };
-        const applied = await page.read(day.from, fetcher, applySalesPage);
-        if (cancelled) return;
+        const applied = await page.read(day.from, fetcher, applySalesPage, token);
+        if (!mine()) return;
         // A discarded read is not a fresh one: the rows on screen are not the ones it fetched, so
         // the stale notice must stand.
         if (applied) salesFresh = true;
         retireIfCurrent();
       } catch (e) {
-        if (!cancelled) error = e instanceof ApiError ? `${e.message} (${e.status})` : String(e);
+        if (mine()) error = e instanceof ApiError ? `${e.message} (${e.status})` : String(e);
       } finally {
-        if (!cancelled) loading = false;
+        if (mine()) loading = false;
       }
     })();
 
@@ -335,7 +339,7 @@
     // the day's: it is labelled as such rather than implying a daily total.
     getCash()
       .then((c) => {
-        if (cancelled) return;
+        if (!mine()) return;
         cash = c.total;
         cashFresh = true;
         retireIfCurrent();
@@ -344,7 +348,8 @@
         // A cash read that fails leaves the balance visually unknown but does not
         // discredit the day's rows, so it is not turned into a page error. It does
         // keep the stale notice alive, because the figures are not all current.
-        if (!cancelled) cash = null;
+        if (!mine()) return;
+        cash = null;
       });
 
     return () => {

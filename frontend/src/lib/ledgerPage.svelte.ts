@@ -55,11 +55,10 @@ export class LedgerPage<Row, Extra> {
   total = $state(0);
 
   /**
-   * Not `$state`: a generation counter is compared and incremented, never rendered. Making it
-   * reactive would re-run every effect that reads the page whenever a read starts, which is the
-   * opposite of what it is for.
+   * Not `$state`: a claim is compared, never rendered. Making it reactive would re-run every
+   * effect that reads the page whenever a read starts, which is the opposite of what it is for.
    */
-  #generation = 0;
+  #claim = 0;
   readonly #size: number;
 
   constructor(size: number) {
@@ -67,38 +66,47 @@ export class LedgerPage<Row, Extra> {
   }
 
   /**
-   * Runs one read for `span` at the current page.
-   *
-   * Answers `true` when the result was applied and `false` when it was discarded, so a caller
-   * can tell "reloaded" from "someone else owns the screen now" without re-deriving it from a
-   * local comparison — the thing the five patches did, in five slightly different ways.
-   *
-   * **Every discard reason is checked here and nowhere else.** Each was a separate bug in the
-   * component version: the generation (a newer read), the span (a period the reader left), the
-   * offset (a page the reader stepped away from). The first draft of the test suite proved the
-   * span and offset guards are not independently observable — see the note in
-   * `tests/unit/ledger-page.test.ts` — so they are kept as reasoned claims, not as tested ones.
+   * Claims the screen for a read the caller is about to issue, and returns the token. **The owner
+   * holds the failure as well as the answer**: a rejected read never reaches `#readWithin`, so the
+   * caller's own error and loading guard had to be a second, hand-written predicate — which is how
+   * one of them was lost (`R3-003`).
+   */
+  claim(): number {
+    return ++this.#claim;
+  }
+
+  /** Whether the request issued under `token` is still the one that owns the screen. */
+  owns(token: number): boolean {
+    return token === this.#claim;
+  }
+
+  /**
+   * Runs one read for `span` at the current page, answering whether it was applied. Pass the
+   * `token` from `claim` to gate the caller's own error and loading flag too; omitted, it claims.
    */
   async read(
     span: unknown,
     fetcher: PageFetcher<Row, Extra>,
-    apply: PageApply<Row, Extra>
+    apply: PageApply<Row, Extra>,
+    token: number = this.claim()
   ): Promise<boolean> {
-    return this.#readWithin(++this.#generation, span, fetcher, apply);
+    return this.#readWithin(token, span, fetcher, apply);
   }
 
   async #readWithin(
-    generationFor: number,
+    token: number,
     span: unknown,
     fetcher: PageFetcher<Row, Extra>,
     apply: PageApply<Row, Extra>
   ): Promise<boolean> {
     // **Captured at issue time.** `mine` is what this read is allowed to answer for.
-    const mine = { offset: this.offset, span, generation: generationFor };
+    const mine = { offset: this.offset, span, generation: token };
     const { page, extra } = await fetcher(mine.offset);
 
-    if (mine.generation !== this.#generation) return false;
-    if (!Object.is(mine.span, span)) return false;
+    // **One guard, not three** (`R3-001`/`#120`). The span check compared a captured value with the
+    // argument its own call was made with, so it could never discard anything; it is deleted. The
+    // offset check stays: the clamp's re-read keeps the claim, so a step during it has no new token.
+    if (!this.owns(mine.generation)) return false;
     if (mine.offset !== this.offset) return false;
 
     // **The clamp, and its re-read is issued by this class** (`R3-001` of
@@ -111,7 +119,7 @@ export class LedgerPage<Row, Extra> {
     if (clamped !== mine.offset) {
       this.total = page.total;
       this.offset = clamped;
-      return this.#readWithin(generationFor, span, fetcher, apply);
+      return this.#readWithin(token, span, fetcher, apply);
     }
 
     this.total = page.total;
@@ -161,8 +169,10 @@ export class LedgerPage<Row, Extra> {
    *
    * **`R3-003`, closed by construction.** The previous offset is captured here, before the move,
    * and never handed to a caller — so the rollback cannot restore the value it was meant to undo.
-   * The component version read `pageOffset` *after* the step had already changed it and called
-   * that the rollback.
+   *
+   * **And the rollback is the failure's own write, so it is gated like one** (`R3-002`/`R4-001`):
+   * a superseded failure used to restore the previous offset and total *over* the newer read and
+   * publish its error besides.
    */
   async step(
     delta: number,
@@ -177,9 +187,12 @@ export class LedgerPage<Row, Extra> {
     const previous = this.offset;
     const previousTotal = this.total;
     this.offset = next;
+    const token = this.claim();
     try {
-      await this.read(span, fetcher, apply);
+      await this.#readWithin(token, span, fetcher, apply);
     } catch (e) {
+      // Nothing to roll back and nobody to tell: a newer read owns the page now.
+      if (!this.owns(token)) return;
       this.offset = previous;
       this.total = previousTotal;
       onError(e);

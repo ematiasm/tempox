@@ -165,37 +165,25 @@ describe('a failed step rolls back to the page whose rows are on screen', () => 
   });
 });
 
-// **What is not tested, and why it is said out loud.** Three guards in `#readWithin` discard an
-// answer: a newer generation, a different span, a different page. Measured by deleting each:
-// removing the generation guard fails a test, removing the rollback fails two — and removing
-// **either the span guard or the offset guard fails none**.
-//
-// I first thought sharing the generation with the clamp's re-read would make the offset guard
-// load-bearing, because a step during that re-read has no new generation to be caught by. It
-// does not: the step's own read bumps the generation and its result is applied last, so every
-// assertion still passes with the guard gone. I could not construct the scenario that isolates
-// it, and I am recording that rather than writing a test that appears to cover it.
-//
-// So both guards are **reasoned claims, not tested ones**: they are the only thing that could
-// catch a step or a period change inside a read that does not bump the generation, and neither
-// the current call sites nor any test I could write produce that state.
-//
-// The honest tally for this module: two of the five findings it replaces are pinned by tests
-// that fail when the fix is deleted (`R3-003` rollback, `R3-001` clamp deadlock). The `R3-002`
-// pair — period and page — rests on guards whose isolation is not demonstrated.
+// **What is not tested.** The span guard compared `mine.span` with the argument its own call was
+// made with, so it could never discard anything (`#120`); it is deleted, not covered, because with
+// the claim in place it is provably redundant and `tests/unit/ledger-paging.test.ts` asserts its
+// absence. The offset guard stays and is pinned there: the clamp's re-read keeps the claim.
 
 describe('the owner is the only writer', () => {
-  it('keeps the offset and total as its own state, rendered but not assigned by the caller', () => {
-    // **The shape that makes the five findings unexpressible.** With rune fields the compiler
-    // sees `page.offset = 400` as a legal assignment, so the guarantee is not "it throws" — it is
-    // that a component has no reason and no place to do it: it reads `page.offset`, and every
-    // write in the codebase is inside this class. This test pins the two readable fields and the
-    // two methods, so a refactor that exposes a setter is visible here.
+  it('keeps the offset and total as its own state, rendered but not assigned by the caller', async () => {
+    // **The shape that makes the findings unexpressible**: every write is inside this class.
     const page = new LedgerPage<Row, null>(200);
     expect(typeof page.offset).toBe('number');
     expect(typeof page.total).toBe('number');
     expect(typeof page.read).toBe('function');
     expect(typeof page.step).toBe('function');
+    // The claim: any later claim supersedes, and a read claims for itself.
+    const first = page.claim();
+    const second = page.claim();
+    expect([page.owns(first), page.owns(second)]).toEqual([false, true]);
+    await page.read('day', fetcherFor(10, 200).fetcher, recorder().apply);
+    expect(page.owns(second), 'a read claims for itself').toBe(false);
   });
 
   it('answers false, not a throw, when its own read is superseded', async () => {
@@ -205,5 +193,38 @@ describe('the owner is the only writer', () => {
     const { apply } = recorder();
     const { fetcher } = fetcherFor(10, 200);
     expect(await page.read('day', fetcher, apply)).toBe(true);
+  });
+});
+
+// **`R3-002`/`R4-001`: the failure belongs to the owner too.** `step` rolled back unconditionally, so
+// a superseded step restored its page state over a newer read and published an error about it.
+describe('a step that has been superseded neither rolls back nor reports', () => {
+  it('leaves the newer read its page, its rows and its silence', async () => {
+    const { fetcher } = fetcherFor(500, 200);
+    const page = new LedgerPage<Row, null>(200);
+    const { apply, applied } = recorder();
+    await page.read('april', fetcher, apply);
+    let reject!: (e: unknown) => void;
+    const gate = new Promise<{ page: { rows: Row[]; total: number }; extra: null }>((_, r) => {
+      reject = r;
+    });
+    const errors: unknown[] = [];
+    const stepping = page.step(
+      1,
+      'april',
+      () => gate,
+      apply,
+      (e) => errors.push(e)
+    );
+    expect(page.offset).toBe(200);
+
+    // The reader changes the day while the step is in flight.
+    await page.read('may', fetcher, apply);
+    expect(applied.at(-1)?.rows[0]?.id).toBe('r200');
+
+    reject(new Error('the network went away'));
+    await stepping;
+
+    expect([page.offset, errors.length, applied.at(-1)?.rows[0]?.id]).toEqual([200, 0, 'r200']);
   });
 });

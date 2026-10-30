@@ -186,6 +186,11 @@ describe('isSamePageResponse: the rule both CRITICAL findings were missing', () 
       readFile(resolve(process.cwd(), 'src/lib/components/Ledger.svelte'), 'utf8')
     ]);
     expect(owner).toMatch(/mine\.offset !== this\.offset/);
+    // The inert span guard is gone, not merely documented (`#120`): it compared `mine.span` with the
+    // argument its own call was made with. A behavioural test cannot pin that — with the claim in
+    // place it is provably redundant — so its absence is asserted instead.
+    expect(owner).not.toMatch(/Object\.is\(mine\.span, span\)/);
+    expect(owner).toMatch(/this\.owns\(mine\.generation\)/);
     for (const component of [purchases, sales]) {
       expect(component).toMatch(/new LedgerPage/);
       expect(component).not.toMatch(/isSamePageResponse\(/);

@@ -105,40 +105,23 @@
   let open = new SvelteSet<string>();
 
   /**
-   * The day is read whenever the scope or the refresh token changes.
-   *
-   * The staleness question this used to answer by hand — a local generation counter compared in
-   * four places — is now the owner's, so the effect only has to say *what* to read.
-   *
-   * **Except for one thing the owner cannot answer, and losing it was a CRITICAL** (`R3-002` of
-   * `review-02622a533b5553ec`, #122). The owner decides whether an *answer* is applied; it cannot
-   * decide whether a **failure** belongs on screen, because a rejected read never reaches it. The
-   * loader this replaced therefore took an `isStale` predicate and gated both `error` and `loading`
-   * behind it. Moving onto the owner dropped the predicate, so a slow day load that failed
-   * published its error — and cleared `loading` — over a newer day that had already loaded. The
-   * read that owns the screen is the last one this effect started, and that is `cancelled` again.
-   *
-   * The page step has the same shape of question and is deliberately **not** patched here: answering
-   * it needs the owner to say whether a *failed* read was superseded, which is what #120/#121 own.
-   * Patching it from here would be the fourth hand-written comparison in a component `L25` records
-   * as having failed five times that way.
+   * The day is read whenever the scope or the refresh token changes. **The owner holds the failure
+   * as well as the answer** (`R3-003`): `page.owns(token)`, not a local flag, decides whether this
+   * run still owns the screen, so a load superseded by a post-write reload is covered too.
    */
   $effect(() => {
     const at = scopeInstant;
     void refreshToken;
-    let cancelled = false;
     loading = true;
     error = null;
-    readDay(at)
+    const token = page.claim();
+    readDay(at, token)
       .catch((e) => {
-        if (!cancelled) error = describe(e);
+        if (page.owns(token)) error = describe(e);
       })
       .finally(() => {
-        if (!cancelled) loading = false;
+        if (page.owns(token)) loading = false;
       });
-    return () => {
-      cancelled = true;
-    };
   });
   // The list endpoint carries `supplier_id`, not a name: one purchase does not
   // need a joined row, and the suppliers are a short list the picker already
@@ -227,8 +210,8 @@
   };
 
   /** Reads the day already on screen at the page the owner says. */
-  function readDay(at: Date): Promise<boolean> {
-    return page.read(at, pageFetcher, applyPage);
+  function readDay(at: Date, token: number = page.claim()): Promise<boolean> {
+    return page.read(at, pageFetcher, applyPage, token);
   }
 
   function toggle(id: string) {
