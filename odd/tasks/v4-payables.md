@@ -1,9 +1,11 @@
 # v4-payables — what we owe, and the money that pays it
 
 Slice **S6b / T7** of `odd/tasks/v4-settlement.md`, and the mirror of
-`odd/tasks/v4-receivables.md` (S6a). **State: T7.1-T7.5 implemented and green (146 backend
-tests), delivered as PR #87, and deliberately not reviewed natively — see L9.** S1, S3, S4, S5 and S6a are merged to `main` (`2e6f7be`); S2 is
-deferred to v5; S7 is still ahead. `0023` and the three routes are **not yet reviewed**.
+`odd/tasks/v4-receivables.md` (S6a). **State: closed. T7.1-T7.5 implemented and green (146
+backend tests), delivered as PR #87 (merged 2026-10-25), and deliberately not reviewed
+natively — see L9.** S1, S3, S4, S5, S6a and S7 are merged to `main`; S2 is deferred to v5.
+`0023` and the three routes **never received an outside view**, and that is the debt this
+header states rather than an oversight it leaves for a later reader to discover.
 
 The state that must hold when this slice closes, and it is one sentence:
 

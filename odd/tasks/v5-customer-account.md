@@ -1,7 +1,14 @@
 # v5-customer-account — a client's account, and a supplier's, read from one panel
 
-Slice 1 of three for "cobros y pagos". **State: slice 1 complete — T1, T2, T3 reviewed natively and approved; T4 implemented. Slice 2
-(the payment button and the endpoint that applies one payment to several debts) is next.** The product
+Slice 1 of **"cobros y pagos", which turned out to be two slices, not three**. **State: closed
+and merged** (`#90`–`#93` → `da3c0a2`); T1, T2, T3 reviewed natively and approved, T4 reviewed
+natively and approved (`review-cd1cb58b3c68ce09`). Slice 2 is `odd/tasks/v5-payments.md`, also
+closed and approved (`review-9cff43c50976184c`, `#94`–`#96`).
+
+**This header said "Slice 1 of three" and named a slice 3 that was never specified and never
+written.** That is corrected here rather than left for a later session to rediscover: nothing
+in the feature's own decisions (`L2`, `L3`, `L5`) asks for a third slice, and the two follow-ups
+slice 2 left are recorded in `v5-payments.md` `V9`, not in a slice of their own. The product
 shape was settled by the owner in conversation, and this file is the specification a later
 session reads.
 
@@ -15,7 +22,7 @@ what they owe and what is owed to them, and which of their sales are still unpai
 Nothing in this slice **writes**. Registering a payment is slice 2, and it needs the new
 endpoint the owner asked for (`L3`); this slice only reads.
 
-## Why it is three slices, measured
+## Why it shipped as two slices, measured
 
 | what | lines today | note |
 | --- | --- | --- |
@@ -159,10 +166,6 @@ anyway, because the payment button will refresh the balance after collecting), a
 no longer exists needs a visible state. In exchange, the panel is bookmarkable and a cashier
 can send the link. Only the id goes in the URL; solapa, scroll and form stay in component
 state, so this does not become URL-driven UI by the back door.
-
-## Verification log
-
-(empty — nothing is implemented yet)
 
 ## Verification log
 
@@ -379,3 +382,23 @@ result is checked by reading it — the same class of mistake as the two lies th
 the text was plausible and structurally wrong.
 
 `R2-002` (a suggestion on the boundary note's wording) is left as it is.
+
+L8 (closing entry, 2026-10-30 — **this document's own state was wrong**). Read on `bbf7a81`:
+this file said "Slice 1 of three", its Verification log had an `(empty — nothing is
+implemented yet)` heading above the eight entries that were not empty, and it announced a
+slice 3 that **does not exist anywhere** — no document, no spec, no task, no issue.
+
+Measured, not assumed. `git log` shows slice 1 as `#90`–`#93` (`da3c0a2`) and slice 2 as
+`#94`/`#95`/`#96` (`1c3558e`), both merged; `gh pr list --state open` is empty and the only
+open issue in the repository is the TypeScript 7 dependabot one. Nothing in the feature's own
+decisions asks for a third slice: `L2` asks for two pages and a panel, `L3` for one endpoint,
+`L5` for the payment button to arrive with it. The "three" was a measurement of *size* made
+before the work (`1500–2000 authored lines`), and it was answered by shipping two slices —
+the owner's own words in `L2` allowed it: *"Si por ahi es mucho codigo separamos en un slice
+inicial y despues seguimos con el A y B"*.
+
+So the count is corrected to two. Of the two things slice 2 genuinely left open
+(`v5-payments.md` `V9`), **`R3-002` is closed by this change** (`V11`); the other,
+`R1-preexisting-till-floor` (a supplier payment has no till floor), is still open and is a
+money-path decision, not a slice. Promoting it to a slice would invent a deliverable out of
+one finding.

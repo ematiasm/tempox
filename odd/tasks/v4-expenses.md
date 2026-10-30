@@ -1,9 +1,24 @@
 # v4-expenses — money leaving that touches no stock
 
-The last v4 slice that was never specified. **State: designed, not implemented.** Every
-spec below is a decision; none is a measurement of code that exists. The schema facts
+The last v4 slice that was never specified. **State: closed and merged** — `#110`–`#114`,
+`#116`, `#118`, `#124`, `main` from 2026-10-29. The header said "designed, not implemented"
+long after the screen shipped, which is the one failure mode an ODD header has: a later
+session reads a plan as a fact. What the close cost is `L34` (an unreviewed last correction)
+and `L35` (CI red for a reason `docs/en/testing.md` denied); the specs below stay as written,
+because they are the record of what was decided rather than a claim about what is missing.
+
+Every
+spec below is a decision recorded before any of it existed; the "measured absent today"
+table below describes `87dfa5a`, which is the base the design was written against, not
+`main`. The schema facts
 quoted here were read on `87dfa5a` and are named with their line so they can be
 re-checked instead of believed. Engram topic key: `tempox/odd/v4-expenses/tasks`.
+
+**The task table is history too.** `odd/v4-expenses/tasks.md` listed E1–E4 as `pending` long
+after they shipped; it now names each row's PR and commit, because that mirror is what a later
+session resumes from. They shipped in `#111` (categories), `#112` (document, advances, ledger,
+summary), `#114` (screen) and `#116`/`#118` (the page envelope and the pager). E3-T1 is
+the only open row and it is open **by the owner's decision** (`L7`), not by neglect.
 
 The state that must hold when this feature closes, and it is one sentence:
 

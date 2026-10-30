@@ -3,8 +3,19 @@
 Source of truth: `odd/tasks/v4-expenses.md`. This mirror exists so a later session resumes
 from memory instead of re-deriving the design. Update both after every task transition.
 
-**State: designed, not implemented.** 12 specs (S1-S12), 5 decisions (D1-D5), 8 tasks across
-3 slices (E1 backend, E2 screen, E3 spending read model).
+**State: closed and merged.** 12 specs (S1-S12), 6 decisions (D1-D6a), 10 tasks across
+4 slices (E1 backend, E2 screen, E3 spending read model — **deferred by the owner**, E4 the
+page envelope and the pager).
+
+| slice | PR | what |
+| --- | --- | --- |
+| E1 (T1–T5) | #111, #112 | categories, the expense document, advances, the ledger + summary |
+| E2 (T1–T2) | #114 | `/expenses`: the draft sheet, the day's ledger, the rail, both dictionaries |
+| E4 (T1–T2) | #116, #118 | `{rows, unsettled_older, cap}`, the server-side `unsettled` filter, the pager |
+| E3 (T1) | — | **deferred by the owner** (`L7`): `GET /api/spending` grouped by category |
+
+The debts this feature closed with are `L34` (the last correction was never reviewed) and
+`L35` (CI red for a reason the testing document denied; fixed in `e34b6a7`).
 
 ## The one sentence
 
@@ -46,14 +57,16 @@ Consequence: this migration does **not** re-cut `money_entries.document_kind`. I
 
 | ID | Slice | What | Risk | State |
 | --- | --- | --- | --- | --- |
-| E1-T1 | backend | `expense_categories` + seed + GET/POST/PATCH | — | pending |
-| E1-T2 | backend | `expenses` table + `payments.party_kind='expense'` + two-state trigger + `POST /api/expenses` | item 1 | pending |
-| E1-T3 | backend | `POST /api/expenses/{id}/advances`, ceiling in route and trigger | item 1 | pending |
-| E1-T4 | backend | `GET /api/expenses` + `GET /api/expenses/summary` (purchases as one derived group) | — | pending |
-| E1-T5 | backend | tests proven to bite + `architecture.md`, `README.md`, `PRODUCT.md` | — | pending |
-| E2-T1 | screen | `/expenses` draft sheet, day ledger, rail, version chip, both dictionaries | item 3 | pending |
-| E2-T2 | screen | advance action in the expanded expense, spending foot, one e2e by identity | item 3 | pending |
+| E1-T1 | backend | `expense_categories` + seed + GET/POST/PATCH | — | done — `7593c16` (#111) |
+| E1-T2 | backend | `expenses` table + `payments.party_kind='expense'` + two-state trigger + `POST /api/expenses` | item 1 | done — `ce20d01` (#112) |
+| E1-T3 | backend | `POST /api/expenses/{id}/advances`, ceiling in route and trigger | item 1 | done — `742e04f` (#112) |
+| E1-T4 | backend | `GET /api/expenses` + `GET /api/expenses/summary` (purchases as one derived group) | — | done — `ea81096` (#112) |
+| E1-T5 | backend | tests proven to bite + `architecture.md`, `README.md`, `PRODUCT.md` | — | done — `e676fa2` (#112) |
+| E2-T1 | screen | `/expenses` draft sheet, day ledger, rail, version chip, both dictionaries | item 3 | done — (#114) |
+| E2-T2 | screen | advance action in the expanded expense, spending foot, one e2e by identity | item 3 | done — (#114) |
 | E3-T1 | read model | **deferred by the owner (L7)** — `GET /api/spending` grouped by category | — | deferred |
+| E4-T1 | ledger | the page envelope `{rows, unsettled_older, cap}` and the server-side `unsettled` filter | item 3 | done — `d3811a5` (#116) |
+| E4-T2 | ledger | RED-first proof in both levels for the envelope and the pager | — | done — `7324a1b`, `b8b75ea` (#116, #118) |
 
 Order: E1-T2 needs T1; E1-T3 needs T2; E1-T4 needs T3; E2 needs E1 green. **E1 and E2 are
 this feature's committed work**; E3 is the deferred remainder and drops without leaving a
