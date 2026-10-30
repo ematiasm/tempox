@@ -28,6 +28,8 @@
     refundableOf as saleRefundableOf,
     refundedByLine as saleRefundedByLine
   } from '#lib/salesRefund.js';
+  import { canStepPage, pageCount, pageIsPartial, pageNumber } from '#lib/ledgerPaging.js';
+  import { LedgerPage, type PageApply, type PageFetcher } from '#lib/ledgerPage.svelte.js';
   import { lang } from '#lib/i18n/index.svelte.js';
   import { isOnAccount, methodLabel } from '#lib/methodLabel.js';
   import { createStaleNotice } from '#lib/screenTrust.js';
@@ -53,6 +55,18 @@
   let { refreshToken = 0, oncount }: Props = $props();
 
   const PAGE = 50;
+  /** What a sales page read carries beyond its rows. */
+  type SalesPageExtra = { day: DayRange; todayFrom: string; summary: PeriodSummary };
+
+  /**
+   * The page, owned by `LedgerPage`.
+   *
+   * **This ledger has exactly one reader: the effect below.** A write that needs fresh rows calls
+   * `page.refresh()`, which moves `page.revision` and nothing else. The previous attempt issued a
+   * second read from the refund path and the two raced — both bumped the generation, one was
+   * discarded, and the discarded one carried the credit note's rows. Two e2e caught it.
+   */
+  const page = new LedgerPage<SaleListItem, SalesPageExtra>(PAGE);
 
   // Keep the instant the page is scoped to; the server resolves its span.
   let scopeInstant = $state(new Date());
@@ -72,6 +86,8 @@
   let cash = $state<string | null>(null);
   let loading = $state(true);
   let error = $state<string | null>(null);
+  /** True when `error` describes a write's failed reload rather than a failed read (`R3-002`). */
+  let errorIsRecordedWrite = $state(false);
   // `SvelteSet` rather than a plain `Set` in `$state`: it carries its own
   // reactivity, so `has`/`add`/`delete` register as reads and writes directly and
   // the expanded rows stay in step with the set without reassigning it.
@@ -99,6 +115,22 @@
   // figures are current and a warning saying otherwise is a lie. Backed by a
   // `SvelteMap` so retiring it re-renders.
   const refundStale = createStaleNotice(new SvelteMap<string, string>());
+  /**
+   * The sales whose credit note has just been recorded and whose reload the effect is about to do.
+   *
+   * **`R3-002` of `review-a88d442d3e677eb8`.** Taking the read out of the refund path (so the effect
+   * is the only reader) also took away the place that used to report "the note landed, the screen did
+   * not catch up". Without this the failure surfaces as the generic ledger error and the cashier is
+   * invited to issue the note a second time.
+   */
+  let refundedAfterWrite = new SvelteSet<string>();
+  /**
+   * The key of the notice about the cash figure, which belongs to no document.
+   *
+   * The banner reads `refundStale.empty`, so any entry raises it; no row's id matches this one, so
+   * it never renders inside a slip (`R4-001` of `review-4d05dcfca7ad3826`).
+   */
+  const CASH_NOTICE = 'cash';
 
   // The server's current-span boundary is the sole authority for this state.
   // It is "today"/"this week"/"this month" depending on the scope, so one
@@ -141,9 +173,29 @@
    */
   const shownTotal = $derived(summary?.net ?? null);
   const refundedTotal = $derived(summary?.refunded ?? '0.00');
-  const periodDocuments = $derived(summary?.documents ?? null);
+  /** The period's count, from the owner — one source, so the header and the table agree. */
+  /**
+   * The period's count, or `null` until a page has been applied.
+   *
+   * **`R3-003` of `review-4d05dcfca7ad3826`.** `$derived(page.total)` reports `0` before the first
+   * summary lands, so a parent was told the period is *empty* when the truth is that it is not
+   * known yet — and a failed initial load reported an empty period rather than an unknown one.
+   * `page.total` starts at 0 because it is a number; the screen's claim starts at "unknown".
+   */
+  let appliedOnce = $state(false);
+  /** The count as the page header is told it: `null` until a read has been applied. */
+  const periodDocuments = $derived(appliedOnce ? page.total : null);
+  /**
+   * The pager's view of the same number.
+   *
+   * **`$derived`, not a plain alias** — and that distinction was a real bug. `const pageTotal =
+   * periodDocuments;` captures the value at initialisation, when `page.total` is still 0, and
+   * freezes there: the summary said 74 documents, the table showed 50, and the note still claimed
+   * "the whole period". Measured by a probe that printed both numbers.
+   */
+  const pageTotal = $derived(page.total);
   /** True when the period holds more documents than this page shows. */
-  const pageIsPartial = $derived(periodDocuments !== null && rows.length < periodDocuments);
+  const pageIsPartialNote = $derived(pageIsPartial(rows.length, pageTotal));
 
   /**
    * How many rows of this page are below the frame's bottom edge.
@@ -239,78 +291,127 @@
     oncount?.(periodDocuments);
   });
 
+  /**
+   * Applies an accepted sales page.
+   *
+   * **It does not clear `expanded`, and that is the fix for the credit-note symptom.** Clearing
+   * was right while this only ran on a scope or day change; now it also runs after every recorded
+   * write, so an unconditional clear collapsed the row the cashier had open — and the credit-note
+   * block lives inside that row, so the note disappeared from the screen while existing on the
+   * server. Pinned by `tests/component/expanded-survives-refresh.test.ts`, which shows the row
+   * surviving without the clear and collapsing with it.
+   */
+  const applySalesPage: PageApply<SaleListItem, SalesPageExtra> = (list, extra) => {
+    appliedOnce = true;
+    range = extra.day;
+    todayFrom = extra.todayFrom;
+    rows = list;
+    summary = extra.summary;
+  };
+
   $effect(() => {
     // Read the reactive inputs so the effect re-runs when the span, the scope or
     // the refresh token changes.
     const at = scopeInstant;
     void scope;
     void refreshToken;
+    // **`page.revision` is the one trigger.** The step moves it and a post-write refresh moves
+    // it, so this effect has a single reason to run and exactly one reader owns the period.
+    void page.revision;
     let cancelled = false;
+    // **The owner's claim, before the first await** (`R3-001`): `cancelled` fires only when this
+    // effect is torn down, so a response arriving before the replacement run started was applied.
+    const token = page.claim();
+    const mine = () => !cancelled && page.owns(token);
 
     loading = true;
     error = null;
-    // Both reads have to succeed before this screen counts as current, and they
-    // are independent requests that run in parallel: retiring the notice on the
-    // sales read alone cleared the warning while the cash figure was still stale.
-    // A retry where `listSales` succeeds and `getCash` fails is exactly that case.
+    errorIsRecordedWrite = false;
+    // Both reads have to succeed before this screen counts as current, and they are independent
+    // requests that run in parallel: retiring the notice on the sales read alone cleared the
+    // warning while the cash figure was still stale.
     let salesFresh = false;
     let cashFresh = false;
     const retireIfCurrent = () => {
-      if (cancelled || !salesFresh || !cashFresh) return;
+      if (!mine() || !salesFresh || !cashFresh) return;
       refundStale.retireAll();
     };
-    // Resolve the scoped span and the *same* span ending now, both through the
-    // server. The second read uses the same scope on purpose: comparing a week's
-    // start against a day's start is never equal, so "is this the current
-    // period?" was false on every day but the first — and the pager happily
-    // walked forward into the future. One scope, one comparison, all three
-    // widths.
-    Promise.all([fetchDay(at, scope), fetchDay(new Date(), scope)])
-      .then(async ([day, today]) => {
-        if (cancelled) return;
-        range = day;
-        todayFrom = today.from;
+
+    void (async () => {
+      try {
+        const [day, today] = await Promise.all([fetchDay(at, scope), fetchDay(new Date(), scope)]);
+        if (!mine()) return;
         shopZone = day.zone;
-        // The totals come from the database, not from the rows this page
-        // happens to hold: `listSales` caps at PAGE, so anything summed here
-        // omits the rest of the period. One request covers the whole span.
-        const [sales, totals] = await Promise.all([
-          listSales({ from: day.from, to: day.to, limit: PAGE, offset: 0 }),
-          getSalesSummary(day.from, day.to)
-        ]);
-        if (cancelled) return;
-        rows = sales;
-        summary = totals;
-        expanded.clear();
-        // The figures are current again, so nothing on this screen is stale. A
-        // warning here would contradict the data beside it, and an operator who
-        // learns to ignore it will not read it on the day it is true. This is the
-        // rule the first implementation was missing: it only ever retired a
-        // notice on a click that happened to touch that same row.
-        salesFresh = true;
+        const fetcher: PageFetcher<SaleListItem, SalesPageExtra> = async (offset) => {
+          const [sales, totals] = await Promise.all([
+            listSales({ from: day.from, to: day.to, limit: PAGE, offset }),
+            getSalesSummary(day.from, day.to)
+          ]);
+          return {
+            page: { rows: sales, total: totals.documents },
+            extra: { day, todayFrom: today.from, summary: totals }
+          };
+        };
+        const applied = await page.read(day.from, fetcher, applySalesPage, token);
+        if (!mine()) return;
+        // A discarded read is not a fresh one: the rows on screen are not the ones it fetched, so
+        // the stale notice must stand.
+        if (applied) salesFresh = true;
+        // The write's reload arrived: nothing is left waiting to be named by a failure.
+        if (applied) refundedAfterWrite.clear();
         retireIfCurrent();
-      })
-      .catch((e: unknown) => {
-        if (!cancelled) error = e instanceof ApiError ? `${e.message} (${e.status})` : String(e);
-      })
-      .finally(() => {
-        if (!cancelled) loading = false;
-      });
+      } catch (e) {
+        if (!mine()) return;
+        // **The pager goes back to the page whose rows are on screen** (`S21`, `R3-003`/`R4-001` of
+        // `review-b263118903947f58`). `stepTo` moved the offset and never restored it, so a failed
+        // read left the label naming a page whose rows were not fetched — and the next step then
+        // skipped it. The owner knows which page that is; the caller cannot, because the offset has
+        // already moved.
+        page.restore();
+        // **A reload that a recorded note asked for says *that*** (`R3-002`). The note exists on the
+        // server; only the re-read failed. Reporting the generic ledger error replaced the region and
+        // erased the one fact the cashier needs — that their write landed, so they must not repeat it.
+        if (refundedAfterWrite.size > 0) {
+          for (const saleId of refundedAfterWrite) {
+            refundStale.mark(
+              saleId,
+              e instanceof ApiError ? `${e.message} (${e.status})` : String(e)
+            );
+          }
+          refundedAfterWrite.clear();
+          errorIsRecordedWrite = true;
+          error = `${lang.t.sales_refund_stale}${e instanceof ApiError ? ` (${e.status})` : ''}`;
+        } else {
+          error = e instanceof ApiError ? `${e.message} (${e.status})` : String(e);
+        }
+      } finally {
+        if (mine()) loading = false;
+      }
+    })();
 
     // The cash figure is the shop's balance across every confirmed sale, not
     // the day's: it is labelled as such rather than implying a daily total.
     getCash()
       .then((c) => {
-        if (cancelled) return;
+        if (!mine()) return;
         cash = c.total;
         cashFresh = true;
+        refundStale.forget(CASH_NOTICE);
         retireIfCurrent();
       })
-      .catch(() => {
+      .catch((e) => {
         // A cash read that fails leaves the balance visually unknown but does not
         // discredit the day's rows, so it is not turned into a page error. It does
-        // keep the stale notice alive, because the figures are not all current.
-        if (!cancelled) cash = null;
+        // **mark** the screen as behind, because the figures are not all current —
+        // and now the effect is the only cash reader, so nobody else can say it
+        // (`R4-001` of `review-4d05dcfca7ad3826`). The entry is keyed by the figure
+        // rather than a document: the banner reads `.empty`, and no row matches it.
+        if (!mine()) return;
+        cash = null;
+        refundStale.mark(
+          CASH_NOTICE,
+          e instanceof ApiError ? `${e.message} (${e.status})` : String(e)
+        );
       });
 
     return () => {
@@ -333,6 +434,22 @@
     if (!range) return;
     const target = delta < 0 ? range.prev : range.next;
     scopeInstant = new Date(target);
+  }
+
+  /**
+   * Moves to the neighbouring page of the period, clamped by `clampOffset`.
+   *
+   * The clamp is what makes the last page a real address and keeps the buttons honest at both
+   * ends — the defect the expenses pager shipped with, where a step towards an available page
+   * was disabled and the reader was stranded one page short.
+   */
+  function stepPage(delta: number) {
+    // **No read here.** `stepTo` moves the offset and bumps `revision`; the effect is the only
+    // reader and re-fetches. A read here would be the second reader that raced it before.
+    if (!canStepPage(page.offset, PAGE, pageTotal, delta)) return;
+    confirming = null;
+    expanded.clear();
+    page.stepTo(delta);
   }
 
   /**
@@ -504,22 +621,36 @@
     // Reload the day rather than patching the row in place: the note the server
     // wrote is the record, and the derived stamped state has to come from it, not
     // from what this component believes it sent.
-    try {
-      rows = await listSales({ from: range.from, to: range.to, limit: PAGE, offset: 0 });
-      const c = await getCash();
-      cash = c.total;
-      // This is a successful reload of the whole day, so the same rule applies as
-      // in the effect above: nothing on this screen is stale any more. The rule
-      // lives in one place (`screenTrust.ts`) precisely so both success paths
-      // honour it -- the first version only retired notices on the effect path,
-      // which would have left a warning standing over figures that had just been
-      // re-read.
-      refundStale.retireAll();
-    } catch (e) {
-      // The note stands; only this screen is behind. It is said as that, and the
-      // confirm is closed, so the cashier does not read it as a refund to redo.
-      refundStale.mark(row.id, e instanceof ApiError ? `${e.message} (${e.status})` : String(e));
-    }
+    //
+    // **The two reads are independent, and treating them as one sequence is `R3-003` of
+    // `review-02622a533b5553ec` (#123).** Making the cash refresh unconditional closed
+    // `R3-CORR-001` — a balance left describing the ledger before the note — and it was put
+    // *before* the refresh, which turned it into a gate: a failing `getCash()` threw past
+    // `page.refresh()`, so the note existed on the server and the row never showed it. The reader
+    // read their own write as having done nothing, which is the worse of the two failures: the
+    // balance can be re-read, and the list is the evidence that the write landed.
+    //
+    //     page.refresh();              // the rows, unconditionally and first
+    //     await refreshCashFigures();  // the balance, and its own failure reported as its own
+    //
+    // **The refresh is issued, not awaited.** `refresh()` moves `revision`; the effect is the one
+    // reader of the period and re-fetches. A read here would be the second reader that raced it
+    // before.
+    refundedAfterWrite.add(row.id);
+    page.refresh();
+    // **The notice is not retired here** (`S23`, `R3-004` of `review-b263118903947f58`). Retiring it
+    // immediately after *scheduling* the refresh erased a warning that was still true whenever the
+    // reload then failed — the screen said nothing while it was behind. The retire belongs where the
+    // reads come back: in the effect, once the period and the cash figure are both current
+    // (`retireIfCurrent`), and in the cash read below for the figure it owns.
+    // **The refund reads no figure of its own** (`S20`/`R4-001` of `review-4d05dcfca7ad3826`).
+    // `page.refresh()` moves `revision`, the effect re-runs, and the effect reads the period *and*
+    // the cash figure. A second `getCash()` here was a second writer of the same state: whichever
+    // resolved last won, so a later failure blanked a balance that had just been read — and the
+    // refund could not tell whose figure it was writing.
+    //
+    // Its own failure is therefore already covered: `error` replaces the ledger region, and the
+    // notice the effect retires is retired only when both of *its* reads came back current.
     refunding = null;
   }
 </script>
@@ -604,7 +735,10 @@
        empty-state paragraph claiming there are no sales, or beside stale rows. -->
   {#if error}
     <div class="alert" role="alert">
-      <strong>{lang.t.sales_ledger_error}</strong>
+      <strong
+        >{#if errorIsRecordedWrite}{lang.t.sales_stale_title}{:else}{lang.t
+            .sales_ledger_error}{/if}</strong
+      >
       <span>{error}</span>
       <button type="button" onclick={() => (refreshToken = refreshToken + 1)}>
         {lang.t.sales_retry}
@@ -849,9 +983,11 @@
         <!-- The note says which set the figure covers, and says when the table
              beside it is only part of it. A footer that reads as the period's
              total while the table above shows a page is the defect this
-             replaces. -->
-        {#if pageIsPartial}
-          {lang.t.sales_shown_note_partial(rows.length, periodDocuments ?? rows.length)}
+             replaces. **The pager below it is the other half**: the first version
+             said the table was a page and offered nowhere to go, which for a
+             cashier looking for last Tuesday's sale is the same as not saying it. -->
+        {#if pageIsPartialNote}
+          {lang.t.sales_shown_note_partial(rows.length, pageTotal)}
         {:else}
           {lang.t.sales_shown_note}
         {/if}
@@ -862,6 +998,27 @@
          quarter of the footer's width that the two money figures needed. A gift
          line is still visible where it matters: marked on its own line inside
          the document, and counted in the total like any other. -->
+    {#if pageIsPartialNote}
+      <div class="pager">
+        <button
+          type="button"
+          onclick={() => stepPage(1)}
+          disabled={!canStepPage(page.offset, PAGE, pageTotal, 1)}
+        >
+          ← {lang.t.sales_older}
+        </button>
+        <span class="page-of figures">
+          {lang.t.ledger_page_of(pageNumber(page.offset, PAGE), pageCount(pageTotal, PAGE))}
+        </span>
+        <button
+          type="button"
+          onclick={() => stepPage(-1)}
+          disabled={!canStepPage(page.offset, PAGE, pageTotal, -1)}
+        >
+          {lang.t.sales_newer} →
+        </button>
+      </div>
+    {/if}
     <div class="fig">
       <span class="label">{lang.t.sales_refunded}</span>
       <span class="value figures">{formatMoney(refundedTotal)}</span>

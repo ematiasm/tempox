@@ -671,3 +671,449 @@ nowhere to go: #116 made it *say* when part of the day was off screen, which was
   page it reaches leads with a different document, and walking forward returns to page one.
 - **Counts**: frontend unit 292 (was 280), e2e 42 (was 41), backend unchanged at 73/182/6.
   `make lint` clean.
+
+L24 (the class closed where it actually lived). `R3-004` was recorded as an expenses defect; it was
+a **repo-wide** one wearing three costumes, and this is the generalisation:
+
+- **Ventas** said its table was a page and gave the reader nowhere to go — the same "notice with
+  no destination" the expenses fix had just removed one screen over.
+- **Compras** asked for 200 rows and let the rest of the day go **in silence**, with a count line
+  that read as the period's.
+
+So the arithmetic moved to `frontend/src/lib/ledgerPaging.ts` (`clampOffset`, `pageCount`,
+`pageNumber`, `canStepPage`, `pageIsPartial`), owned once for the three ledgers, exactly as
+`methodLabel.ts` owns the empty-rail rule for the same three. `expenseLedger.ts` keeps its
+`day*` names as thin wrappers so that module still reads as being about a day.
+
+- **Three defects found while wiring it, all real**: the sales pager moved the label and not the
+  table, because `pageOffset` was not a dependency of the effect that reads the day; the count
+  line on purchases reported the page as the period; and the pager labels are inverted by the
+  newest-first ordering, which the expenses slice had already paid to learn.
+- **The e2e bit back four times, and every failure was a decoration test in disguise** — the
+  pattern `v5-customer-account.md` V2b names. It branched on whatever the shared database held
+  ("the period fits", so removing the pager still passed); it read `.foot .note` for a class that
+  is `.footings .note`; it guessed `<tr>` rows where every ledger uses `data-doc-row`; and it
+  compared `innerText` of a slip, which Playwright normalises differently between reads. Each was
+  fixed by asserting the identity instead of a derived rendering.
+- **Neutered four ways and each failed**: purchases ignoring the offset; purchases hiding the
+  partial notice; the sales pager not rendered; and `pageOffset` dropped from the effect's
+  dependencies.
+- **Counts**: frontend unit 307 (was 292), e2e 44 (was 42). Backend untouched.
+
+L25 (three review rounds, and the honest account of why). Lineage
+`review-58ab3200d6f59c90` found 2 CRITICAL, `review-811cd5f5c6e59feb` found 3 more in the
+correction, and its validator then rejected the third-round correction while **passing**
+`R3-001` and `R3-002`. Every finding was in the same family, in the same two files:
+**pagination state that outlived the context it was captured in.**
+
+- `R3-001` (round 1): purchases passed `() => false` as its staleness predicate, so no response
+  was ever stale.
+- `R3-002` (round 1): the post-refund reload assigned rows without asking whether the reader had
+  paged.
+- `R3-001` (round 2): the clamp invalidated **its own** re-read, because it changed the offset
+  and then judged staleness by that same offset. A logical deadlock: the clamped page was never
+  fetched. **Corrected and accepted.**
+- `R3-002` (round 2): the period was not part of the comparison, so a period change at the same
+  offset was invisible. **Corrected and accepted.**
+- `R3-003` (round 2), still open: `reload` captures `requested = pageOffset` **after** `stepPage`
+  already moved it, so `offsetAfterFailedLoad(requested)` "rolls back" to the new offset. The
+  helper and its tests are honest about their own contract and useless for the defect, because
+  the previous offset was lost before `reload` was entered.
+
+**The pattern, stated so the next session does not rediscover it.** The offset lives in the
+component, and every asynchronous path has to remember to capture, compare and roll back — so
+each fix created the next finding. The rule that would close the class is one owner: a single
+function that runs a read and decides whether its result still applies, given the context
+(day, period, page) captured **where the read is issued**, not where it is consumed. Rolling
+back needs the previous value passed in, not re-read from the state it was moved from.
+
+**Recommendation carried to the maintainer**: refactor before merge, not a fourth round of
+patches. The three corrections that landed are individually sound and tested (315 unit, 44 e2e,
+lint clean); what is unsound is the shape they are patching.
+
+L26 (the single owner, and what it did and did not prove). `refactor/ledger-paging-owner`, branched
+from `f0fae7a` so it starts on the three fixes that passed two validations rather than on `main`.
+
+`frontend/src/lib/ledgerPage.ts` owns the offset in one closure. A component reads `offset` and
+`total` through getters and calls `read`/`step`; there is no setter, so the five findings' cause —
+"the offset lives in the component and every async path must remember to capture, compare and roll
+back" — is not expressible rather than merely fixed. `read` captures `{offset, span, generation}`
+at issue time and discards its own answer when any of them moved; the clamp re-read is issued
+inside the owner so it cannot judge itself stale; `step` captures the previous offset before moving
+it, so the rollback cannot restore the value it was meant to undo.
+
+**What is proven, and what is not.** Seven tests, and each was verified by deleting the code it
+covers:
+
+- deleting the rollback's offset restore fails 2 tests (`R3-003`);
+- deleting the clamp re-read fails 1 (`R3-001`, the deadlock);
+- **deleting the span guard fails none**, and deleting the offset guard fails none — because a
+  newer read also bumps the generation, and that guard fires first. Those two are therefore
+  **untested claims**: kept because they are the only thing that can catch a step or a period
+  change inside a read that does not bump the generation, and justified by reasoning, not by a
+  test that fails without them. An attempt to construct that scenario hung on its own gate and
+  was deleted rather than kept as a decoration.
+
+Also corrected in this pass: the first version of the two staleness tests **passed with the guard
+deleted**, because they released the stale answer before the newer one and the newer one's apply
+landed last. A test whose conclusion is "the last write wins" cannot see a stale write that
+happens to be first. Releasing the stale answer *last* is what makes the defect visible; the same
+mistake, in the test this time, as the round before.
+
+Counts: frontend unit 322 (was 315), e2e 44 unchanged, backend untouched, `make lint` clean.
+
+L27 (the owner is a class with runes, and `PurchaseLedger` is migrated). The first version of
+`ledgerPage.ts` was a plain closure and **could not be wired**: `let offset` inside a function is
+not Svelte state, so reading `page.offset` from a template created no reactive dependency — the
+pager would have rendered once and never updated. Svelte 5 tracks runes only, and runes only work
+in `.svelte.ts`. It is `ledgerPage.svelte.ts` now, a class whose `offset` and `total` are `$state`
+and whose generation counter deliberately is not (a counter that is rendered would re-run every
+effect on every read).
+
+`PurchaseLedger` uses it. What was deleted: `pageOffset`, `loadSeq`, the four-branch `loadDay`
+with its own clamp and its own predicate, `reload` with its captured `requested`, and the three
+comparisons written by hand. What replaced them: a fetcher that answers one request, an `apply`,
+and `page.read`/`page.step`. `R3-003` is now unexpressible there — the owner captures the previous
+offset before moving it, so the rollback cannot restore the value it means to undo.
+
+`R3-001` (the clamp deadlock) and `R3-002` (page and period) are the owner's, in one place, for the
+two ledgers still to migrate. `Ledger` (sales) still calls `isSamePageResponse` itself; a test
+asserts both states so the remaining migration is visible rather than forgotten.
+
+Counts: frontend unit 321, e2e 44, backend untouched, `make lint` clean. `svelte-check` 0 errors.
+
+L28 (browser mode, and the two bugs it found in ten minutes). Adopted
+`@vitest/browser` + `@vitest/browser-playwright` after six failed attempts at migrating sales by
+reasoning alone. `vite.config.ts` now has two projects: `unit` (jsdom, 321 tests, unchanged speed)
+and `component` (Chromium, for anything that needs to mount Svelte).
+
+**The first thing it settled was that I had been blaming the wrong thing.** A probe that mounts a
+component whose effect reads a class rune and then writes it from outside proved the effect *does*
+re-run — including with an `await` in the body. So `await_reactivity_loss`, the hypothesis I had
+been working from, **did not apply**. The docs name it for state read *after* an await; the ledger
+reads synchronously. Six attempts were spent on a cause that was not there.
+
+**Two real bugs, both found by measuring rather than arguing:**
+
+1. **`expanded.clear()` ran on every read.** Correct while the effect only fired on a scope or day
+   change; after the owner was introduced a recorded credit note refreshed the page, the effect ran
+   again, and the open row collapsed — and the credit-note block lives inside that row, so the note
+   vanished from the screen while existing on the server. Pinned by
+   `tests/component/expanded-survives-refresh.test.ts`, which shows the row surviving after the fix
+   and collapsing with an unconditional clear.
+2. **`const pageTotal = periodDocuments;` captured once and froze.** Not a `$derived`, so it held
+   the initial 0 forever. The symptom was precise and misleading: the summary said 74 documents,
+   the table showed 50, and the note still claimed "the whole period". Found by a probe e2e that
+   printed both numbers, after three wrong guesses.
+
+Sales now has **one reader** — its effect — and a write moves `page.revision` instead of reading.
+`stepTo` moves the offset and the revision together for the same reason: one trigger, no second
+reader to race.
+
+Counts: unit 321 / component 2 / e2e 44, backend untouched, `make lint` clean.
+
+L29 (the two independent CRITICALs, closed in one PR; and the one scope decision the owner stated).
+`#122` and `#123` are the batch the issue comments predicted would be independent — different files,
+no shared state — so they share one branch and one PR (`fix/ledger-superseded-load-and-refund-order`)
+and each keeps its own commit, so each can be read alone.
+
+**The owner's constraint, verbatim:** "este PR no toca ledgerPage.svelte.ts". It is honoured, and it
+turned out to be load-bearing rather than a preference. Both fixes are component-side:
+
+- `#122` — `PurchaseLedger`'s effect lost the `isStale` predicate when the screen moved onto the page
+  owner, so a superseded load published its error and cleared `loading`: `readDay(at).catch((e) =>
+  (error = describe(e))).finally(() => (loading = false))`. `LedgerPage` decides whether an *answer*
+  is applied; a rejected read never reaches it, so it structurally cannot decide whether a *failure*
+  belongs on screen. The guard that was deleted is restored in the component, where the question
+  actually lives.
+- `#123` — `getCash()` was made unconditional to close `R3-CORR-001` and placed **before** the
+  refresh, so a failing balance read threw past `page.refresh()`: the note existed on the server and
+  the row never showed it. The refresh is now issued first and not awaited (it only moves
+  `revision`), the cash figure refreshes after it, and the two failures are separate again.
+
+**What the constraint deferred, stated rather than silently dropped.** The `stepPage` path has the
+same shape of question as `#122` — a page read that fails has no way to ask the owner whether a newer
+read superseded it — and it is **not** patched here. Answering it needs the owner to say whether a
+*failed* read was superseded, which is `#120`/`#121`'s design question (`L25`'s "one owner" answer,
+taken one level further: the owner owns the failure as well as the answer). Patching it from the
+component would be the fourth hand-written generation comparison in a file `L25` records as having
+failed five times that way.
+
+**Three tests, and each was proven to bite** by deleting the code it covers, measured:
+
+| test | deleted | failed |
+| --- | --- | --- |
+| `purchase-ledger-superseded-load.test.ts` › does not publish its error | `if (!cancelled) error = …` → `error = …` | 2 tests |
+| … › does not clear the loading state | `if (!cancelled) loading = false` → `loading = false` | 1 test |
+| `refund-cash-failure.test.ts` › still reloads the rows | `page.refresh()` moved back below `getCash()` | 1 test |
+| … | `refundStale.mark(…)` → `refundStale.retireAll()` | 1 test |
+
+**Both are against the real components, not a harness.** The first draft of the refund test defined
+its own copy of the sequence in a harness and asserted that — which is exactly `R3-CORR-002` of an
+earlier round, the validator's sharpest follow-up ("the unit test defined its own local copy and so
+exercised nothing the components implement"). Extracting the sequence into a module was rejected for
+the same reason it was there: the shared thing is two calls in an order, and a module that owned the
+order would exist only to be testable while the component kept doing whatever it liked. Both tests
+now mount the component against a mocked client and drive the real interaction.
+
+The first harness also hung, and the reason is worth keeping: its fetcher wrote `$state` from inside
+the reader's effect, which re-ran the effect, which read again — an infinite flush that surfaced as
+Svelte's DEV warning `[updated at]` repeating forever, not as a timeout. The narration is plain now.
+
+Counts: unit 327 / component 6 / e2e 44; backend untouched, `make lint` clean, `svelte-check`
+0 errors.
+
+L30 (the sixth round, and the honest account of why my correction did not close it). `L29` claimed the
+constraint "no tocar `ledgerPage.svelte.ts`" was load-bearing and correct. The owner lifted it, the
+correction landed (`77da969`, 193 lines), and the re-review found five CRITICAL findings that I had
+introduced. Two were mine in the worst way: **the fix changed the defect instead of closing it.**
+
+**What the facade could not show, and the native inspection could.** The second lineage,
+`review-b263118903947f58`, closed `correction_required` and then every subsequent call answered
+`corrupted_or_unverifiable_authority`. That diagnosis was wrong. `gentle-ai review status` on the
+CLI reports the authority as **`status: active`, `problems: []`, `diagnostics: []`, no locks**, and
+`review inspect-authority` counts 37 entries with 0 invalid edges and **0 sanctioned exits**. What is
+broken is the START handshake — reusing a lineage already in `correction_required` makes the
+negotiated repository context disagree with the active one (`candidate_context_unavailable`). The
+findings were on disk the whole time, in
+`.git/gentle-ai/review-transactions/v2/<lineage>/review-state.json` under
+`state.admitted_role_results[].value.result.findings`, and the refuter's verdicts beside them.
+**Recorded so the next session reads the file instead of concluding corruption.**
+
+**The five findings, each measured rather than believed.** A probe mounted the real component:
+
+| finding | measured |
+| --- | --- |
+| `R3-002` | **one** pager click produces **two** reads of offset 200. The effect re-runs because `readDay` reads `page.offset` reactively, and it claims *after* the step, so the step is always superseded. **My gate therefore makes the rollback unreachable** — the exact inverse of what it claimed to fix. |
+| `R4-001`/`R3-003` | a failed step leaves `Página 2 de 3` with **0 rows** and an error. The offset advanced and nothing restored it. `stepTo` (sales) has no rollback path at all; `step` (purchases) has one that can no longer run. |
+| `R3-001` | the loading test clicks the header's day button, not the footer pager's — the same mistake my first probe made, which is why it went unnoticed. |
+| `R3-004` | `refundStale.retireAll()` runs before the `try`, retiring notices before any read has returned. The `#123` fix kept the ordering bug and I did not see it. |
+
+**The cause is a second reader, and it is structural.** Purchases has `page.step` (imperative) *and*
+an effect that re-runs on `page.offset`; sales has `stepTo` (which only moves the offset) and an
+effect. Two readers of one page cannot be gated against each other by a token in either one. Sales
+already has the right shape — **one reader** — and purchases was never migrated to it. That is the
+work, and it is `L25`'s rule applied one level deeper than `L26` took it: not "one owner of the
+offset", but "one reader of the page".
+
+**What is not in doubt.** The unit suite (322), component (6), e2e (44), `make lint` and
+`svelte-check` are green, and each new rule bites when its code is deleted. Green tests and a
+correct design are different claims; this log records the second one failing.
+
+**State: the candidate is not approved.** The re-review is blocked on a START handshake that cannot
+be replayed (`retry_safe: false`), and the correction it demanded is known-insufficient. Resolving
+it needs either a fresh candidate with one reader per ledger, or the owner's decision to ship
+#122/#123 alone on the `de56`… base where these findings do not apply.
+
+## Specs — the single reader (L31)
+
+The rule this round is held to, stated before any code, because six rounds were spent patching
+sub-parts of it. `L25` said "one owner of the offset"; `L26` built it; the findings survived, so the
+rule was one level too shallow.
+
+**S20 — One ledger, one reader.** A ledger's page is read by exactly one thing: the effect that
+reacts to `page.revision`. No second path may issue a read of the same page. Where a screen needs to
+move the page, it moves the offset and the revision together (`stepTo`) and lets the one reader
+fetch. `step` — the imperative read that moves and reads — is **deleted**, not fixed. Its existence
+is the defect: a token in either reader cannot gate the other, which is exactly what `R3-002` of
+`review-b263118903947f58` measured (one click, two reads of offset 200, the effect claiming second).
+
+**S21 — A failed read leaves the page where the rows are.** Every failure path restores the offset
+and total to the values whose rows are on screen. Sales currently has no restore at all (`stepTo`
+moves and never rolls back), and purchases has one that can no longer run. With one reader, the
+restore belongs to that reader: on error, the effect puts the offset back before reporting, so the
+pager never names a page whose rows were not fetched.
+
+**S22 — The offset is not a reactive dependency of the reader.** The effect must not re-run because
+the offset moved; it re-runs because `revision` moved. Reading `page.offset` reactively inside the
+effect is what created the second read in `S20`, so the fetch reads it with `untrack`. The fetcher
+still *sees* the current offset — it just does not subscribe to it.
+
+**S23 — A notice is retired only after the reads it describes have returned.** `R3-004` of
+`review-b263118903947f58`: the refund path retires every stale notice immediately after scheduling a
+refresh, before either read succeeds, so a failing reload loses a warning that was still true. The
+rule is the one `screenTrust.ts` already states — retire when the figures *are* current — applied to
+the ordering, not only to the call.
+
+**S24 — Every rule above is proven by a test that bites.** Each test mounts the real component and
+drives the real interaction (never a harness copy of the rule, which is `R3-CORR-002`), asserts the
+observable outcome (pager label, rows on screen, the alert, the notice), and is verified by deleting
+the code it covers. The probe that found `R3-002` — *count the reads one click causes* — becomes a
+test, because it is the measurement that distinguishes "gated" from "never reached".
+
+**Scope.** In: `PurchaseLedger` migrado a un lector, `Ledger` (ventas) con su rollback en el lector,
+el `untrack` que lo hace posible, y el orden de `retireAll` en el refund de ventas. Out: el backend,
+los i18n, y cualquier cambio de comportamiento visible que estas cuatro reglas no nombren.
+
+L31 (the single reader, and the first round that closed the cause instead of a symptom). `L30`
+measured the defect: purchases had **two readers of one page** — `page.step` (imperative) and an
+effect that re-ran because `readDay` read `page.offset` reactively — and the effect claimed last, so
+every pager click issued two reads and the `owns` gate made the rollback unreachable. `S20`–`S24`
+state the rule and this entry records what it took.
+
+**`step` is deleted, not fixed.** Its existence *was* the defect: two readers cannot be gated against
+each other by a token in either one. `stepTo` (move only) plus one effect is the shape sales already
+had. Purchases is now migrated to it.
+
+**The offset is captured with `untrack` inside `read`, not in the component.** This was the specific
+mistake that made the first attempt fail: `LedgerPage.read` reads `this.offset` **synchronously,
+inside the caller's effect**, so untracking the read in the component changed nothing — the
+subscription was created one level down. Moving it to the capture in `read` is what actually makes
+one reader possible.
+
+**`restore()` takes no arguments.** The first correction captured the offset *at issue time*, which
+is already **after** the move, so "restoring" it restored the page that had just failed. That is
+exactly `R3-003` of `review-811cd5f5c6e59feb` reappearing in a new costume — the seventh time this
+family has produced it. The owner now records the applied pair when it applies a read, and a caller
+cannot pass the value it mistakenly believes preceded the move.
+
+**What each rule is pinned by, measured by deleting it:**
+
+| rule | deleted | failed |
+| --- | --- | --- |
+| `S22` (untrack at the capture) | `untrack(…)` → plain object | 1 test (pager left on the failed page) |
+| `S21` applied-pair record | `this.#applied = …` | 2 unit tests |
+| `S21` sales restore | `page.restore()` in the sales reader | 1 test (sales pager) |
+| `S20` one reader | — | pinned by the read-count test, which is the measurement that found it |
+
+**Two tests from the previous round were wrong, and are corrected rather than kept.** `R3-001`: the
+loading test clicked the header's day buttons, which print the same words as the pager's and change
+the day instead of the page — the held read it built was never used, so the test asserted nothing
+about supersession. It now drives the footer pager. My own first probe made the identical mistake,
+which is why it went unnoticed.
+
+**One finding is fixed but not pinnable, and that is recorded rather than dressed up.** `R3-004`: the
+refund path retired notices before the reads returned. The fix is in place (retire in the effect once
+the period and cash are both current, and in the cash read for the figure it owns). But no reachable
+UI state discriminates the orderings: with a failing reload `error` replaces the region, and in the
+cash-only case `mark()` re-inserts this row's message either way. A notice about a *different* row
+would be lost, which is why the finding is right — but the honest record is that it rests on
+intention, not on a test that bites. `tests/component/refund-cash-failure.test.ts` says so in place.
+
+Counts: unit 323, component 10 (was 6), e2e 44, backend untouched, `make lint` and `svelte-check`
+clean. Correction diff: 597 lines total across five files — over the 200-line correction budget,
+which is the owner's decision to make, not mine to compress away: the previous round spent 193 lines
+saving nothing.
+
+L32 (the fifth and sixth rounds' findings closed, and one of my own claims corrected). The re-review of
+the one-reader refactor (`review-4d05dcfca7ad3826`) found five more. Two were the same rule violated
+one level further out, and one of my own commits was credited wrongly.
+
+**`S20` was only applied to the pager.** The return path still called `readDay` directly, making it a
+**second reader**: it claimed the page, superseded a pending pager read, and — since only the effect
+clears `loading` — could leave the ledger saying it was loading forever (`R3-001`). Measured before
+fixing: the return issues its own `listPurchases` on top of the effect's. The return now adds its row
+to `readingAfterReturn` and calls `page.refresh()`; the effect reads, and on failure marks those rows
+with `purchases_return_recorded` so the operator learns the write landed even though the table could
+not catch up.
+
+**`retireAll` survived in two places.** `R3-002`: the refund retired every notice after the cash read
+succeeded, while the sales reload it had only *scheduled* was still pending or had failed — the same
+`S23` violation in a new spot. `R4-002` records the residual case where a notice for a different row
+is erased by a reload that then fails. Both are now impossible on that path: the refund has no
+`retireAll`, and only `retireIfCurrent` — both reads current — retires.
+
+**`R4-001` was the sharpest, and the fix was not what it asked for.** The finding said the effect's
+parallel `getCash` could blank a balance the refund had just read. Gating the refund's write on a
+token did **not** fix it (verified: the test still failed), because the `null` came from the *effect*.
+The correct answer is `S20` again: **the refund reads no figure at all.** It schedules the refresh,
+and the effect — the one reader — fetches the period and the balance together. Pinned by a count:
+exactly one `getCash` per reload, and one more per refund, never two.
+
+**`R3-003` was not mine.** The finding says `periodDocuments` changed from `summary?.documents ?? null`
+to `$derived(page.total)`, reporting `0` for an unknown count. `git log -S` dates that change to
+`de056ba`, which is inside the reviewed range but not this branch's work. It was still worth fixing —
+`appliedOnce` now keeps the count `null` until a page has been applied, so a failed first load reports
+an unknown period rather than an empty one — and the log records that the credit belongs to the
+earlier commit.
+
+**What is pinned, and what is recorded instead.** `R4-001`'s count, `R3-002`'s notice, and the return's
+single read each fail when their code is reverted (measured). The overlap test for `R3-001` passes
+with the direct `readDay` restored too, because the loading region hides the confirm either way — so it
+is kept as a statement about reachability, and the `readingAfterReturn` wiring is recorded as resting
+on the count test and on this reasoning, not on a mutation of its own.
+
+Counts: unit 323, component 13 (was 10), e2e 44, `make lint` and `svelte-check` clean. Correction
+diff: 312 lines across five files — over the 200-line budget, recorded rather than compressed.
+
+L33 (the eighth round, and the one where taking a read away took a message with it). The re-review of
+`497ff9c` (`review-a88d442d3e677eb8`) found two CRITICALs, both `introduced`, both `corroborated` by
+the refuter — and both the same regression, one screen each.
+
+**The pattern, named.** Making the write path read nothing (`S20` applied to the return and the
+refund) moved the failure handling into the effect. But the effect's failure was the *generic ledger
+error* — "no se pudo leer el libro" — which replaces the region and says the opposite of what
+happened: the write landed, only the re-read failed. The previous code caught that failure where the
+write was, and said so ("la devolución quedó registrada"), which is exactly the distinction
+`screenTrust.ts` exists for. **`S20` was right; dropping the write's own reporting with its own read
+was not.**
+
+This is the third time in eight rounds that a correction fixed the thing it was aimed at and broke
+something adjacent, and the first time the cause is stated as a rule rather than a slip: **a message
+about a write belongs to the write path even when the read does not.** The write already knows it
+succeeded; the reader cannot know it on its behalf.
+
+**The fix, both screens.** Each keeps a set of documents whose write has just landed
+(`readingAfterReturn`, `refundedAfterWrite`). The effect's failure checks it first: a failure that
+belongs to a write's reload reports *that* message, through a heading the template now selects with
+`errorIsRecordedWrite` — otherwise the generic prefix is printed over the true sentence. A successful
+reload clears the set, so a later unrelated failure is not blamed on a write that already finished.
+
+Both are pinned, and both were watched to fail by neutralising the branch (`if (readingAfterReturn.size
+> 0)` → `if (false)`, same for the refund). Measured: 1 test each.
+
+Counts: unit 323, component 15 (was 13), e2e 44, `make lint` and `svelte-check` clean. Correction
+diff: 209 lines, budget 200 — nine over, recorded.
+
+L34 (closed with the debt stated, by the owner's decision). `e95bfa2` is the final candidate and the
+last round is **not** reviewed. The owner's words: *"cerramos con la deuda"*.
+
+**What is verified, independently of any review.** unit 323, component 15, e2e 44, `make lint` and
+`svelte-check` clean, backend untouched. Every rule `S20`–`S24` is pinned by a test that was watched
+to fail when its code was deleted, and the two tests that had shipped wrong (the loading test clicking
+the header's day buttons, the notice assertion no UI state discriminates) are corrected rather than
+kept.
+
+**What is owed, named rather than implied.** The candidate was reviewed three times
+(`review-95eb20a5e08dacda`, `review-b263118903947f58`, `review-a88d442d3e677eb8`); each closed
+`correction_required` and each found real defects — thirteen across the three, of which **five were
+introduced by my own corrections**. The findings of the last lineage are fixed (`L33`) and that fix
+was **never reviewed**. So:
+
+- no lineage ever reached `approved` for this work;
+- the last correction rests on its tests and on the reviewer's claim being addressed, not on a
+  reviewer confirming it;
+- three corrections exceeded the 200-line budget (193, 597, 312) and one came in at 209. Recorded,
+  not compressed away.
+
+**What a future session should read first.** `L30` for why a `corrupted_or_unverifiable_authority`
+answer was wrong (the findings were on disk in the transaction's `review-state.json` the whole time),
+`L31`–`L33` for the rules and the three regressions, and the PR body for what is not claimed.
+
+**The honest summary of the branch.** It closes #120, #121, #122 and #123 with a structural change
+(one reader per ledger) whose *cause* is understood and written down, and it carries an unreviewed
+correction. Merging it means accepting that last risk knowingly, which is what this entry records.
+
+L35 (CI was red for a reason the testing document contradicted). PR #124 failed `Frontend
+(SvelteKit)` in 25 seconds: **323 tests passing and one unhandled error** —
+`browserType.launch: Executable doesn't exist`. No test was wrong. The `component` project in
+`vite.config.ts` mounts Svelte components in a real Chromium (a `.svelte.ts` rune can only be
+exercised by mounting, and mounting needs Svelte's client build, which SvelteKit's resolution owns).
+It landed in `de056ba`; `npm run test:unit` collects every project; **that job has needed a browser
+since then and never installed one.**
+
+**`docs/en/testing.md` said the opposite**, which is why it went unnoticed: the frontend unit level
+was listed as needing "nothing running". An uninstalled browser therefore looked like a CI quirk
+rather than a missing prerequisite that the document was denying. The table now carries the component
+level as its own row with the browser as what it needs, and the reason it is structural.
+
+Its other counts had also drifted, unchecked since 2026-10-19: **39 backend unit → 73**, **47
+integration → 182**, **16 e2e in 4 specs → 44 in 10**. A table of counts is a claim that decays
+silently; the header now says it is re-measured, and where.
+
+Reproduced before fixing: with the 1248 browsers moved out of the cache, `npx vitest --run` gives
+the same 323 + 1 error; after `npx playwright install chromium`, 25 files and 338 tests. The cycle was
+run both ways rather than reasoned about, because "CI is red" and "a prerequisite is missing" produce
+the same colour and only the second is fixable in the workflow.
+
+`make help` promised the same target "needs nothing running" and now names the one install step.

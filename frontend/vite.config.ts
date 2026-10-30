@@ -6,6 +6,7 @@ import tailwindcss from '@tailwindcss/vite';
 // `UserConfigExport`), so the type comes from vitest, whose config type extends Vite's
 // with the `test` block this project uses.
 import { defineConfig } from 'vitest/config';
+import { playwright } from '@vitest/browser-playwright';
 
 export default defineConfig(() => {
   return {
@@ -26,8 +27,40 @@ export default defineConfig(() => {
       // (#52, then again in this very file). It is unit-tested from `tests/unit`,
       // which is why only that directory's specs are collected -- the Playwright
       // files themselves are not vitest's to run.
-      include: ['tests/unit/**/*.{test,spec}.ts'],
-      environment: 'jsdom'
+      //
+      // **Components are not unit tests, and pretending otherwise was the blocker.** A
+      // `*.svelte.ts` rune can only be exercised by mounting a component, and mounting needs
+      // Svelte's *client* build. `svelte`'s package export maps `.` to `index-server.js` by
+      // default and to `index-client.js` only under the `browser` condition; SvelteKit owns
+      // module resolution, so neither `resolve.conditions` nor `ssr.resolve.conditions` reaches
+      // it — measured, both ways. So component tests run in a real browser instead, through the
+      // Playwright this project already has. `tests/component` is the project for that; the
+      // default project stays fast and headless for pure logic.
+      // The provider lives at the root and is a **factory**, not a string: Vitest 5 changed the
+      // shape and refuses to start with the old one. Both measured.
+      browser: { provider: playwright() },
+      projects: [
+        {
+          extends: true,
+          test: {
+            name: 'unit',
+            include: ['tests/unit/**/*.{test,spec}.ts'],
+            environment: 'jsdom'
+          }
+        },
+        {
+          extends: true,
+          test: {
+            name: 'component',
+            include: ['tests/component/**/*.{test,spec}.ts'],
+            browser: {
+              enabled: true,
+              instances: [{ browser: 'chromium' as const }],
+              headless: true
+            }
+          }
+        }
+      ]
     }
   };
 });

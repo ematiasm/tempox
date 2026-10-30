@@ -367,6 +367,16 @@ export interface Dict {
    * cannot say on its own.
    */
   expenses_page_of: (page: number, pages: number) => string;
+  /**
+   * Which page of a ledger is shown, out of how many — shared by the three ledgers that page.
+   *
+   * One key for three screens on purpose: the expenses pager, the sales ledger and the
+   * purchases ledger are answering the same question, and three hand-maintained strings would
+   * drift the way the three implementations of the arithmetic did.
+   */
+  ledger_page_of: (page: number, pages: number) => string;
+  /** "showing N of M documents", said when a ledger page is not the whole span. */
+  ledger_shown_partial: (shown: number, total: number) => string;
   expenses_category_new: string;
   expenses_category_new_action: string;
   documents_one: string;

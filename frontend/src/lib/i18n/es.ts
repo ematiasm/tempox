@@ -330,6 +330,8 @@ const es: Dict = {
   expenses_page_older: 'Anterior',
   expenses_page_newer: 'Siguiente',
   expenses_page_of: (page, pages) => `Página ${page} de ${pages}`,
+  ledger_page_of: (page, pages) => `Página ${page} de ${pages}`,
+  ledger_shown_partial: (shown, total) => `Mostrando ${shown} de ${total} documentos`,
   expenses_category_new: 'Nueva categoría',
   expenses_category_new_action: 'Agregar',
   documents_one: 'documento',
