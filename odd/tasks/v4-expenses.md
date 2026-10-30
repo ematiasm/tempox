@@ -904,3 +904,93 @@ correct design are different claims; this log records the second one failing.
 be replayed (`retry_safe: false`), and the correction it demanded is known-insufficient. Resolving
 it needs either a fresh candidate with one reader per ledger, or the owner's decision to ship
 #122/#123 alone on the `de56`… base where these findings do not apply.
+
+## Specs — the single reader (L31)
+
+The rule this round is held to, stated before any code, because six rounds were spent patching
+sub-parts of it. `L25` said "one owner of the offset"; `L26` built it; the findings survived, so the
+rule was one level too shallow.
+
+**S20 — One ledger, one reader.** A ledger's page is read by exactly one thing: the effect that
+reacts to `page.revision`. No second path may issue a read of the same page. Where a screen needs to
+move the page, it moves the offset and the revision together (`stepTo`) and lets the one reader
+fetch. `step` — the imperative read that moves and reads — is **deleted**, not fixed. Its existence
+is the defect: a token in either reader cannot gate the other, which is exactly what `R3-002` of
+`review-b263118903947f58` measured (one click, two reads of offset 200, the effect claiming second).
+
+**S21 — A failed read leaves the page where the rows are.** Every failure path restores the offset
+and total to the values whose rows are on screen. Sales currently has no restore at all (`stepTo`
+moves and never rolls back), and purchases has one that can no longer run. With one reader, the
+restore belongs to that reader: on error, the effect puts the offset back before reporting, so the
+pager never names a page whose rows were not fetched.
+
+**S22 — The offset is not a reactive dependency of the reader.** The effect must not re-run because
+the offset moved; it re-runs because `revision` moved. Reading `page.offset` reactively inside the
+effect is what created the second read in `S20`, so the fetch reads it with `untrack`. The fetcher
+still *sees* the current offset — it just does not subscribe to it.
+
+**S23 — A notice is retired only after the reads it describes have returned.** `R3-004` of
+`review-b263118903947f58`: the refund path retires every stale notice immediately after scheduling a
+refresh, before either read succeeds, so a failing reload loses a warning that was still true. The
+rule is the one `screenTrust.ts` already states — retire when the figures *are* current — applied to
+the ordering, not only to the call.
+
+**S24 — Every rule above is proven by a test that bites.** Each test mounts the real component and
+drives the real interaction (never a harness copy of the rule, which is `R3-CORR-002`), asserts the
+observable outcome (pager label, rows on screen, the alert, the notice), and is verified by deleting
+the code it covers. The probe that found `R3-002` — *count the reads one click causes* — becomes a
+test, because it is the measurement that distinguishes "gated" from "never reached".
+
+**Scope.** In: `PurchaseLedger` migrado a un lector, `Ledger` (ventas) con su rollback en el lector,
+el `untrack` que lo hace posible, y el orden de `retireAll` en el refund de ventas. Out: el backend,
+los i18n, y cualquier cambio de comportamiento visible que estas cuatro reglas no nombren.
+
+L31 (the single reader, and the first round that closed the cause instead of a symptom). `L30`
+measured the defect: purchases had **two readers of one page** — `page.step` (imperative) and an
+effect that re-ran because `readDay` read `page.offset` reactively — and the effect claimed last, so
+every pager click issued two reads and the `owns` gate made the rollback unreachable. `S20`–`S24`
+state the rule and this entry records what it took.
+
+**`step` is deleted, not fixed.** Its existence *was* the defect: two readers cannot be gated against
+each other by a token in either one. `stepTo` (move only) plus one effect is the shape sales already
+had. Purchases is now migrated to it.
+
+**The offset is captured with `untrack` inside `read`, not in the component.** This was the specific
+mistake that made the first attempt fail: `LedgerPage.read` reads `this.offset` **synchronously,
+inside the caller's effect**, so untracking the read in the component changed nothing — the
+subscription was created one level down. Moving it to the capture in `read` is what actually makes
+one reader possible.
+
+**`restore()` takes no arguments.** The first correction captured the offset *at issue time*, which
+is already **after** the move, so "restoring" it restored the page that had just failed. That is
+exactly `R3-003` of `review-811cd5f5c6e59feb` reappearing in a new costume — the seventh time this
+family has produced it. The owner now records the applied pair when it applies a read, and a caller
+cannot pass the value it mistakenly believes preceded the move.
+
+**What each rule is pinned by, measured by deleting it:**
+
+| rule | deleted | failed |
+| --- | --- | --- |
+| `S22` (untrack at the capture) | `untrack(…)` → plain object | 1 test (pager left on the failed page) |
+| `S21` applied-pair record | `this.#applied = …` | 2 unit tests |
+| `S21` sales restore | `page.restore()` in the sales reader | 1 test (sales pager) |
+| `S20` one reader | — | pinned by the read-count test, which is the measurement that found it |
+
+**Two tests from the previous round were wrong, and are corrected rather than kept.** `R3-001`: the
+loading test clicked the header's day buttons, which print the same words as the pager's and change
+the day instead of the page — the held read it built was never used, so the test asserted nothing
+about supersession. It now drives the footer pager. My own first probe made the identical mistake,
+which is why it went unnoticed.
+
+**One finding is fixed but not pinnable, and that is recorded rather than dressed up.** `R3-004`: the
+refund path retired notices before the reads returned. The fix is in place (retire in the effect once
+the period and cash are both current, and in the cash read for the figure it owns). But no reachable
+UI state discriminates the orderings: with a failing reload `error` replaces the region, and in the
+cash-only case `mark()` re-inserts this row's message either way. A notice about a *different* row
+would be lost, which is why the finding is right — but the honest record is that it rests on
+intention, not on a test that bites. `tests/component/refund-cash-failure.test.ts` says so in place.
+
+Counts: unit 323, component 10 (was 6), e2e 44, backend untouched, `make lint` and `svelte-check`
+clean. Correction diff: 597 lines total across five files — over the 200-line correction budget,
+which is the owner's decision to make, not mine to compress away: the previous round spent 193 lines
+saving nothing.

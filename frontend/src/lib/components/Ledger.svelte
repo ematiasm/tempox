@@ -329,7 +329,14 @@
         if (applied) salesFresh = true;
         retireIfCurrent();
       } catch (e) {
-        if (mine()) error = e instanceof ApiError ? `${e.message} (${e.status})` : String(e);
+        if (!mine()) return;
+        // **The pager goes back to the page whose rows are on screen** (`S21`, `R3-003`/`R4-001` of
+        // `review-b263118903947f58`). `stepTo` moved the offset and never restored it, so a failed
+        // read left the label naming a page whose rows were not fetched — and the next step then
+        // skipped it. The owner knows which page that is; the caller cannot, because the offset has
+        // already moved.
+        page.restore();
+        error = e instanceof ApiError ? `${e.message} (${e.status})` : String(e);
       } finally {
         if (mine()) loading = false;
       }
@@ -575,16 +582,15 @@
     // reader of the period and re-fetches. A read here would be the second reader that raced it
     // before.
     page.refresh();
-    // This is a successful reload of the whole day, so the same rule applies as
-    // in the effect above: nothing on this screen is stale any more. The rule
-    // lives in one place (`screenTrust.ts`) precisely so both success paths
-    // honour it -- the first version only retired notices on the effect path,
-    // which would have left a warning standing over figures that had just been
-    // re-read.
-    refundStale.retireAll();
+    // **The notice is not retired here** (`S23`, `R3-004` of `review-b263118903947f58`). Retiring it
+    // immediately after *scheduling* the refresh erased a warning that was still true whenever the
+    // reload then failed — the screen said nothing while it was behind. The retire belongs where the
+    // reads come back: in the effect, once the period and the cash figure are both current
+    // (`retireIfCurrent`), and in the cash read below for the figure it owns.
     try {
       const c = await getCash();
       cash = c.total;
+      refundStale.retireAll();
     } catch (e) {
       // The balance is the one figure that did not come back. The notice names this failure and
       // nothing else: in the sales ledger the rows rise through the effect, so only a `getCash`

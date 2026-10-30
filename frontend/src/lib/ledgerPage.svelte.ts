@@ -26,6 +26,7 @@
  * answer still describe what the reader is looking at"* — and that question has one answer.
  */
 
+import { untrack } from 'svelte';
 import { clampOffset } from './ledgerPaging.js';
 
 /** One page of rows, plus the exact total the whole span holds. */
@@ -53,6 +54,16 @@ export class LedgerPage<Row, Extra> {
   offset = $state(0);
   /** The span's exact total, as of the last read that was applied. */
   total = $state(0);
+
+  /**
+   * The page whose rows are actually on screen, which is what a failed read must return to.
+   *
+   * **`S21`.** Not the offset captured when the read was issued: by then the page has already moved,
+   * so restoring it restores the value it was meant to undo — the mistake `R3-003` of
+   * `review-811cd5f5c6e59feb` recorded and the one this field exists to make unexpressible. Written
+   * only where a read is applied.
+   */
+  #applied = { offset: 0, total: 0 };
 
   /**
    * Not `$state`: a claim is compared, never rendered. Making it reactive would re-run every
@@ -100,7 +111,12 @@ export class LedgerPage<Row, Extra> {
     apply: PageApply<Row, Extra>
   ): Promise<boolean> {
     // **Captured at issue time.** `mine` is what this read is allowed to answer for.
-    const mine = { offset: this.offset, span, generation: token };
+    //
+    // **And read with `untrack`, here rather than in the component** (`S22`). The capture happens
+    // synchronously inside the caller's effect, so reading `this.offset` plainly subscribed that
+    // effect to it — and moving the page then re-ran the effect, which claimed *after* the step and
+    // superseded it. Untracking at the source is what makes one reader possible at all.
+    const mine = untrack(() => ({ offset: this.offset, span, generation: token }));
     const { page, extra } = await fetcher(mine.offset);
 
     // **One guard, not three** (`R3-001`/`#120`). The span check compared a captured value with the
@@ -123,6 +139,7 @@ export class LedgerPage<Row, Extra> {
     }
 
     this.total = page.total;
+    this.#applied = { offset: this.offset, total: this.total };
     apply(page.rows, extra, this.total);
     return true;
   }
@@ -150,11 +167,14 @@ export class LedgerPage<Row, Extra> {
   revision = $state(0);
 
   /**
-   * Moves the page **without reading it**.
+   * Moves the page **without reading it** — the only way a screen moves a page.
    *
-   * For a screen whose effect drives the read: moving is the whole interaction, and the reactive
-   * read that follows fetches. `step` is for screens that read imperatively — as purchases does.
-   * Both clamp through the same function, so they cannot drift into two notions of a valid page.
+   * **`S20`: one ledger, one reader.** The effect reacts to `revision`, so moving the offset and
+   * the revision together is the whole interaction and the one reader fetches. The imperative
+   * `step` this class used to carry was the defect, not a second convenience: it moved *and* read,
+   * so a screen with an effect-driven reader had two readers of one page, and the effect — which
+   * re-ran because it read `page.offset` reactively — claimed second and superseded the step every
+   * time (`R3-002` of `review-b263118903947f58`, measured as two reads per click).
    */
   stepTo(delta: number): void {
     const next = clampOffset(this.offset + delta * this.#size, this.#size, this.total);
@@ -164,38 +184,15 @@ export class LedgerPage<Row, Extra> {
   }
 
   /**
-   * Moves a page and reads it, rolling back to the page whose rows are still on screen when the
-   * read fails.
+   * Returns the page to the one whose rows are on screen, after a failed read.
    *
-   * **`R3-003`, closed by construction.** The previous offset is captured here, before the move,
-   * and never handed to a caller — so the rollback cannot restore the value it was meant to undo.
-   *
-   * **And the rollback is the failure's own write, so it is gated like one** (`R3-002`/`R4-001`):
-   * a superseded failure used to restore the previous offset and total *over* the newer read and
-   * publish its error besides.
+   * **`S21`.** With one reader the restore belongs to that reader, and it runs *before* the error is
+   * reported so the pager never names a page whose rows were not fetched. It takes no arguments on
+   * purpose: the only correct destination is the one the owner recorded when it applied a read, so
+   * a caller cannot pass the offset it mistakenly believes preceded the move.
    */
-  async step(
-    delta: number,
-    span: unknown,
-    fetcher: PageFetcher<Row, Extra>,
-    apply: PageApply<Row, Extra>,
-    onError: (e: unknown) => void
-  ): Promise<void> {
-    const next = clampOffset(this.offset + delta * this.#size, this.#size, this.total);
-    if (next === this.offset) return;
-
-    const previous = this.offset;
-    const previousTotal = this.total;
-    this.offset = next;
-    const token = this.claim();
-    try {
-      await this.#readWithin(token, span, fetcher, apply);
-    } catch (e) {
-      // Nothing to roll back and nobody to tell: a newer read owns the page now.
-      if (!this.owns(token)) return;
-      this.offset = previous;
-      this.total = previousTotal;
-      onError(e);
-    }
+  restore(): void {
+    this.offset = this.#applied.offset;
+    this.total = this.#applied.total;
   }
 }

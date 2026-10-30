@@ -192,40 +192,48 @@ describe('a superseded day load', () => {
    * the screen stops saying it is loading and presents the previous day's rows as current — the
    * reader cannot tell that what they are looking at is about to be replaced.
    */
-  it('does not clear the loading state while a newer load is still in flight', async () => {
-    // Today's load succeeds, so there is a day on screen to begin from.
+  it('does not clear the loading state while a newer read is still in flight', async () => {
+    // A multi-page period, so the footer pager exists at all (`R3-001` of
+    // `review-b263118903947f58`: the first version clicked the header's day buttons, which print the
+    // same words and change the day instead of the page, so the held read it built was never used).
+    api.getPurchasesSummary.mockResolvedValue({
+      gross: '0.00',
+      returned: '0.00',
+      net: '0.00',
+      documents: 500
+    });
     api.listPurchases.mockResolvedValue([purchase('today', '10.00')]);
+
     component = mount(PurchaseLedger, { target, props: {} }) as Record<string, unknown>;
     flushSync();
     await settle();
 
-    // Both neighbouring days are held now: the previous one is the load that will fail, the
-    // newer one is the load that owns the screen when it does.
-    const previous = deferred<unknown>();
-    const newer = deferred<unknown>();
-    api.listPurchases.mockImplementation(async (params: { from: string }) => {
-      const which = Date.parse(params.from);
-      if (which === Date.parse(dayAt(Date.now()).from) - 86_400_000) return previous.promise;
-      if (which === Date.parse(dayAt(Date.now()).from) + 86_400_000) return newer.promise;
-      return [purchase('today', '10.00')];
-    });
+    // Page two is held: that read is in flight and owns the screen.
+    const held = deferred<unknown>();
+    api.listPurchases.mockImplementation(async (params: { offset?: number }) =>
+      (params.offset ?? 0) === 200 ? held.promise : [purchase('today', '10.00')]
+    );
 
-    const findButton = (label: string) => {
-      const button = [...target.querySelectorAll('button')].find(
-        (b) => b.textContent?.trim() === label
-      );
-      expect(button, `the ${label} day button the header prints`).toBeDefined();
-      return button!;
-    };
-
-    findButton('Anterior').click();
+    const older = [...target.querySelectorAll('.footings .pager button')].find((b) =>
+      (b.textContent ?? '').includes('Anterior')
+    );
+    expect(older, 'the footer pager the ledger prints').toBeDefined();
+    (older as HTMLButtonElement).click();
     await settle();
-    findButton('Siguiente').click();
-    await settle();
-    expect(target.textContent, 'the newer load is in flight').toContain('Cargando…');
+    expect(target.textContent, 'the page-two read is in flight').toContain('Cargando…');
 
-    // The superseded load fails while the newer one is still pending.
-    previous.reject(new ApiError(500));
+    // A second read — the reader moving again — supersedes it, and the superseded failure must not
+    // report the screen as finished while the newer one is still pending.
+    const second = deferred<unknown>();
+    api.listPurchases.mockImplementation(async () => second.promise);
+    const newer = [...target.querySelectorAll('.footings .pager button')].find((b) =>
+      (b.textContent ?? '').includes('Siguiente')
+    );
+    (newer as HTMLButtonElement).click();
+    await settle();
+    expect(target.textContent).toContain('Cargando…');
+
+    held.reject(new ApiError(500));
     await settle();
 
     expect(
@@ -234,7 +242,135 @@ describe('a superseded day load', () => {
     ).toContain('Cargando…');
     expect(target.querySelector('[role="alert"]')).toBeNull();
 
-    newer.resolve([purchase('newest', '20.00')]);
+    second.resolve([purchase('pageone', '10.00')]);
     await settle();
+  });
+});
+
+/**
+ * **`R3-002` of `review-b263118903947f58`: one click must cause one read** (`S20`).
+ *
+ * Measured with a probe before this test existed: a single press of the footer pager produced **two**
+ * reads of offset 200. `stepPage` called `page.step`, which moves the offset and reads; but the
+ * effect reads `page.offset` through `readDay`, so moving the offset re-ran the effect too, and its
+ * read claimed *after* the step's — superseding the step on every click. The `owns` gate then made
+ * the step's rollback unreachable rather than conditional.
+ *
+ * The count is the assertion because it is the only thing that distinguishes the two designs: a
+ * token in either reader cannot gate the other, so "gated" and "never reached" look identical from
+ * the outside. One reader is the fix; this test is what says so.
+ */
+describe('one page, one reader', () => {
+  let target: HTMLDivElement;
+  let component: Record<string, unknown> | undefined;
+
+  beforeEach(() => {
+    Object.values(api).forEach((fn) => fn.mockReset());
+    api.fetchDay.mockImplementation(async (at: Date) => dayAt(at.getTime()));
+    api.listSuppliers.mockResolvedValue([]);
+    api.getPurchasesSummary.mockResolvedValue({
+      gross: '0.00',
+      returned: '0.00',
+      net: '0.00',
+      documents: 500
+    });
+    target = document.createElement('div');
+    document.body.append(target);
+  });
+
+  afterEach(() => {
+    if (component) unmount(component);
+    component = undefined;
+    target.remove();
+    document.body.innerHTML = '';
+  });
+
+  /** A purchase at the given offset. */
+  function pageRows(offset: number) {
+    return [purchase(`p${offset}`, '1.00')];
+  }
+
+  /** The footer pager's "Older" button — not the header's day button, which says the same word. */
+  function pagerOlder(): HTMLButtonElement {
+    const button = [...target.querySelectorAll('.footings .pager button')].find((b) =>
+      (b.textContent ?? '').includes('Anterior')
+    );
+    expect(button, 'the footer pager the ledger prints').toBeDefined();
+    return button as HTMLButtonElement;
+  }
+
+  function pagerLabel(): string {
+    return target.querySelector('.page-of')?.textContent?.trim() ?? '';
+  }
+
+  function rowIds(): (string | null)[] {
+    return [...target.querySelectorAll('[data-doc-row]')].map((r) =>
+      r.getAttribute('data-doc-row')
+    );
+  }
+
+  it('reads the page once per click, not twice', async () => {
+    const asked: number[] = [];
+    api.listPurchases.mockImplementation(async (params: { offset?: number }) => {
+      asked.push(params.offset ?? -1);
+      return pageRows(params.offset ?? 0);
+    });
+
+    component = mount(PurchaseLedger, { target, props: {} }) as Record<string, unknown>;
+    flushSync();
+    await settle();
+    const before = asked.length;
+
+    pagerOlder().click();
+    await settle();
+
+    expect(
+      asked.slice(before),
+      `a click on the pager must issue exactly one read; asked: ${JSON.stringify(asked)}`
+    ).toEqual([200]);
+    expect(pagerLabel()).toContain('Página 2');
+    expect(rowIds()).toEqual(['p200']);
+  });
+
+  /**
+   * **`R4-001`/`R3-003`: a failed read leaves the page where the rows are** (`S21`).
+   *
+   * With two readers the failing read could not restore anything: the step's rollback was gated out
+   * by a claim that always belonged to the effect, so the pager advanced to a page whose rows were
+   * never fetched and the table below it emptied.
+   */
+  it('keeps the pager on the page whose rows loaded when the next one fails', async () => {
+    api.listPurchases.mockImplementation(async (params: { offset?: number }) => {
+      if ((params.offset ?? 0) === 200) throw new ApiError(500);
+      return pageRows(params.offset ?? 0);
+    });
+
+    component = mount(PurchaseLedger, { target, props: {} }) as Record<string, unknown>;
+    flushSync();
+    await settle();
+    expect(rowIds()).toEqual(['p0']);
+    expect(pagerLabel()).toContain('Página 1');
+
+    pagerOlder().click();
+    await settle();
+
+    expect(pagerLabel(), 'the pager must not name a page whose rows never loaded').toContain(
+      'Página 1'
+    );
+    expect(target.querySelector('[role="alert"]'), 'and the failure is reported').not.toBeNull();
+
+    // The restore is not cosmetic: the retry the alert offers re-reads the page the reader is on,
+    // and those rows come back — only possible because the offset went back (`S21`).
+    api.listPurchases.mockImplementation(async (params: { offset?: number }) =>
+      pageRows(params.offset ?? 0)
+    );
+    const retry = [...target.querySelectorAll('button')].find(
+      (b) => b.textContent?.trim() === 'Reintentar'
+    );
+    expect(retry, 'the alert offers the retry it always has').toBeDefined();
+    (retry as HTMLButtonElement).click();
+    await settle();
+    expect(rowIds()).toEqual(['p0']);
+    expect(pagerLabel()).toContain('Página 1');
   });
 });

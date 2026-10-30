@@ -105,19 +105,35 @@
   let open = new SvelteSet<string>();
 
   /**
-   * The day is read whenever the scope or the refresh token changes. **The owner holds the failure
-   * as well as the answer** (`R3-003`): `page.owns(token)`, not a local flag, decides whether this
-   * run still owns the screen, so a load superseded by a post-write reload is covered too.
+   * The day is read whenever the scope or the refresh token changes — and when the page moves.
+   *
+   * **The page's one reader** (`S20`): `stepPage` only moves the offset and the revision, and this
+   * effect reacts to the revision. `page.owns(token)`, not a local flag, decides whether this run
+   * still owns the screen, so a load superseded by a post-write reload is covered too (`R3-003`).
+   *
+   * **The offset is read with `untrack`** (`S22`). Reading it reactively made moving the page re-run
+   * this effect, which then claimed *after* the move and superseded it — the second reader that
+   * `R3-002` of `review-b263118903947f58` measured as two reads per click. The fetcher still sees the
+   * current offset; it just does not subscribe to it.
+   *
+   * **A failed read puts the page back where the rows are** (`S21`), before reporting: `stepTo`
+   * already moved the offset, and a pager naming a page whose rows were never fetched is the
+   * `R4-001`/`R3-003` finding.
    */
   $effect(() => {
     const at = scopeInstant;
     void refreshToken;
+    void page.revision;
     loading = true;
     error = null;
     const token = page.claim();
     readDay(at, token)
       .catch((e) => {
-        if (page.owns(token)) error = describe(e);
+        if (!page.owns(token)) return;
+        // Back to the page whose rows are on screen, then report (`S21`). The owner knows which
+        // page that is; a caller cannot, because by now the offset has already moved.
+        page.restore();
+        error = describe(e);
       })
       .finally(() => {
         if (page.owns(token)) loading = false;
@@ -170,11 +186,12 @@
    * have moved — the defect the expenses pager shipped with.
    */
   function stepPage(delta: number) {
-    // **The owner moves the offset, reads, and rolls back if the read fails.** It captured the
-    // previous offset before moving it, so the rollback cannot restore the value it was meant to
-    // undo — which is what this component did when it read `pageOffset` after the step changed it.
+    // **`S20`: moving is the whole interaction.** `stepTo` moves the offset and the revision; the
+    // effect below is the page's one reader and fetches. Reading here is what made two readers of
+    // one page, and the effect won every time.
+    if (!canStepPage(page.offset, PAGE, total, delta)) return;
     open.clear();
-    void page.step(delta, scopeInstant, pageFetcher, applyPage, (e) => (error = describe(e)));
+    page.stepTo(delta);
   }
 
   /**

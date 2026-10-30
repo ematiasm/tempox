@@ -86,8 +86,9 @@ describe('a read that is superseded writes nothing', () => {
     // A reload of page one is in flight.
     const stale = page.read('day', slow, apply);
 
-    // The reader steps to page two, which completes first.
-    await page.step(1, 'day', fetcher, apply, () => {});
+    // The reader steps to page two, and its read completes first.
+    page.stepTo(1);
+    await page.read('day', fetcher, apply);
     expect(applied.at(-1)?.rows[0]?.id).toBe('r200');
 
     // Page one's answer arrives late. Writing it would put page one's rows under page two's
@@ -109,7 +110,8 @@ describe('the clamp re-reads instead of invalidating itself', () => {
     const { apply } = recorder();
     const { fetcher: big } = fetcherFor(500, 200);
     await page.read('day', big, apply);
-    await page.step(1, 'day', big, apply, () => {});
+    page.stepTo(1);
+    await page.read('day', big, apply);
     expect(page.offset).toBe(200);
 
     // The day shrinks to 100 documents: page two no longer exists.
@@ -125,43 +127,21 @@ describe('the clamp re-reads instead of invalidating itself', () => {
   });
 });
 
-describe('a failed step rolls back to the page whose rows are on screen', () => {
-  it('returns the offset the step started from, not the one it set', async () => {
-    // **`R3-003`, and the reason it survived a fix.** The component captured `requested` *after*
-    // the step had moved the offset, so its rollback restored the new offset and the label kept
-    // naming a page whose rows were never fetched. Here the previous offset never left the
-    // module, so the mistake is not expressible.
+describe('a failed read returns to the page whose rows are on screen', () => {
+  it('restores the offset and total that produced the rows on screen', async () => {
+    // **`R3-003` of `review-811cd5f5c6e59feb`, and `S21`.** The component version captured
+    // `requested` *after* the step had moved the offset, so its rollback restored the new offset and
+    // the label kept naming a page whose rows were never fetched. The owner records the applied pair,
+    // so that mistake is not expressible here.
+    const { fetcher } = fetcherFor(500, 200);
     const page = new LedgerPage<Row, null>(200);
     const { apply } = recorder();
-    const { fetcher } = fetcherFor(500, 200);
     await page.read('day', fetcher, apply);
-    await page.step(1, 'day', fetcher, apply, () => {});
-    expect(page.offset).toBe(200);
+    page.stepTo(1);
 
-    const failing: PageFetcher<Row, null> = async () => {
-      throw new Error('the network went away');
-    };
-    const errors: unknown[] = [];
-    await page.step(1, 'day', failing, apply, (e) => errors.push(e));
+    page.restore();
 
-    expect(page.offset).toBe(200);
-    expect(errors).toHaveLength(1);
-  });
-
-  it('keeps the total the rows on screen were fetched with', async () => {
-    // The rollback restores the pair, not just the offset: a total from a read that failed would
-    // leave the pager computing pages for a span it never read.
-    const page = new LedgerPage<Row, null>(200);
-    const { apply } = recorder();
-    const { fetcher } = fetcherFor(500, 200);
-    await page.read('day', fetcher, apply);
-
-    const failing: PageFetcher<Row, null> = async () => {
-      throw new Error('nope');
-    };
-    await page.step(1, 'day', failing, apply, () => {});
-    expect(page.offset).toBe(0);
-    expect(page.total).toBe(500);
+    expect([page.offset, page.total]).toEqual([0, 500]);
   });
 });
 
@@ -177,7 +157,8 @@ describe('the owner is the only writer', () => {
     expect(typeof page.offset).toBe('number');
     expect(typeof page.total).toBe('number');
     expect(typeof page.read).toBe('function');
-    expect(typeof page.step).toBe('function');
+    expect(typeof page.stepTo).toBe('function');
+    expect(typeof page.restore).toBe('function');
     // The claim: any later claim supersedes, and a read claims for itself.
     const first = page.claim();
     const second = page.claim();
@@ -196,35 +177,55 @@ describe('the owner is the only writer', () => {
   });
 });
 
-// **`R3-002`/`R4-001`: the failure belongs to the owner too.** `step` rolled back unconditionally, so
-// a superseded step restored its page state over a newer read and published an error about it.
-describe('a step that has been superseded neither rolls back nor reports', () => {
-  it('leaves the newer read its page, its rows and its silence', async () => {
+// **`S20`/`S21`: there is no imperative reader any more.** `step` moved the page and read it, which
+// gave a screen with an effect-driven reader two readers of one page: the effect re-ran because it
+// read `page.offset`, claimed after the step, and superseded it on every click (`R3-002` of
+// `review-b263118903947f58`, measured as two reads per click). It is deleted, and `stepTo` is the
+// only way a page moves. The failure is the reader's to report and the owner's to restore.
+describe('a page move and a failed read', () => {
+  it('moves the offset and the revision together, and reads nothing itself', async () => {
+    const { fetcher, asked } = fetcherFor(500, 200);
+    const page = new LedgerPage<Row, null>(200);
+    const { apply } = recorder();
+    await page.read('day', fetcher, apply);
+    const readsBefore = asked.length;
+
+    page.stepTo(1);
+
+    expect(page.offset).toBe(200);
+    expect(page.revision).toBe(1);
+    expect(asked.length, 'moving is not reading: the reader fetches').toBe(readsBefore);
+  });
+
+  it('restores the page whose rows were applied, not the one the read was issued for', async () => {
+    // **The distinction that made the first correction wrong.** `step` captured the offset at issue
+    // time — which is *after* the move — so "restoring" it restored the page that had just failed.
+    // `restore()` takes no arguments for that reason; the owner recorded the applied pair itself.
     const { fetcher } = fetcherFor(500, 200);
     const page = new LedgerPage<Row, null>(200);
     const { apply, applied } = recorder();
-    await page.read('april', fetcher, apply);
-    let reject!: (e: unknown) => void;
-    const gate = new Promise<{ page: { rows: Row[]; total: number }; extra: null }>((_, r) => {
-      reject = r;
-    });
-    const errors: unknown[] = [];
-    const stepping = page.step(
-      1,
-      'april',
-      () => gate,
-      apply,
-      (e) => errors.push(e)
-    );
+    await page.read('day', fetcher, apply);
+    expect([page.offset, page.total]).toEqual([0, 500]);
+
+    page.stepTo(1);
     expect(page.offset).toBe(200);
 
-    // The reader changes the day while the step is in flight.
-    await page.read('may', fetcher, apply);
-    expect(applied.at(-1)?.rows[0]?.id).toBe('r200');
+    page.restore();
 
-    reject(new Error('the network went away'));
-    await stepping;
+    expect([page.offset, page.total], 'back to the page whose rows are on screen').toEqual([
+      0, 500
+    ]);
+    expect(applied.at(-1)?.rows[0]?.id, 'and those rows are still the ones that were applied').toBe(
+      'r0'
+    );
+  });
 
-    expect([page.offset, errors.length, applied.at(-1)?.rows[0]?.id]).toEqual([200, 0, 'r200']);
+  it('does not restore to a page that was never applied', async () => {
+    // A fresh owner has applied nothing: `restore` answers the initial page, never a value the
+    // caller believes preceded a move.
+    const page = new LedgerPage<Row, null>(200);
+    page.stepTo(1);
+    page.restore();
+    expect([page.offset, page.total]).toEqual([0, 0]);
   });
 });

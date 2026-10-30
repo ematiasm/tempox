@@ -225,3 +225,129 @@ describe('a refund whose cash read fails', () => {
     );
   });
 });
+
+/**
+ * **`R3-004` of `review-b263118903947f58`: a notice is retired only once the reads returned** (`S23`).
+ *
+ * The refund path called `refundStale.retireAll()` right after `page.refresh()`, before either the
+ * reload or the cash read had come back. The reachable case is the one this file already owns: the
+ * rows arrive and the **cash** read fails. The old order had already erased every notice by then, so
+ * the screen said nothing while the balance was stale — and the `mark` that follows had nothing left
+ * to preserve. `screenTrust.ts` states the rule ("retire when the figures *are* current"); this was
+ * the ordering breaking it, not the rule.
+ *
+ * A reload that fails outright is not the discriminating case: `error` replaces the ledger region,
+ * so no notice is visible either way. Recorded here so the next reader does not write that test.
+ */
+describe('a refund whose cash read fails after the rows arrived', () => {
+  let target: HTMLDivElement;
+  let component: Record<string, unknown> | undefined;
+
+  beforeEach(() => {
+    Object.values(api).forEach((fn) => fn.mockReset());
+    api.fetchDay.mockResolvedValue(shopDay());
+    api.getSalesSummary.mockResolvedValue(summary());
+    api.getCash.mockResolvedValue({ total: '100.00' });
+    api.listSales.mockResolvedValue([sale()]);
+    api.createCreditNote.mockResolvedValue(creditNote());
+    target = document.createElement('div');
+    document.body.append(target);
+  });
+
+  afterEach(() => {
+    if (component) unmount(component);
+    component = undefined;
+    target.remove();
+    document.body.innerHTML = '';
+  });
+
+  it('reports the stale balance rather than erasing every notice first', async () => {
+    component = mount(Ledger, { target, props: {} }) as Record<string, unknown>;
+    flushSync();
+    await settle();
+
+    const slip = target.querySelector('[data-doc-row]');
+    (slip as HTMLElement).click();
+    await settle();
+    const arm = [...target.querySelectorAll('button')].find(
+      (b) => b.textContent?.trim() === 'Anular venta…'
+    );
+    (arm as HTMLButtonElement).click();
+    await settle();
+
+    // The rows come back carrying the note; the balance does not.
+    api.listSales.mockResolvedValue([sale([creditNote()])]);
+    api.getCash.mockRejectedValue(new ApiError(500));
+    const confirm = [...target.querySelectorAll('button')].find(
+      (b) => b.textContent?.trim() === 'Sí, anular'
+    );
+    (confirm as HTMLButtonElement).click();
+    await settle();
+
+    expect(api.createCreditNote).toHaveBeenCalledTimes(1);
+    expect(target.querySelector('.note-block'), 'the note reached its row').not.toBeNull();
+    // **This assertion does not discriminate the two orderings, and that is recorded honestly.**
+    // With the old order `retireAll()` also ran, but `mark()` then re-inserted the message for this
+    // row, so the notice appeared either way. The ordering is still wrong — a notice about a
+    // *different* row would be lost, and `R3-004` is right about that — but no reachable UI state
+    // exposes it, so the fix is pinned by intention and recorded as debt in `L31` rather than
+    // dressed up as a test that bites.
+    expect(target.textContent).toContain('esta pantalla no pudo recargar el día');
+  });
+});
+
+/**
+ * **`S21` for the sales ledger: a failed read does not leave the pager ahead of the rows.**
+ *
+ * Not a `review-b263118903947f58` finding on its own — it is the transfer of the purchases defect to
+ * the screen that shares the owner. Without it, deleting `page.restore()` from the sales reader
+ * changed no test's outcome (measured), which is the definition of a rule resting on nothing.
+ */
+describe('a sales page step whose read fails', () => {
+  let target: HTMLDivElement;
+  let component: Record<string, unknown> | undefined;
+
+  beforeEach(() => {
+    Object.values(api).forEach((fn) => fn.mockReset());
+    api.fetchDay.mockResolvedValue(shopDay());
+    api.getSalesSummary.mockResolvedValue({ ...summary(), documents: 500 });
+    api.getCash.mockResolvedValue({ total: '100.00' });
+    api.listSales.mockResolvedValue([sale()]);
+    api.createCreditNote.mockResolvedValue(creditNote());
+    target = document.createElement('div');
+    document.body.append(target);
+  });
+
+  afterEach(() => {
+    if (component) unmount(component);
+    component = undefined;
+    target.remove();
+    document.body.innerHTML = '';
+  });
+
+  it('keeps the pager on the page whose rows loaded', async () => {
+    component = mount(Ledger, { target, props: {} }) as Record<string, unknown>;
+    flushSync();
+    await settle();
+
+    const label = () => target.querySelector('.page-of')?.textContent?.trim() ?? '';
+    expect(label(), 'the page pager only prints when the period is partial').toContain('Página 1');
+
+    // Page two fails.
+    api.listSales.mockImplementation(async (params: { offset?: number }) => {
+      if ((params.offset ?? 0) >= 50) throw new ApiError(503);
+      return [sale()];
+    });
+    const older = [...target.querySelectorAll('.footings .pager button')].find((b) =>
+      (b.textContent ?? '').includes('Anterior')
+    );
+    expect(older, 'the page pager the sales footings print').toBeDefined();
+    (older as HTMLButtonElement).click();
+    await settle();
+
+    expect(label(), 'the label must not name a page whose rows were never fetched').toContain(
+      'Página 1'
+    );
+    expect(target.querySelector('[role="alert"]')).not.toBeNull();
+  });
+});
