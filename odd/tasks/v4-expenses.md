@@ -862,3 +862,45 @@ Svelte's DEV warning `[updated at]` repeating forever, not as a timeout. The nar
 
 Counts: unit 327 / component 6 / e2e 44; backend untouched, `make lint` clean, `svelte-check`
 0 errors.
+
+L30 (the sixth round, and the honest account of why my correction did not close it). `L29` claimed the
+constraint "no tocar `ledgerPage.svelte.ts`" was load-bearing and correct. The owner lifted it, the
+correction landed (`77da969`, 193 lines), and the re-review found five CRITICAL findings that I had
+introduced. Two were mine in the worst way: **the fix changed the defect instead of closing it.**
+
+**What the facade could not show, and the native inspection could.** The second lineage,
+`review-b263118903947f58`, closed `correction_required` and then every subsequent call answered
+`corrupted_or_unverifiable_authority`. That diagnosis was wrong. `gentle-ai review status` on the
+CLI reports the authority as **`status: active`, `problems: []`, `diagnostics: []`, no locks**, and
+`review inspect-authority` counts 37 entries with 0 invalid edges and **0 sanctioned exits**. What is
+broken is the START handshake — reusing a lineage already in `correction_required` makes the
+negotiated repository context disagree with the active one (`candidate_context_unavailable`). The
+findings were on disk the whole time, in
+`.git/gentle-ai/review-transactions/v2/<lineage>/review-state.json` under
+`state.admitted_role_results[].value.result.findings`, and the refuter's verdicts beside them.
+**Recorded so the next session reads the file instead of concluding corruption.**
+
+**The five findings, each measured rather than believed.** A probe mounted the real component:
+
+| finding | measured |
+| --- | --- |
+| `R3-002` | **one** pager click produces **two** reads of offset 200. The effect re-runs because `readDay` reads `page.offset` reactively, and it claims *after* the step, so the step is always superseded. **My gate therefore makes the rollback unreachable** — the exact inverse of what it claimed to fix. |
+| `R4-001`/`R3-003` | a failed step leaves `Página 2 de 3` with **0 rows** and an error. The offset advanced and nothing restored it. `stepTo` (sales) has no rollback path at all; `step` (purchases) has one that can no longer run. |
+| `R3-001` | the loading test clicks the header's day button, not the footer pager's — the same mistake my first probe made, which is why it went unnoticed. |
+| `R3-004` | `refundStale.retireAll()` runs before the `try`, retiring notices before any read has returned. The `#123` fix kept the ordering bug and I did not see it. |
+
+**The cause is a second reader, and it is structural.** Purchases has `page.step` (imperative) *and*
+an effect that re-runs on `page.offset`; sales has `stepTo` (which only moves the offset) and an
+effect. Two readers of one page cannot be gated against each other by a token in either one. Sales
+already has the right shape — **one reader** — and purchases was never migrated to it. That is the
+work, and it is `L25`'s rule applied one level deeper than `L26` took it: not "one owner of the
+offset", but "one reader of the page".
+
+**What is not in doubt.** The unit suite (322), component (6), e2e (44), `make lint` and
+`svelte-check` are green, and each new rule bites when its code is deleted. Green tests and a
+correct design are different claims; this log records the second one failing.
+
+**State: the candidate is not approved.** The re-review is blocked on a START handshake that cannot
+be replayed (`retry_safe: false`), and the correction it demanded is known-insufficient. Resolving
+it needs either a fresh candidate with one reader per ledger, or the owner's decision to ship
+#122/#123 alone on the `de56`… base where these findings do not apply.
