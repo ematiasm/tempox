@@ -133,6 +133,12 @@
         // Back to the page whose rows are on screen, then report (`S21`). The owner knows which
         // page that is; a caller cannot, because by now the offset has already moved.
         page.restore();
+        // A recorded return whose reload failed names itself, so the operator knows the write
+        // landed even though the table could not catch up (`R3-001`).
+        for (const rowId of readingAfterReturn) {
+          reloadNotice.mark(rowId, lang.t.purchases_return_recorded);
+        }
+        readingAfterReturn.clear();
         error = describe(e);
       })
       .finally(() => {
@@ -167,6 +173,14 @@
   // a successful reload retires every notice, because a warning that the screen
   // is behind is a lie once the screen has caught up.
   const reloadNotice = createStaleNotice(new SvelteMap<string, string>());
+  /**
+   * The rows whose return has just been recorded and whose reload the effect is about to do.
+   *
+   * `R3-001`: the return no longer reads, so it cannot catch its own failure. The effect records
+   * the failure as `error`; this set is how the operator still learns *which* document's return
+   * landed but could not be re-read, without the return becoming a second reader.
+   */
+  let readingAfterReturn = new SvelteSet<string>();
 
   // The shop's zone, as the server names it. Every time on the page renders in
   // it rather than in the machine's, so a shop in Buenos Aires reads its own
@@ -304,14 +318,15 @@
     // difference between an operator retrying and an operator over-returning.
     clearReturnDraft(rowId);
     confirming.delete(rowId);
-    try {
-      await readDay(scopeInstant);
-    } catch (e) {
-      reloadNotice.mark(
-        rowId,
-        `${lang.t.purchases_return_recorded}${e instanceof ApiError ? ` (${e.status})` : ''}`
-      );
-    }
+    // **The return does not read** (`S20`, `R3-001` of `review-4d05dcfca7ad3826`). Reading here
+    // made the return a *second* reader: it claimed the page and superseded the effect, and only
+    // the effect clears `loading` — so a return that overlapped a pager load could leave the
+    // ledger stuck saying it was loading. It schedules the effect's refresh instead, and the
+    // failure it has to report is the one the effect already records: a screen that could not
+    // re-read says so through `error`, which replaces the region, so a per-row notice would have
+    // been invisible anyway.
+    readingAfterReturn.add(rowId);
+    page.refresh();
   }
 </script>
 

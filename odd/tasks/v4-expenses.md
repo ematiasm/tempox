@@ -994,3 +994,44 @@ Counts: unit 323, component 10 (was 6), e2e 44, backend untouched, `make lint` a
 clean. Correction diff: 597 lines total across five files — over the 200-line correction budget,
 which is the owner's decision to make, not mine to compress away: the previous round spent 193 lines
 saving nothing.
+
+L32 (the fifth and sixth rounds' findings closed, and one of my own claims corrected). The re-review of
+the one-reader refactor (`review-4d05dcfca7ad3826`) found five more. Two were the same rule violated
+one level further out, and one of my own commits was credited wrongly.
+
+**`S20` was only applied to the pager.** The return path still called `readDay` directly, making it a
+**second reader**: it claimed the page, superseded a pending pager read, and — since only the effect
+clears `loading` — could leave the ledger saying it was loading forever (`R3-001`). Measured before
+fixing: the return issues its own `listPurchases` on top of the effect's. The return now adds its row
+to `readingAfterReturn` and calls `page.refresh()`; the effect reads, and on failure marks those rows
+with `purchases_return_recorded` so the operator learns the write landed even though the table could
+not catch up.
+
+**`retireAll` survived in two places.** `R3-002`: the refund retired every notice after the cash read
+succeeded, while the sales reload it had only *scheduled* was still pending or had failed — the same
+`S23` violation in a new spot. `R4-002` records the residual case where a notice for a different row
+is erased by a reload that then fails. Both are now impossible on that path: the refund has no
+`retireAll`, and only `retireIfCurrent` — both reads current — retires.
+
+**`R4-001` was the sharpest, and the fix was not what it asked for.** The finding said the effect's
+parallel `getCash` could blank a balance the refund had just read. Gating the refund's write on a
+token did **not** fix it (verified: the test still failed), because the `null` came from the *effect*.
+The correct answer is `S20` again: **the refund reads no figure at all.** It schedules the refresh,
+and the effect — the one reader — fetches the period and the balance together. Pinned by a count:
+exactly one `getCash` per reload, and one more per refund, never two.
+
+**`R3-003` was not mine.** The finding says `periodDocuments` changed from `summary?.documents ?? null`
+to `$derived(page.total)`, reporting `0` for an unknown count. `git log -S` dates that change to
+`de056ba`, which is inside the reviewed range but not this branch's work. It was still worth fixing —
+`appliedOnce` now keeps the count `null` until a page has been applied, so a failed first load reports
+an unknown period rather than an empty one — and the log records that the credit belongs to the
+earlier commit.
+
+**What is pinned, and what is recorded instead.** `R4-001`'s count, `R3-002`'s notice, and the return's
+single read each fail when their code is reverted (measured). The overlap test for `R3-001` passes
+with the direct `readDay` restored too, because the loading region hides the confirm either way — so it
+is kept as a statement about reachability, and the `readingAfterReturn` wiring is recorded as resting
+on the count test and on this reasoning, not on a mutation of its own.
+
+Counts: unit 323, component 13 (was 10), e2e 44, `make lint` and `svelte-check` clean. Correction
+diff: 312 lines across five files — over the 200-line budget, recorded rather than compressed.

@@ -205,7 +205,7 @@ describe('a refund whose cash read fails', () => {
 
     // The cash figure did not refresh, and the screen says so rather than falling silent — the
     // half of this rule that closed `R3-CORR-001` and must not be traded back for the other.
-    expect(target.textContent).toContain('esta pantalla no pudo recargar el día');
+    expect(target.textContent).toContain('esta pantalla quedó atrás');
     expect(
       target.querySelector('[role="alert"]'),
       'a cash failure is not a failure to read the ledger'
@@ -221,7 +221,7 @@ describe('a refund whose cash read fails', () => {
 
     expect(target.querySelector('.note-block')).not.toBeNull();
     expect(target.textContent, 'nothing is stale once both reads succeeded').not.toContain(
-      'esta pantalla no pudo recargar el día'
+      'esta pantalla quedó atrás'
     );
   });
 });
@@ -292,7 +292,7 @@ describe('a refund whose cash read fails after the rows arrived', () => {
     // *different* row would be lost, and `R3-004` is right about that — but no reachable UI state
     // exposes it, so the fix is pinned by intention and recorded as debt in `L31` rather than
     // dressed up as a test that bites.
-    expect(target.textContent).toContain('esta pantalla no pudo recargar el día');
+    expect(target.textContent).toContain('esta pantalla quedó atrás');
   });
 });
 
@@ -349,5 +349,76 @@ describe('a sales page step whose read fails', () => {
       'Página 1'
     );
     expect(target.querySelector('[role="alert"]')).not.toBeNull();
+  });
+});
+
+/**
+ * **`R4-001` of `review-4d05dcfca7ad3826`: one writer for the balance.**
+ *
+ * The finding measured two `getCash()` calls racing during a refund — the refund's own and the
+ * effect's, started by `page.refresh()` — where a later failure blanked a figure that had just been
+ * read. The correction is `S20` applied to the figure: the refund reads nothing, the effect is the
+ * only cash reader, and a failure marks the screen as behind instead of silently blanking it.
+ *
+ * Pinned as a count, because that is what distinguishes "one writer" from "two writers that
+ * happen to agree": exactly one `getCash` per effect run, and none from the refund path.
+ */
+describe('one writer for the balance', () => {
+  let target: HTMLDivElement;
+  let component: Record<string, unknown> | undefined;
+
+  beforeEach(() => {
+    Object.values(api).forEach((fn) => fn.mockReset());
+    api.fetchDay.mockResolvedValue(shopDay());
+    api.getSalesSummary.mockResolvedValue(summary());
+    api.listSales.mockResolvedValue([sale()]);
+    api.createCreditNote.mockResolvedValue(creditNote());
+    target = document.createElement('div');
+    document.body.append(target);
+  });
+
+  afterEach(() => {
+    if (component) unmount(component);
+    component = undefined;
+    target.remove();
+    document.body.innerHTML = '';
+  });
+
+  it('reads the balance once per reload, from the effect alone', async () => {
+    let cashReads = 0;
+    api.getCash.mockImplementation(async () => {
+      cashReads += 1;
+      return { total: '100.00' };
+    });
+
+    component = mount(Ledger, { target, props: {} }) as Record<string, unknown>;
+    flushSync();
+    await settle();
+    const afterMount = cashReads;
+    expect(afterMount, 'the mount reads it once').toBe(1);
+
+    (target.querySelector('[data-doc-row]') as HTMLElement).click();
+    await settle();
+    (
+      [...target.querySelectorAll('button')].find(
+        (b) => b.textContent?.trim() === 'Anular venta…'
+      ) as HTMLButtonElement
+    ).click();
+    await settle();
+
+    api.listSales.mockResolvedValue([sale([creditNote()])]);
+    (
+      [...target.querySelectorAll('button')].find(
+        (b) => b.textContent?.trim() === 'Sí, anular'
+      ) as HTMLButtonElement
+    ).click();
+    await settle();
+
+    expect(
+      cashReads - afterMount,
+      'the refund reloads through the one reader: one more read, not two'
+    ).toBe(1);
+    const balance = () => target.querySelector('.footings .fig .value')?.textContent?.trim() ?? '';
+    expect(balance()).toContain('100');
   });
 });

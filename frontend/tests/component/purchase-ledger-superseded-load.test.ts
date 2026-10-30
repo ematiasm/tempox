@@ -69,7 +69,7 @@ function dayAt(instant: number) {
   };
 }
 
-function purchase(id: string, total: string) {
+function purchase(id: string, total: string, quantity = 0) {
   return {
     purchase: {
       id,
@@ -79,7 +79,23 @@ function purchase(id: string, total: string) {
       payment_method_name: 'Efectivo',
       created_at: '2026-10-20T12:00:00.000Z'
     },
-    items: [],
+    // A returnable line, so the return form has something to send. `quantity: 0` keeps the
+    // supersession tests on documents with nothing to return.
+    items:
+      quantity > 0
+        ? [
+            {
+              id: `${id}-item`,
+              purchase_id: id,
+              product_id: 'product-1',
+              product_name: 'Yerba',
+              quantity,
+              unit_price: '10.00',
+              line_total: '40.00',
+              unit: 'unit' as const
+            }
+          ]
+        : [],
     supplier_returns: []
   };
 }
@@ -372,5 +388,132 @@ describe('one page, one reader', () => {
     await settle();
     expect(rowIds()).toEqual(['p0']);
     expect(pagerLabel()).toContain('Página 1');
+  });
+});
+
+/**
+ * **`R3-001` of `review-4d05dcfca7ad3826`: a recorded return does not start a second reader.**
+ *
+ * The return called `readDay` directly. That claimed the page and superseded the effect, and only
+ * the effect clears `loading` — so a return overlapping a pager load could leave the ledger saying
+ * it was loading forever. The return now schedules `page.refresh()` and reads nothing itself, which
+ * is `S20` applied to the write path: one reader, always.
+ *
+ * Pinned as a read count for the same reason as the pager test: with one reader, "scheduled" and
+ * "read twice" are one extra `listPurchases` apart.
+ */
+describe('a recorded return', () => {
+  let target: HTMLDivElement;
+  let component: Record<string, unknown> | undefined;
+
+  beforeEach(() => {
+    Object.values(api).forEach((fn) => fn.mockReset());
+    api.fetchDay.mockImplementation(async (at: Date) => dayAt(at.getTime()));
+    api.listSuppliers.mockResolvedValue([]);
+    api.getPurchasesSummary.mockResolvedValue({
+      gross: '0.00',
+      returned: '0.00',
+      net: '0.00',
+      documents: 1
+    });
+    api.listPurchases.mockResolvedValue([purchase('r1', '10.00', 4)]);
+    api.createSupplierReturn.mockResolvedValue({});
+    target = document.createElement('div');
+    document.body.append(target);
+  });
+
+  afterEach(() => {
+    if (component) unmount(component);
+    component = undefined;
+    target.remove();
+    document.body.innerHTML = '';
+  });
+
+  it('reloads through the one reader, and never stays loading', async () => {
+    component = mount(PurchaseLedger, { target, props: {} }) as Record<string, unknown>;
+    flushSync();
+    await settle();
+
+    (target.querySelector('[data-doc-row]') as HTMLElement).click();
+    await settle();
+    (
+      [...target.querySelectorAll('button')].find(
+        (b) => b.textContent?.trim() === 'Devolver al proveedor…'
+      ) as HTMLButtonElement
+    ).click();
+    await settle();
+
+    // Count from here: the form is armed, so nothing else is about to read.
+    let reads = 0;
+    api.listPurchases.mockImplementation(async () => {
+      reads += 1;
+      return [purchase('r1', '10.00', 4)];
+    });
+    (
+      [...target.querySelectorAll('button')].find(
+        (b) => b.textContent?.trim() === 'Sí, devolver'
+      ) as HTMLButtonElement
+    ).click();
+    await settle();
+    await settle();
+
+    expect(reads, 'one reload, from the effect').toBe(1);
+    expect(target.textContent, 'and not left claiming it is loading').not.toContain('Cargando…');
+  });
+
+  /**
+   * **The overlap `R3-001` describes, stated as what a reader can do.**
+   *
+   * With a pending page load the table is replaced by the loading line, so the return's confirm is
+   * not reachable from the screen at all. That is the safety property: a return that could overlap a
+   * pending page read is exactly the state that stranded the ledger before (`readDay` claiming the
+   * page while only the effect clears `loading`). The test pins the reachability, which is the
+   * observable that distinguishes the two designs.
+   */
+  it('cannot be confirmed while a page load is pending, so it cannot strand the loader', async () => {
+    api.getPurchasesSummary.mockResolvedValue({
+      gross: '0.00',
+      returned: '0.00',
+      net: '0.00',
+      documents: 500
+    });
+    api.listPurchases.mockResolvedValue([purchase('r1', '10.00', 4)]);
+    component = mount(PurchaseLedger, { target, props: {} }) as Record<string, unknown>;
+    flushSync();
+    await settle();
+
+    (target.querySelector('[data-doc-row]') as HTMLElement).click();
+    await settle();
+    (
+      [...target.querySelectorAll('button')].find(
+        (b) => b.textContent?.trim() === 'Devolver al proveedor…'
+      ) as HTMLButtonElement
+    ).click();
+    await settle();
+
+    // A page load starts and is held.
+    let releasePage!: (v: unknown) => void;
+    const heldPage = new Promise((r) => (releasePage = r));
+    api.listPurchases.mockImplementation(async () => heldPage as never);
+    (
+      [...target.querySelectorAll('.footings .pager button')].find((b) =>
+        (b.textContent ?? '').includes('Anterior')
+      ) as HTMLButtonElement
+    ).click();
+    await settle();
+    expect(target.textContent).toContain('Cargando…');
+
+    const confirm = [...target.querySelectorAll('button')].find(
+      (b) => b.textContent?.trim() === 'Sí, devolver'
+    );
+    expect(
+      confirm,
+      'the table is replaced while loading, so the return cannot compete with the page read'
+    ).toBeUndefined();
+
+    releasePage([purchase('r1', '10.00', 4)]);
+    await settle();
+    await settle();
+    expect(target.textContent).not.toContain('Cargando…');
   });
 });

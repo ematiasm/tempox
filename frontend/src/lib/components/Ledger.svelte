@@ -113,6 +113,13 @@
   // figures are current and a warning saying otherwise is a lie. Backed by a
   // `SvelteMap` so retiring it re-renders.
   const refundStale = createStaleNotice(new SvelteMap<string, string>());
+  /**
+   * The key of the notice about the cash figure, which belongs to no document.
+   *
+   * The banner reads `refundStale.empty`, so any entry raises it; no row's id matches this one, so
+   * it never renders inside a slip (`R4-001` of `review-4d05dcfca7ad3826`).
+   */
+  const CASH_NOTICE = 'cash';
 
   // The server's current-span boundary is the sole authority for this state.
   // It is "today"/"this week"/"this month" depending on the scope, so one
@@ -156,7 +163,17 @@
   const shownTotal = $derived(summary?.net ?? null);
   const refundedTotal = $derived(summary?.refunded ?? '0.00');
   /** The period's count, from the owner — one source, so the header and the table agree. */
-  const periodDocuments = $derived(page.total);
+  /**
+   * The period's count, or `null` until a page has been applied.
+   *
+   * **`R3-003` of `review-4d05dcfca7ad3826`.** `$derived(page.total)` reports `0` before the first
+   * summary lands, so a parent was told the period is *empty* when the truth is that it is not
+   * known yet — and a failed initial load reported an empty period rather than an unknown one.
+   * `page.total` starts at 0 because it is a number; the screen's claim starts at "unknown".
+   */
+  let appliedOnce = $state(false);
+  /** The count as the page header is told it: `null` until a read has been applied. */
+  const periodDocuments = $derived(appliedOnce ? page.total : null);
   /**
    * The pager's view of the same number.
    *
@@ -165,7 +182,7 @@
    * freezes there: the summary said 74 documents, the table showed 50, and the note still claimed
    * "the whole period". Measured by a probe that printed both numbers.
    */
-  const pageTotal = $derived(periodDocuments);
+  const pageTotal = $derived(page.total);
   /** True when the period holds more documents than this page shows. */
   const pageIsPartialNote = $derived(pageIsPartial(rows.length, pageTotal));
 
@@ -274,6 +291,7 @@
    * surviving without the clear and collapsing with it.
    */
   const applySalesPage: PageApply<SaleListItem, SalesPageExtra> = (list, extra) => {
+    appliedOnce = true;
     range = extra.day;
     todayFrom = extra.todayFrom;
     rows = list;
@@ -349,14 +367,22 @@
         if (!mine()) return;
         cash = c.total;
         cashFresh = true;
+        refundStale.forget(CASH_NOTICE);
         retireIfCurrent();
       })
-      .catch(() => {
+      .catch((e) => {
         // A cash read that fails leaves the balance visually unknown but does not
         // discredit the day's rows, so it is not turned into a page error. It does
-        // keep the stale notice alive, because the figures are not all current.
+        // **mark** the screen as behind, because the figures are not all current —
+        // and now the effect is the only cash reader, so nobody else can say it
+        // (`R4-001` of `review-4d05dcfca7ad3826`). The entry is keyed by the figure
+        // rather than a document: the banner reads `.empty`, and no row matches it.
         if (!mine()) return;
         cash = null;
+        refundStale.mark(
+          CASH_NOTICE,
+          e instanceof ApiError ? `${e.message} (${e.status})` : String(e)
+        );
       });
 
     return () => {
@@ -587,19 +613,14 @@
     // reload then failed — the screen said nothing while it was behind. The retire belongs where the
     // reads come back: in the effect, once the period and the cash figure are both current
     // (`retireIfCurrent`), and in the cash read below for the figure it owns.
-    try {
-      const c = await getCash();
-      cash = c.total;
-      refundStale.retireAll();
-    } catch (e) {
-      // The balance is the one figure that did not come back. The notice names this failure and
-      // nothing else: in the sales ledger the rows rise through the effect, so only a `getCash`
-      // failure can leave them looking current. Reporting a failed row reload here would say "the
-      // figures may be stale" while the screen's own alert already says the ledger could not be
-      // read — the two-messages-for-one-fact defect `screenTrust.ts` exists to prevent.
-      cash = null;
-      refundStale.mark(row.id, e instanceof ApiError ? `${e.message} (${e.status})` : String(e));
-    }
+    // **The refund reads no figure of its own** (`S20`/`R4-001` of `review-4d05dcfca7ad3826`).
+    // `page.refresh()` moves `revision`, the effect re-runs, and the effect reads the period *and*
+    // the cash figure. A second `getCash()` here was a second writer of the same state: whichever
+    // resolved last won, so a later failure blanked a balance that had just been read — and the
+    // refund could not tell whose figure it was writing.
+    //
+    // Its own failure is therefore already covered: `error` replaces the ledger region, and the
+    // notice the effect retires is retired only when both of *its* reads came back current.
     refunding = null;
   }
 </script>
@@ -933,7 +954,7 @@
              said the table was a page and offered nowhere to go, which for a
              cashier looking for last Tuesday's sale is the same as not saying it. -->
         {#if pageIsPartialNote}
-          {lang.t.sales_shown_note_partial(rows.length, periodDocuments ?? rows.length)}
+          {lang.t.sales_shown_note_partial(rows.length, pageTotal)}
         {:else}
           {lang.t.sales_shown_note}
         {/if}
