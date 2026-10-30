@@ -130,6 +130,13 @@
     account = null;
     notFound = false;
     panelError = null;
+    // **The receipt belongs to the party it was written for** (`R3-002` of
+    // `review-9cff43c50976184c`, carried out of slice 2 as informational). It is page
+    // state, so a new selection has to clear it here — the panel is mounted again for
+    // the new party and would otherwise render the previous party's `applied` rows under
+    // this party's name. Nothing else needs doing: a receipt is the answer to a write,
+    // and a write that just happened is not in flight while the selection changes.
+    collected = null;
     if (id === null) return;
     let live = true;
     getSupplierAccount(id)

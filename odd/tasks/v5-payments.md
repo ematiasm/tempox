@@ -500,8 +500,12 @@ rather than fixed in this slice:
   the ceiling in `create_payment` guards a *customer's* balance, never the till. Named in `S11`
   as out of scope and now recorded by the review as well.
 - `R3-002` — the panel's `collected` receipt state is not cleared when the selection changes,
-  so a receipt from one party can be visible while another party's panel is open. Real, small,
-  and the next thing I would fix; it is a presentation defect, not money.
+  so a receipt from one party can be visible while another party's panel is open. Real and
+  small. It was first classified here as "a presentation defect, not money", and **that label
+  was wrong**: the receipt is the only statement of which documents a collection closed, so
+  standing under another party's name it asserts money closed documents that party does not
+  have. It is a false statement about a record. **CLOSED in `V11`**, which is where the fix
+  and its proof live.
 - The remaining three are suggestions about wording and structure.
 
 **What this slice cost, in review cycles: two lineages, one abandoned on a 200-line budget it
@@ -552,3 +556,89 @@ files before merging (11 for #95, 2 for #96) rather than a polluted diff built o
 The three chain branches and the work-unit branch are deleted, locally and remotely; the
 repository holds `main` and `origin/main`. The work-unit history survives in the merge commits'
 ancestry.
+
+V11 **`R3-002` closed, and the reason it was called "presentation" was wrong.** The finding
+said _"it is a presentation defect, not money"_. Corrected here: the receipt is the only
+statement of **which documents a collection closed and why**, so a receipt left standing under
+a different party's name asserts that this money closed documents that party does not have. It
+is not cosmetic and it is not money either — it is a false statement about a record, in a
+screen whose whole point is that the record can be explained.
+
+**RED first, measured.** A new e2e (`a receipt does not follow the cashier to another party`)
+collects against one client, then opens a second client's panel and asserts the receipt is
+gone. Against the code as merged it failed exactly as the finding described:
+
+```
+Expect "toHaveCount" locator('aside.sheet').locator('section.receipt')
+Expected: 0     Received: 1      (14 × locator resolved to 1 element)
+1 failed, 44 passed
+```
+
+**The fix is one line in each page's selection effect**, and the placement is the point: the
+page owns `collected`, not the panel, so the page's fetch effect is the only place a new
+selection can clear it. `account`, `notFound` and `panelError` were already cleared there —
+`collected` was simply not on the list, which is how a state added later escapes a list written
+earlier.
+
+**Both routes, and both proven to bite separately.** The effect is written twice, so fixing one
+route is not fixing the defect — the failure mode this repository already paid for when sales
+and purchases became two copies of one table. Neutering `clientes` alone → `1 failed, 44
+passed`; neutering `proveedores` alone → `1 failed, 44 passed`. Each red is the new spec, and
+each green required both lines.
+
+**Counts, measured on `bbf7a81` + this change**: `make test-e2e` **45** (was 44), `make lint`
+clean, `svelte-check` 0/0. `make sqlx-check` is **red for an environment reason, not this
+change**: `DATABASE_URL` in `.env` points at the development database `tempox`, which currently
+holds **0 tables** (`tempox_test` holds 31), so `cargo sqlx prepare --check` fails with
+`relation "accounts" does not exist`. Measured on clean `main` with the work stashed: **79**
+compiler errors; with the work applied: **74**. The target needs a migrated development
+database; recovering it is `cargo sqlx migrate run`, and it is **not** run here because the
+`.env` I found would migrate a database whose contents nobody asked me to change.
+
+`R1-preexisting-till-floor` stays open and is **not** fixed here: it is a behaviour change to a
+money path (`POST /api/suppliers/{id}/payments` can drive the till negative), it needs the
+owner's decision about what a floor means for a shop that can owe its supplier, and it deserves
+its own candidate rather than a rider on this one.
+
+V12 **`V11` reviewed natively — APPROVED.** Lineage `review-69a9c8cb07e21dca`, lenses
+`readability` + `reliability`, tier high, 10 paths, 276 changed lines, correction budget 138.
+Authority burned (`gentle-ai.review-acknowledged/v1`). Both reviewers ran
+(`prepared_reviewers: 2`, `submitted_reviewers: 2`); the first attempt had been refused by the
+provider with `429 RESOURCE_EXHAUSTED` (free tier) and **mutated nothing**, which is why the
+same lineage resumed unchanged.
+
+Three findings, all `informational`, none blocking. Two were acted on immediately because both
+were cheap and both were real:
+
+- **`R3-001` [WARNING, `violates_criterion`] — and it was my own defect, on the change whose
+  whole point was to stop documents lying.** `v4-expenses.md` said the mirror "still lists
+  E1–E4 as `pending`" in the same change that edited that mirror to say `done`. A corrected
+  state described by a stale sentence, which is worse than the stale state alone: a later
+  reader trusts the prose and skips the table. Fixed in the prose.
+- **`R2-1` [SUGGESTION]** — the seeded `cash` id was a bare literal at four select sites with
+  nothing saying which method it was. Now `CASH`, named once with the reason it is stable.
+- **`R2-2` [SUGGESTION]** — the supplier half of the new e2e is a near-copy of the client half.
+  **Deliberately not refactored here**: the duplication *is* the coverage claim (the effect is
+  written twice, so a fix applied once is not a fix), and a parameterised helper would hide
+  which route a failure came from. Recorded as a known trade-off rather than a defect.
+
+Counts after the two fixes: `make test` green (**45 e2e**), `make lint` clean, `svelte-check`
+0/0. `make sqlx-check` remains red for the environment reason `V11` records.
+
+V13 **`V12` reviewed natively — APPROVED.** Lineage `review-f0c50ece148dff9c`, lenses
+`readability` + `reliability`, tier high, 317 changed lines, correction budget 159. Authority
+burned. Two findings, both informational, and **both were mine, and both were the same
+mistake a second time**:
+
+- `R3-001` [WARNING, `causal_disposition: introduced`] — `v5-customer-account.md` `L8` still
+  listed the receipt defect as open while this same change closed it.
+- `R2-001` [SUGGESTION] — the `R3-002` bullet kept the sentence *"it is a presentation defect,
+  not money"* and appended a correction after it, so the record argued with itself in adjacent
+  sentences.
+
+**The rule both findings teach, and it is the third time this entry records it:** an *append*
+is not a correction. Denying a claim while leaving the claim standing is worse than the wrong
+claim, because a reader who stops at the first sentence is now confident and wrong. The fix in
+both places rewrites the original sentence instead of adding a paragraph beside it.
+
+Counts: `make test` green (**45 e2e**), `make lint` clean, `svelte-check` 0/0.

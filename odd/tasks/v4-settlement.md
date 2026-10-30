@@ -15,10 +15,18 @@ record what each delivered slice measured.
 | **S5** annulment | `0020_annulments.sql` | #85 → `e081077` | `review-9e0c575936d6e78f` |
 | S2 `created_by` | **deferred to v5** — the field cannot be corrected afterwards (`L24`) | — | — |
 | **S6a** obligations, collections | `0021_obligations.sql`, `0022_payments_settlements.sql`, `payments.rs`, 16 commits | #86 → `2e6f7be` | six lineages, all closed through correction — see `v4-receivables.md` |
-| S6b payables, supplier returns | **in progress** — `odd/tasks/v4-payables.md` | — | — |
+| **S6b** payables, supplier returns | `0023_payables.sql`, `purchases.rs`, `payables.rs` — see `odd/tasks/v4-payables.md` | #87 → merged 2026-10-25 | **none — delivered without a native review, `v4-payables.md` L9** |
 | **S7** retire `credit` | `0016_credit_seed_identity.sql` **deleted**, seed removed from `0012`, the ledger guard generalised to `accounts.kind` | #88 | — |
 
-The next slice is **S6b**, specified in `odd/tasks/v4-payables.md`: it is `L19` closed, and
+**Every slice in this table is merged except S2**, which is deferred to v5 and says so in its
+own row — the two are not in conflict once the sentence names the exception. v4 closed on
+`main` on 2026-10-29 once `v4-expenses`
+landed (`#110`–`#114`); the two debts it closed with are stated in `v4-expenses.md`
+`L34` (an unreviewed last correction) and `v4-payables.md` `L9` (a slice that got no
+external view because its candidate exceeded the reviewer budget). Neither is repaired
+by re-reading this table, and neither is hidden by it.
+
+The slice this table records is **S6b**, specified in `odd/tasks/v4-payables.md`: it is `L19` closed, and
 the mirror of S6a on the purchase side — a purchase that owes, a supplier payment that settles
 it, and the `supplier_returns` override whose absence means returning goods on an unpaid
 purchase credits a debt that does not exist.
