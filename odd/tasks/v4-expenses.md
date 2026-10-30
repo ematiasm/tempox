@@ -1093,3 +1093,27 @@ answer was wrong (the findings were on disk in the transaction's `review-state.j
 **The honest summary of the branch.** It closes #120, #121, #122 and #123 with a structural change
 (one reader per ledger) whose *cause* is understood and written down, and it carries an unreviewed
 correction. Merging it means accepting that last risk knowingly, which is what this entry records.
+
+L35 (CI was red for a reason the testing document contradicted). PR #124 failed `Frontend
+(SvelteKit)` in 25 seconds: **323 tests passing and one unhandled error** —
+`browserType.launch: Executable doesn't exist`. No test was wrong. The `component` project in
+`vite.config.ts` mounts Svelte components in a real Chromium (a `.svelte.ts` rune can only be
+exercised by mounting, and mounting needs Svelte's client build, which SvelteKit's resolution owns).
+It landed in `de056ba`; `npm run test:unit` collects every project; **that job has needed a browser
+since then and never installed one.**
+
+**`docs/en/testing.md` said the opposite**, which is why it went unnoticed: the frontend unit level
+was listed as needing "nothing running". An uninstalled browser therefore looked like a CI quirk
+rather than a missing prerequisite that the document was denying. The table now carries the component
+level as its own row with the browser as what it needs, and the reason it is structural.
+
+Its other counts had also drifted, unchecked since 2026-10-19: **39 backend unit → 73**, **47
+integration → 182**, **16 e2e in 4 specs → 44 in 10**. A table of counts is a claim that decays
+silently; the header now says it is re-measured, and where.
+
+Reproduced before fixing: with the 1248 browsers moved out of the cache, `npx vitest --run` gives
+the same 323 + 1 error; after `npx playwright install chromium`, 25 files and 338 tests. The cycle was
+run both ways rather than reasoned about, because "CI is red" and "a prerequisite is missing" produce
+the same colour and only the second is fixable in the workflow.
+
+`make help` promised the same target "needs nothing running" and now names the one install step.
