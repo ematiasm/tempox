@@ -2,6 +2,17 @@ import { expect, test } from '@playwright/test';
 import { money } from './unique.js';
 
 /**
+ * The seeded `cash` method, named once instead of spelled four times.
+ *
+ * `R2-1` of `review-69a9c8cb07e21dca` (informational): the literal UUID was repeated at every
+ * collect step and nothing in the file said *which* method it was, so a maintainer could not
+ * tell what the test exercised and a seed reorder would retarget it silently. It is the
+ * `cash` row seeded by `0001_schema.sql`, and `0001` refuses `DELETE` on the table, so the id
+ * is stable — but the name is what makes the assertion legible, and a name is cheap.
+ */
+const CASH = '00000000-0000-0000-0000-000000000004';
+
+/**
  * The two party pages, end to end.
  *
  * `v5-customer-account.md` S1 and S7. What only a browser can prove here: the rail
@@ -115,7 +126,7 @@ test('a client panel opens from a row, shows both figures, and reopens by link',
     data: {
       party_kind: 'customer',
       party_id: customerId,
-      payment_method_id: '00000000-0000-0000-0000-000000000004',
+      payment_method_id: CASH,
       total: '60.00',
       direction: 'in'
     }
@@ -381,7 +392,7 @@ test('a collection typed in the panel closes two documents and says which was th
   // form must say so in words, naming no document. (The first version of this spec sent 100,
   // which leaves the older sale with 25: correct behaviour, wrong expectation, and the panel
   // said so — 80 + 45 is 125 and the money has to come from somewhere.)
-  await form.locator('select').selectOption('00000000-0000-0000-0000-000000000004');
+  await form.locator('select').selectOption(CASH);
   await expect(form).toContainText('Escribí un monto mayor a cero');
   await expect(form.locator('button.do')).toBeDisabled();
   await form.locator('input[inputmode="decimal"]').first().fill('125');
@@ -445,4 +456,107 @@ test('a collection typed in the panel closes two documents and says which was th
       }>
   );
   expect(settlements.unpaid_sales).toHaveLength(0);
+});
+
+/**
+ * A receipt belongs to the party it was written for, and to nothing else.
+ *
+ * `R3-002` of `review-9cff43c50976184c`, recorded as informational and carried out of slice 2
+ * unfixed (`v5-payments.md` `V9`). `collected` is page state, and the effect that fetches a
+ * newly selected party cleared `account`, `notFound` and `panelError` but not it — so a
+ * receipt for one client stayed on screen while another client's panel was open.
+ *
+ * **Why this is money and not cosmetics.** The receipt is the only statement of what a
+ * collection closed: it names document ids and amounts. Left standing under a second client's
+ * name, it reads as "this money closed these documents" about a party that has none of them —
+ * the same class as the two-lies-the-T2-review-found, where the text was plausible and about
+ * the wrong row.
+ *
+ * **What only a browser can prove.** No unit test can see this: the defect is that *mounting
+ * the panel again* does not clear state the page owns, and the page is not the panel. Both
+ * routes are exercised because the two copies of the effect would have to be fixed twice.
+ */
+test('a receipt does not follow the cashier to another party', async ({ page }) => {
+  const stamp = Date.now().toString(36);
+  const first = await page.request
+    .post('/api/customers', { data: { name: `e2e-receipt-a-${stamp}` } })
+    .then((r) => r.json() as Promise<{ id: string; name: string }>);
+  const second = await page.request
+    .post('/api/customers', { data: { name: `e2e-receipt-b-${stamp}` } })
+    .then((r) => r.json() as Promise<{ id: string; name: string }>);
+
+  // One sale on account for the first client, so its panel has a debt to collect against.
+  const product = await page.request
+    .post('/api/products', {
+      data: { name: `e2e-receipt-prod-${stamp}`, list_price: '30.00' }
+    })
+    .then((r) => r.json() as Promise<{ id: string }>);
+  const sale = await page.request.post('/api/sales', {
+    data: {
+      customer_id: first.id,
+      items: [{ product_id: product.id, quantity: 1 }],
+      payment_method_id: 'on_account'
+    }
+  });
+  expect(sale.status()).toBe(201);
+
+  await page.goto('/clientes');
+  const panel = page.locator('aside.sheet');
+
+  // Collect against the first client, which renders the receipt.
+  await page.locator('li.row', { hasText: first.name }).getByRole('button').click();
+  await expect(panel).toBeVisible();
+  const balanceBox = panel.locator('section.box', {
+    has: page.getByRole('heading', { name: 'Saldo' })
+  });
+  await balanceBox.getByRole('button', { name: 'Cobrar' }).click();
+  const form = balanceBox.locator('form.collect');
+  await form.locator('select').selectOption(CASH);
+  await form.locator('input[inputmode="decimal"]').first().fill('30');
+  await form.locator('button.do').click();
+
+  const receipt = panel.locator('section.receipt');
+  await expect(receipt).toBeVisible();
+
+  // **Now open the second client, in the same page.** Its panel has no debt and no
+  // collection, so a receipt here is a statement about the wrong party.
+  await page.locator('li.row', { hasText: second.name }).getByRole('button').click();
+  await expect(panel).toContainText(second.name);
+  await expect(panel.locator('section.receipt')).toHaveCount(0);
+
+  // **The mirror, because the effect is written twice.** `/proveedores` has its own copy of
+  // this page's state, and a fix applied to one route is not a fix applied to the other — the
+  // failure mode this repository already paid for once, when sales and purchases became
+  // 2700 lines of the same table. A purchase on account gives the supplier a payable to pay.
+  const supplierA = await page.request
+    .post('/api/suppliers', { data: { name: `e2e-receipt-sup-a-${stamp}` } })
+    .then((r) => r.json() as Promise<{ id: string; name: string }>);
+  const supplierB = await page.request
+    .post('/api/suppliers', { data: { name: `e2e-receipt-sup-b-${stamp}` } })
+    .then((r) => r.json() as Promise<{ id: string; name: string }>);
+  const purchase = await page.request.post('/api/purchases', {
+    data: {
+      supplier_id: supplierA.id,
+      items: [{ product_id: product.id, quantity: 1 }],
+      payment_method_id: 'on_account'
+    }
+  });
+  expect(purchase.status()).toBe(201);
+
+  await page.goto('/proveedores');
+  await page.locator('li.row', { hasText: supplierA.name }).getByRole('button').click();
+  await expect(panel).toBeVisible();
+  const payBox = panel.locator('section.box', {
+    has: page.getByRole('heading', { name: 'Saldo' })
+  });
+  await payBox.getByRole('button', { name: 'Pagar' }).click();
+  const payForm = payBox.locator('form.collect');
+  await payForm.locator('select').selectOption(CASH);
+  await payForm.locator('input[inputmode="decimal"]').first().fill('30');
+  await payForm.locator('button.do').click();
+  await expect(panel.locator('section.receipt')).toBeVisible();
+
+  await page.locator('li.row', { hasText: supplierB.name }).getByRole('button').click();
+  await expect(panel).toContainText(supplierB.name);
+  await expect(panel.locator('section.receipt')).toHaveCount(0);
 });
